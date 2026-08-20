@@ -8,8 +8,9 @@ version = "0.1.0"
 description = "kuhaku: a provider-agnostic AI orchestration framework (LLM abstraction, retrieval, evaluation, observability, security)."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{name = "İsmail Efe Terlemez"}]
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

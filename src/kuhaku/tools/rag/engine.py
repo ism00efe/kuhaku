@@ -174,9 +174,8 @@ class RAGEngine:
         # the evaluation DB. ``None`` (the default) disables persistence entirely so the
         # kuhaku has no compile-time or runtime dependency on the application layer.
         self._contradiction_storage = contradiction_storage
-        # Domain constants externalization: instance-scoped, defaulting to the module's
-        # Turkish strings so every existing call site (which never passes this) is
-        # byte-identical to before.
+        # User-facing strings are injectable: the engine's control flow stays free of
+        # any hard-coded copy. Callers that pass nothing get DEFAULT_ENGINE_MESSAGES.
         self._messages = messages if messages is not None else DEFAULT_ENGINE_MESSAGES
 
     def _require_methods(self, obj: object, methods: tuple[str, ...], param: str) -> None:
