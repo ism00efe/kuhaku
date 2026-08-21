@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — unreleased
+## [1.0.0]
 
 ### Added
 
@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   framework: a generic runtime core plus RAG as its first reference tool.
 - **`kuhaku.core`** — generic, tool-agnostic infrastructure:
   - Typed, environment-driven configuration (`Settings`, `get_settings`, nested
-    `KUHAKU_RAG__*` overrides).
+    `RAG__*` overrides).
   - An `LLMProvider` protocol with Ollama, Anthropic, OpenAI, and Google Vertex AI
     implementations, selected via `LLM_PROVIDER` through `build_llm_provider`.
   - Authentication/authorization primitives (`AuthContext`, `AuthorizationPolicy`,
