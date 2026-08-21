@@ -18,15 +18,20 @@ from __future__ import annotations
 import dataclasses
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from .core.auth import AuthContext
 from .core.config import Settings, get_settings
 from .core.llm import build_llm_provider
 from .core.llm.token_tracking import TokenTrackingLLM
 from .core.models import ExecutionResult, Message, ToolCall
 from .core.sanitization import Redaction
 from .tools.rag import (
+    ACCESS_TAG_INTERNAL,
+    ACCESS_TAG_PUBLIC,
+    ACCESS_TAG_RESTRICTED,
     Answer,
     ChromaVectorStore,
     CrossEncoderReranker,
@@ -61,13 +66,19 @@ class RAG:
     replaces it outright. Replacing it outright means taking full ownership of the
     safety rules -- kuhaku's instruction-precedence, data-marking, canary, grounding,
     citation, and contradiction-handling rules only apply if your replacement text
-    includes them. For anything else not exposed here (query rewriting, contradiction
-    detection, caching, the security guard, authentication/authorization via
-    ``kuhaku.core.auth``, custom ``EngineMessages``, the prompt's format-preference/
-    example/masked-placeholder layers, ...) construct :class:`RAGEngine` directly -- see
-    ``kuhaku.tools.rag`` -- or use the :attr:`engine` escape hatch below (e.g.
-    ``rag.engine.update_authorization_policy(...)`` and passing ``auth_context=`` to
-    ``rag.engine.answer(...)``).
+    includes them.
+
+    Document-level access filtering (:meth:`ingest`'s/:meth:`load_documents`'s
+    ``access_tags``, :meth:`ask`'s ``auth_context``) is available directly on this
+    facade -- see each method. ``kuhaku`` itself authenticates no one: the caller
+    authenticates its own user and hands this an :class:`~kuhaku.core.auth.AuthContext`
+    (identity + roles); a chunk tagged with ``access_tags`` is retrievable only when at
+    least one tag is also in that context's ``roles``.
+
+    For anything else not exposed here (query rewriting, contradiction detection,
+    caching, the security guard, custom ``EngineMessages``, the prompt's format-
+    preference/example/masked-placeholder layers, ...) construct :class:`RAGEngine`
+    directly -- see ``kuhaku.tools.rag`` -- or use the :attr:`engine` escape hatch below.
     """
 
     def __init__(
@@ -288,6 +299,7 @@ class RAG:
         *,
         chunk_size: int | None = None,
         overlap: int | None = None,
+        access_tags: Sequence[str] | None = None,
     ) -> tuple[int, list[Redaction]]:
         """Sanitize, chunk, embed, and add one document to the vector store.
 
@@ -295,6 +307,14 @@ class RAG:
         visible to the very next :meth:`ask` call, no reload needed. Returns
         ``(chunks_added, redactions)``. ``chunk_size``/``overlap`` default to
         ``RAGSettings.chunk_size``/``RAGSettings.chunk_overlap`` when not given.
+
+        ``access_tags``, when given, restricts every chunk this document produces to
+        callers whose :meth:`ask` ``auth_context.roles`` includes at least one of these
+        tags (document-level access filtering) -- ``kuhaku`` itself never interprets what
+        a tag means. ``None`` (the default) leaves the document untagged: visible to
+        every caller, exactly as before this parameter existed. A blank tag raises
+        ``ValueError`` rather than being silently stored as something that can never
+        match.
         """
 
         rs = self._rag_settings
@@ -303,9 +323,12 @@ class RAG:
             filename,
             chunk_size=chunk_size if chunk_size is not None else rs.chunk_size,
             overlap=overlap if overlap is not None else rs.chunk_overlap,
+            access_tags=access_tags,
         )
 
-    def load_documents(self, directory: str | Path) -> int:
+    def load_documents(
+        self, directory: str | Path, *, access_tags: Sequence[str] | None = None
+    ) -> int:
         """Ingest every supported file (``.txt``, ``.md``, ``.pdf``) in ``directory``.
 
         A thin loop over :meth:`ingest` -- no indexing logic is duplicated here.
@@ -313,6 +336,11 @@ class RAG:
         chunk(s)`` line per file and returns the number of documents indexed. A file
         that can't be read (bad encoding, unreadable PDF) is skipped with a warning
         rather than aborting the whole batch.
+
+        ``access_tags``, when given, is applied uniformly to every file this call
+        indexes -- per-file tagging is deliberately not supported here; call
+        :meth:`ingest` directly for that. ``None`` (the default) leaves every file
+        untagged.
         """
 
         path = Path(directory)
@@ -340,24 +368,41 @@ class RAG:
                 print(f"load_documents: skipping {file_path.name}: {exc}")
                 continue
 
-            chunks_added, _redactions = self.ingest(text, file_path.name)
+            chunks_added, _redactions = self.ingest(
+                text, file_path.name, access_tags=access_tags
+            )
             print(f"indexed {file_path.name}: {chunks_added} chunk(s)")
             indexed += 1
 
         return indexed
 
-    def ask(self, question: str, context_text: str | None = None) -> Answer:
+    def ask(
+        self,
+        question: str,
+        context_text: str | None = None,
+        *,
+        auth_context: AuthContext | None = None,
+    ) -> Answer:
         """Answer ``question``, optionally grounded by supplementary structured context.
 
         ``context_text`` is an optional blob (JSON, XML, or raw text) supplied alongside
         the question -- e.g. something a user pasted or uploaded -- whose salient fields
         are extracted and folded into the retrieval query.
 
+        ``auth_context`` (see :class:`~kuhaku.core.auth.AuthContext`) is the caller's
+        already-authenticated identity -- ``kuhaku`` never authenticates anyone itself.
+        Retrieval enforces document-level access filtering against it unconditionally: a
+        chunk tagged via :meth:`ingest`'s/:meth:`load_documents`' ``access_tags`` is
+        retrievable only when at least one tag is also in ``auth_context.roles``; an
+        untagged chunk is retrievable by anyone. ``None`` (the default) is treated as
+        having no roles, so only untagged chunks are visible -- existing callers that
+        pass nothing keep working unchanged against an untagged corpus.
+
         Thin pass-through to :meth:`RAGEngine.answer` -- see there for the full
         contract (sanitization, citations, abstention, ...).
         """
 
-        return self._engine.answer(question, context_text)
+        return self._engine.answer(question, context_text, auth_context=auth_context)
 
     def chat_repl(self) -> None:
         """Interactive terminal chat loop: read a question, print the answer, repeat.
@@ -416,4 +461,11 @@ __all__ = [
     "Message",
     "ToolCall",
     "ExecutionResult",
+    # Document-level access filtering: the identity primitive RAG.ask()'s auth_context
+    # expects, plus a default tag vocabulary RAG.ingest()'s access_tags can reach for
+    # (Feature 6, suggestions only -- any other string works identically).
+    "AuthContext",
+    "ACCESS_TAG_PUBLIC",
+    "ACCESS_TAG_INTERNAL",
+    "ACCESS_TAG_RESTRICTED",
 ]

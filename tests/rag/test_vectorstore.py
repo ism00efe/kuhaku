@@ -64,6 +64,7 @@ def test_content_type_defaults_when_absent_from_stored_metadata(tmp_path):
     chunk = make_chunk("a")
     metadata = chunk.metadata()
     del metadata["content_type"]
+    del metadata["access_tags"]  # Chroma rejects an empty-list metadata value outright
     store._collection.add(  # noqa: SLF001 - simulating a pre-migration row directly
         ids=[chunk.id], embeddings=[[1.0, 0.0, 0.0]],
         documents=[chunk.text], metadatas=[metadata],
@@ -92,6 +93,7 @@ def test_freshness_fields_default_when_absent_from_stored_metadata(tmp_path):
     chunk = make_chunk("a")
     metadata = chunk.metadata()
     del metadata["effective_date"], metadata["obsolete"], metadata["expiry_date"]
+    del metadata["access_tags"]  # Chroma rejects an empty-list metadata value outright
     store._collection.add(  # noqa: SLF001 - simulating a pre-migration row directly
         ids=[chunk.id], embeddings=[[1.0, 0.0, 0.0]],
         documents=[chunk.text], metadatas=[metadata],

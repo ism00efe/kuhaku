@@ -14,7 +14,8 @@ import pytest
 from kuhaku.core.auth import AuthContext
 from kuhaku.core.security.classifier import Stage1Result, Stage2Result
 from kuhaku.core.security.guard import GuardDecision
-from kuhaku.tools.rag.models import Chunk, RetrievedChunk
+from kuhaku.tools.rag.models import ACCESS_TAGS_NONE_KEY, Chunk, RetrievedChunk
+from kuhaku.tools.rag.retriever import is_entitled
 
 
 def _matching_samples(instrument, family_name: str, sample_name: str, labels: dict[str, str]):
@@ -93,24 +94,50 @@ class FakeEmbeddings:
         return [float(len(text)), 1.0, 0.0]
 
 
+def _matches_where(chunk: Chunk, where: dict | None) -> bool:
+    """Tiny interpreter for the small subset of Chroma ``where`` syntax
+    :class:`FakeVectorStore` needs to support -- just enough to exercise
+    ``DenseRetriever``'s entitlement push-down (see ``retriever._entitlement_where``)
+    without a real Chroma instance. Operates directly on chunk attributes rather than a
+    serialized metadata dict, since this fake never round-trips through storage.
+    """
+
+    if not where:
+        return True
+    if "$or" in where:
+        return any(_matches_where(chunk, clause) for clause in where["$or"])
+    ((key, cond),) = where.items()
+    if key == ACCESS_TAGS_NONE_KEY:
+        return not chunk.access_tags
+    if key == "access_tags" and isinstance(cond, dict) and "$contains" in cond:
+        return cond["$contains"] in chunk.access_tags
+    raise ValueError(f"FakeVectorStore: unsupported where clause {where!r}")
+
+
 class FakeVectorStore:
     """In-memory vector store honoring the VectorStore protocol.
 
-    Ignores actual vector math: ``query`` returns the first ``top_k`` added chunks, which
-    is enough to exercise retrieval, prompting, and citation wiring.
+    Ignores actual vector math: ``query`` returns the first ``top_k`` chunks matching
+    ``where`` (see ``_matches_where``), which is enough to exercise retrieval, prompting,
+    entitlement push-down, and citation wiring.
     """
 
     def __init__(self, chunks: list[Chunk] | None = None) -> None:
         self._chunks: list[Chunk] = list(chunks or [])
         self.reset_called = 0
+        self.query_where_calls: list[dict | None] = []
 
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
         self._chunks.extend(chunks)
 
-    def query(self, embedding: list[float], top_k: int) -> list[RetrievedChunk]:
+    def query(
+        self, embedding: list[float], top_k: int, *, where: dict | None = None
+    ) -> list[RetrievedChunk]:
+        self.query_where_calls.append(where)
+        candidates = [c for c in self._chunks if _matches_where(c, where)]
         return [
             RetrievedChunk(chunk=c, score=1.0 - 0.1 * i)
-            for i, c in enumerate(self._chunks[:top_k])
+            for i, c in enumerate(candidates[:top_k])
         ]
 
     def count(self) -> int:
@@ -143,7 +170,14 @@ class FakeLLM:
 
 
 class FakeRetriever:
-    """Returns a preset ranking, recording the query and depth it was asked for."""
+    """Returns a preset ranking, recording the query and depth it was asked for.
+
+    Enforces document-level access filtering via the real ``is_entitled`` predicate
+    (same rule ``DenseRetriever``/``BM25Retriever`` enforce), so engine-level tests that
+    script this retriever get realistic entitlement behavior for tagged chunks -- for
+    untagged chunks (every existing test's fixtures, before this feature existed) this
+    is a no-op, since ``is_entitled`` always returns ``True`` for those.
+    """
 
     def __init__(self, chunks: list[Chunk] | None = None) -> None:
         self._chunks = list(chunks or [])
@@ -158,6 +192,7 @@ class FakeRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         self.calls.append((query, top_k))
         self.auth_context_calls.append(auth_context)
@@ -165,6 +200,8 @@ class FakeRetriever:
         chunks = self._chunks
         if doc_type is not None:
             chunks = [c for c in chunks if c.doc_type == doc_type]
+        if enforce_entitlement:
+            chunks = [c for c in chunks if is_entitled(c, auth_context)]
         return [
             RetrievedChunk(chunk=c, score=1.0 - 0.1 * i)
             for i, c in enumerate(chunks[:top_k])
@@ -267,7 +304,7 @@ class FakeGuardPipeline:
 def make_chunk(doc_id: str, index: int = 0, *, text: str = "content", title: str = "T",
                doc_type: str = "faq", content_type: str = "text",
                effective_date: str = "", obsolete: bool = False,
-               expiry_date: str = "") -> Chunk:
+               expiry_date: str = "", access_tags: tuple[str, ...] = ()) -> Chunk:
     return Chunk(
         id=f"{doc_id}::{index}",
         document_id=doc_id,
@@ -280,6 +317,7 @@ def make_chunk(doc_id: str, index: int = 0, *, text: str = "content", title: str
         effective_date=effective_date,
         obsolete=obsolete,
         expiry_date=expiry_date,
+        access_tags=access_tags,
     )
 
 

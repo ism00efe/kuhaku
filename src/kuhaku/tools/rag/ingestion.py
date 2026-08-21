@@ -10,9 +10,11 @@ already-in-memory document appended to an existing collection, never touching di
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TypedDict
 from uuid import uuid4
@@ -171,6 +173,26 @@ def _freshness_fields(text: str) -> _FreshnessFields:
     )
 
 
+def _normalize_access_tags(access_tags: Sequence[str] | None) -> tuple[str, ...]:
+    """Validate and normalize caller-supplied access tags at the ingestion boundary.
+
+    `None` and an empty sequence both collapse to the same "untagged" representation
+    (`()`), so tagging stays a deliberate, opt-in act. A blank (empty or whitespace-only)
+    tag is rejected outright rather than stored as something that can never match a
+    caller's roles. Duplicate tags are harmless -- silently deduplicated (order
+    preserved), since a repeated tag changes nothing about who can see the chunk.
+    """
+
+    if not access_tags:
+        return ()
+    seen: dict[str, None] = {}
+    for tag in access_tags:
+        if not tag or not tag.strip():
+            raise ValueError("access_tags: tag must not be empty or whitespace-only")
+        seen.setdefault(tag, None)
+    return tuple(seen)
+
+
 def _infer_doc_type(filename: str, mapping: dict[str, str] | None = None) -> str:
     """Infer a document's type from ``mapping`` (filename prefix -> doc_type), falling
     back to "document" when ``mapping`` is ``None``/empty or no prefix matches. Callers
@@ -244,8 +266,15 @@ def ingest(
     reset: bool = True,
     chunker: Chunker | None = None,
     loader: DocumentLoader | None = None,
+    access_tags: Sequence[str] | None = None,
 ) -> int:
-    """Run the full ingestion pipeline. Returns the number of chunks indexed."""
+    """Run the full ingestion pipeline. Returns the number of chunks indexed.
+
+    ``access_tags``, when given, is applied uniformly to every document this call loads
+    from ``corpus_dir`` -- per-file tagging is not supported here, same as
+    :meth:`~kuhaku.RAG.load_documents`. ``None`` (the default) leaves every document
+    untagged, unchanged from before this parameter existed.
+    """
 
     if reset:
         store.reset()
@@ -253,6 +282,13 @@ def ingest(
     chunker = chunker or ParagraphChunker()
     loader = loader or FileSystemLoader()
     documents = loader.load(corpus_dir)
+
+    normalized_tags = _normalize_access_tags(access_tags)
+    if normalized_tags:
+        documents = [
+            dataclasses.replace(doc, access_tags=normalized_tags) for doc in documents
+        ]
+
     chunks: list[Chunk] = []
     for doc in documents:
         chunks.extend(chunker.chunk(doc, chunk_size=chunk_size, overlap=overlap))
@@ -280,6 +316,7 @@ def ingest_single_document(
     rag_settings: RAGSettings | None = None,
     max_upload_bytes: int | None = None,
     messages: EngineMessages | None = None,
+    access_tags: Sequence[str] | None = None,
 ) -> tuple[int, list[Redaction]]:
     """Sanitize, chunk, embed, and add ONE document to an existing collection.
 
@@ -305,9 +342,17 @@ def ingest_single_document(
     :func:`extract_text` checks. ``None`` (the default) means no limit is enforced.
     ``messages``, when given, supplies every user-facing string this function can raise;
     ``None`` (the default) falls back to :data:`DEFAULT_ENGINE_MESSAGES`.
+
+    ``access_tags``, when given, gates every chunk this document produces (document-level
+    access filtering; see ``kuhaku.tools.rag.retriever.is_entitled``). ``None`` (the
+    default) leaves the document untagged -- visible to any caller, unchanged from before
+    this parameter existed. A blank tag is rejected outright (see
+    ``_normalize_access_tags``) so a typo can never silently produce an unprotected
+    document.
     """
 
     messages = messages if messages is not None else DEFAULT_ENGINE_MESSAGES
+    normalized_tags = _normalize_access_tags(access_tags)
 
     if max_upload_bytes is not None and len(text.encode("utf-8")) > max_upload_bytes:
         raise UploadTooLarge(
@@ -329,6 +374,7 @@ def ingest_single_document(
         doc_type=_infer_doc_type(clean_filename, doc_type_mapping),
         text=clean_text,
         source_path=f"uploads/{clean_filename}",
+        access_tags=normalized_tags,
         **_freshness_fields(clean_text),
     )
     chunker = chunker or ParagraphChunker()

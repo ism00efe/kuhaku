@@ -74,6 +74,7 @@ def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
             effective_date=doc.effective_date,
             obsolete=doc.obsolete,
             expiry_date=doc.expiry_date,
+            access_tags=doc.access_tags,
         )
         for i, window in enumerate(windows)
     ]
@@ -256,6 +257,7 @@ class StructuralChunker:
                 effective_date=doc.effective_date,
                 obsolete=doc.obsolete,
                 expiry_date=doc.expiry_date,
+                access_tags=doc.access_tags,
             )
             for i, (content_type, chunk_text) in enumerate(pieces)
         ]

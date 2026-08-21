@@ -5,6 +5,7 @@ import pytest
 
 import kuhaku
 from kuhaku import RAG
+from kuhaku.core.auth import AuthContext
 from kuhaku.core.config import Settings
 from kuhaku.core.security.guard import CANARY_TOKEN
 from kuhaku.tools.rag.ingestion import UnsupportedFileType
@@ -177,15 +178,60 @@ def test_ask_forwards_context_text_to_the_engine(monkeypatch, fake_rag_environme
     rag, _store, _embedder, _llm = fake_rag_environment
     seen: dict[str, object] = {}
 
-    def _fake_answer(question, context_text=None):
+    def _fake_answer(question, context_text=None, *, auth_context=None):
         seen["question"] = question
         seen["context_text"] = context_text
+        seen["auth_context"] = auth_context
         return kuhaku.Answer(text="ok", citations=[], retrieved=[])
 
     monkeypatch.setattr(rag.engine, "answer", _fake_answer)
     rag.ask("what happened?", "some structured blob")
 
-    assert seen == {"question": "what happened?", "context_text": "some structured blob"}
+    assert seen == {
+        "question": "what happened?",
+        "context_text": "some structured blob",
+        "auth_context": None,
+    }
+
+
+def test_ask_forwards_auth_context_to_the_engine(monkeypatch, fake_rag_environment):
+    rag, _store, _embedder, _llm = fake_rag_environment
+    seen: dict[str, object] = {}
+
+    def _fake_answer(question, context_text=None, *, auth_context=None):
+        seen["auth_context"] = auth_context
+        return kuhaku.Answer(text="ok", citations=[], retrieved=[])
+
+    monkeypatch.setattr(rag.engine, "answer", _fake_answer)
+    ctx = AuthContext(identity="u1", roles=("engineering",))
+    rag.ask("what happened?", auth_context=ctx)
+
+    assert seen["auth_context"] is ctx
+
+
+def test_acceptance_document_level_access_filtering(fake_rag_environment):
+    """The task's acceptance test, run through the public facade alone (no rag.engine
+    access): a document tagged with access_tags is never retrieved, cited, or handed to
+    the LLM for a caller whose roles don't include one of its tags, while an untagged
+    document remains visible to everyone."""
+
+    rag, _store, _embedder, llm = fake_rag_environment
+
+    hr_text = "# Salary Policy\n\nSalary bands range from A to E based on level."
+    eng_text = "# Deploy Runbook\n\nRun deploy.sh to ship a new release."
+
+    rag.ingest(hr_text, filename="salary_policy.md", access_tags=["people_ops"])
+    rag.ingest(eng_text, filename="deploy_runbook.md")  # no tags -> visible to all
+
+    answer = rag.ask(
+        "what are the salary bands",
+        auth_context=AuthContext(identity="efe", roles=("engineering",)),
+    )
+
+    assert all("salary_policy" not in rc.chunk.source_path for rc in answer.retrieved)
+    assert all("salary_policy" not in c.source_path for c in answer.citations)
+    assert "Salary bands range" not in (llm.last_user or "")
+    assert "people_ops" not in answer.text
 
 
 def test_chat_repl_prints_the_engines_own_abstention_text(

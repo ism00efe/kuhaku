@@ -195,3 +195,24 @@ def test_structural_chunker_threads_freshness_fields_onto_every_chunk():
     assert len(chunks) >= 1
     assert all(c.obsolete is True for c in chunks)
     assert all(c.expiry_date == "2020-01-01" for c in chunks)
+
+
+# --- access_tags: inherited from the parent Document (Feature 1) ---------------------
+def test_paragraph_chunker_threads_access_tags_onto_every_chunk():
+    doc = _doc("first paragraph\n\nsecond paragraph", access_tags=("people_ops", "legal"))
+    chunks = ParagraphChunker().chunk(doc, chunk_size=1000, overlap=50)
+    assert len(chunks) >= 1
+    assert all(c.access_tags == ("people_ops", "legal") for c in chunks)
+
+
+def test_paragraph_chunker_untagged_document_produces_untagged_chunks():
+    doc = _doc("first paragraph\n\nsecond paragraph")
+    chunks = ParagraphChunker().chunk(doc, chunk_size=1000, overlap=50)
+    assert all(c.access_tags == () for c in chunks)
+
+
+def test_structural_chunker_threads_access_tags_onto_every_chunk():
+    doc = _doc("# A\n\nintro\n\n# B\n\nbody", access_tags=("restricted",))
+    chunks = StructuralChunker().chunk(doc, chunk_size=1000, overlap=50)
+    assert len(chunks) >= 1
+    assert all(c.access_tags == ("restricted",) for c in chunks)

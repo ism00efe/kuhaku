@@ -15,6 +15,7 @@ from kuhaku.tools.rag.ingestion import (
     _freshness_fields,
     _infer_doc_type,
     _infer_title,
+    _normalize_access_tags,
     chunk_document,
     extract_text,
     ingest,
@@ -50,6 +51,27 @@ def test_infer_title_prefers_markdown_heading():
     assert _infer_title("# Payments API\nbody", "fallback") == "Payments API"
     assert _infer_title("plain first line\nmore", "fallback") == "plain first line"
     assert _infer_title("", "fallback") == "fallback"
+
+
+# --- access_tags: ingestion-boundary validation (Feature 1 edge cases) ----------------
+def test_normalize_access_tags_none_and_empty_both_mean_untagged():
+    assert _normalize_access_tags(None) == ()
+    assert _normalize_access_tags([]) == ()
+    assert _normalize_access_tags(()) == ()
+
+
+def test_normalize_access_tags_rejects_empty_string():
+    with pytest.raises(ValueError):
+        _normalize_access_tags([""])
+
+
+def test_normalize_access_tags_rejects_whitespace_only_string():
+    with pytest.raises(ValueError):
+        _normalize_access_tags(["   "])
+
+
+def test_normalize_access_tags_deduplicates_harmlessly():
+    assert _normalize_access_tags(["hr", "hr", "legal", "hr"]) == ("hr", "legal")
 
 
 def test_load_corpus_sanitizes_documents(tmp_path):
@@ -467,3 +489,56 @@ def test_ingest_single_document_normal_document_succeeds():
     )
     assert count > 0
     assert store.count() > 0
+
+
+# --- access_tags: threading through ingest_single_document / ingest (Feature 2) ------
+def test_ingest_single_document_tags_every_chunk_it_produces():
+    store = FakeVectorStore()
+    text = "first paragraph\n\nsecond paragraph"
+    ingest_single_document(
+        text, "policy.md", FakeEmbeddings(), store,
+        chunk_size=1000, overlap=50, access_tags=["people_ops", "legal"],
+    )
+    assert len(store._chunks) >= 1
+    assert all(set(c.access_tags) == {"people_ops", "legal"} for c in store._chunks)
+
+
+def test_ingest_single_document_no_access_tags_leaves_chunks_untagged():
+    store = FakeVectorStore()
+    ingest_single_document(
+        "body text", "notes.md", FakeEmbeddings(), store, chunk_size=500, overlap=50
+    )
+    assert all(c.access_tags == () for c in store._chunks)
+
+
+def test_ingest_single_document_rejects_blank_access_tag():
+    store = FakeVectorStore()
+    with pytest.raises(ValueError):
+        ingest_single_document(
+            "body", "notes.md", FakeEmbeddings(), store,
+            chunk_size=500, overlap=50, access_tags=["hr", "  "],
+        )
+    assert store.count() == 0  # rejected before anything was indexed
+
+
+def test_ingest_tags_every_document_loaded_from_the_corpus_dir(tmp_path):
+    (tmp_path / "faq_a.md").write_text("# A\n\nbody", encoding="utf-8")
+    (tmp_path / "guide_b.md").write_text("# B\n\nbody", encoding="utf-8")
+    store = FakeVectorStore()
+
+    ingest(
+        str(tmp_path), FakeEmbeddings(), store,
+        chunk_size=500, overlap=50, access_tags=["restricted"],
+    )
+
+    assert store._chunks  # sanity: something was indexed
+    assert all(c.access_tags == ("restricted",) for c in store._chunks)
+
+
+def test_ingest_with_no_access_tags_leaves_the_corpus_untagged(tmp_path):
+    (tmp_path / "faq_a.md").write_text("# A\n\nbody", encoding="utf-8")
+    store = FakeVectorStore()
+
+    ingest(str(tmp_path), FakeEmbeddings(), store, chunk_size=500, overlap=50)
+
+    assert all(c.access_tags == () for c in store._chunks)

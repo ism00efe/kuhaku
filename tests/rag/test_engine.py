@@ -343,6 +343,52 @@ def test_cache_hits_and_misses_increment_their_counters():
     assert _counter_value(CACHE_HITS) == before_hit + 1
 
 
+# --- Feature 4: the QA cache must not become an entitlement bypass ------------------
+def test_cache_isolation_between_different_entitlements():
+    """The cache key is computed from the *filtered* retrieved chunk ids
+    (compute_cache_key), and filtering runs before that computation (see `_answer`'s
+    ordering: retrieve() -> cache key -> cache lookup) -- so two AuthContexts with
+    disjoint entitlements asking the identical question against the same (warm) cache
+    get answers grounded in their own chunk, never each other's, and land in separate
+    cache entries. A filter applied after the cache lookup would let one user's cached
+    answer leak straight into another's response."""
+
+    people_ops_chunk = make_chunk(
+        "salary_policy", access_tags=("people_ops",), text="salary bands are A-E"
+    )
+    eng_chunk = make_chunk(
+        "deploy_runbook", access_tags=("engineering",), text="deploy steps are 1-2-3"
+    )
+    store = FakeVectorStore([people_ops_chunk, eng_chunk])
+    retriever = FakeRetriever([people_ops_chunk, eng_chunk])
+    llm = FakeLLM(response="Answer [S1].")
+    cache = FakeCache()
+    engine = RAGEngine(
+        FakeEmbeddings(), store, llm, top_k=4, retriever=retriever, cache=cache
+    )
+
+    hr_user = AuthContext(identity="hr1", roles=("people_ops",))
+    eng_user = AuthContext(identity="eng1", roles=("engineering",))
+
+    hr_answer = engine.answer("what information is available?", auth_context=hr_user)
+    eng_answer = engine.answer("what information is available?", auth_context=eng_user)
+
+    assert [rc.chunk.id for rc in hr_answer.retrieved] == [people_ops_chunk.id]
+    assert [rc.chunk.id for rc in eng_answer.retrieved] == [eng_chunk.id]
+    assert len(cache.put_calls) == 2
+    assert cache.put_calls[0][0] != cache.put_calls[1][0]  # distinct cache keys
+
+    # A third call from a user who can see BOTH must still miss the first two entries
+    # (its own filtered chunk set differs from either) rather than replaying one of them.
+    both_user = AuthContext(identity="both", roles=("people_ops", "engineering"))
+    both_answer = engine.answer("what information is available?", auth_context=both_user)
+    assert {rc.chunk.id for rc in both_answer.retrieved} == {
+        people_ops_chunk.id,
+        eng_chunk.id,
+    }
+    assert len(cache.put_calls) == 3
+
+
 def test_query_path_sanitizes_question():
     store = FakeVectorStore([make_chunk("d")])
     embedder = FakeEmbeddings()
@@ -491,109 +537,133 @@ def test_answer_defaults_auth_context_to_none():
     assert retriever.auth_context_calls == [None]
 
 
-# --- Authorization: kuhaku.core.auth's AuthorizationPolicy integration ----------
-class _StubPolicy:
-    def __init__(self, allowed: bool) -> None:
-        self.allowed = allowed
-        self.calls: list[tuple[object, str, str]] = []
+# --- Feature 5: document-level access filtering derives denied/no-match/empty-kb -----
+def test_denied_when_only_restricted_content_matches():
+    """Retrieval (entitlement-filtered) finds nothing, but an unrestricted probe would
+    have -- this is a denial, not a genuine no-match, and must be answered/audited/
+    metriced as one, without ever calling the LLM."""
 
-    def check(self, context, resource: str, action: str) -> bool:
-        self.calls.append((context, resource, action))
-        return self.allowed
-
-
-def test_no_policy_configured_skips_authorization_and_runs_normally():
-    """Zero-configuration default-allow: no authorization_policy configured means
-    retrieval and generation proceed exactly as before, even with an auth_context."""
-
-    store = FakeVectorStore([make_chunk("d1", text="alpha")])
-    llm = FakeLLM(response="Answer [S1].")
-    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4)
-
-    ans = engine.answer("soru", auth_context=AuthContext(identity="u1"))
-
-    assert ans.text == "Answer [S1]."
-    assert llm.last_user is not None
-
-
-def test_policy_configured_but_no_auth_context_skips_authorization():
-    """A configured policy with no auth_context supplied by the caller must not block --
-    'either one absent means allow' (see RAGEngine.answer()'s docstring)."""
-
-    store = FakeVectorStore([make_chunk("d1", text="alpha")])
-    llm = FakeLLM(response="Answer [S1].")
-    policy = _StubPolicy(allowed=False)
-    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, authorization_policy=policy)
-
-    ans = engine.answer("soru")  # no auth_context
-
-    assert ans.text == "Answer [S1]."
-    assert policy.calls == []  # never even consulted
-
-
-def test_policy_denies_access_before_retrieval_and_llm():
-    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+    store = FakeVectorStore([make_chunk("x")])  # just needs to be non-empty
     llm = FakeLLM()
-    retriever = FakeRetriever([make_chunk("d1")])
-    policy = _StubPolicy(allowed=False)
-    engine = RAGEngine(
-        FakeEmbeddings(), store, llm, top_k=4, retriever=retriever, authorization_policy=policy
-    )
+    retriever = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",))])
+    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, retriever=retriever)
 
-    ans = engine.answer("soru", auth_context=AuthContext(identity="u1"))
+    ans = engine.answer(
+        "salary bands", auth_context=AuthContext(identity="efe", roles=("engineering",))
+    )
 
     assert ans.text == ACCESS_DENIED_MESSAGE
     assert ans.citations == [] and ans.retrieved == []
     assert ans.abstained is True
     assert llm.last_user is None  # generate() never invoked
-    assert retriever.calls == []  # retrieval never invoked either
-    assert policy.calls == [(AuthContext(identity="u1"), "document", "read")]
 
 
-def test_policy_allows_access_and_runs_normally():
-    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+def test_not_a_denial_when_nothing_matches_at_all():
+    """An empty retrieval result with no restricted content behind it either is a
+    genuine no-match -- must stay distinct from access_denied."""
+
+    store = FakeVectorStore([make_chunk("x")])
+    llm = FakeLLM()
+    retriever = FakeRetriever([])  # nothing at all, restricted or not
+    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, retriever=retriever)
+
+    ans = engine.answer("soru", auth_context=AuthContext(identity="efe", roles=("engineering",)))
+
+    assert ans.text == NO_CHUNKS_MESSAGE
+    assert ans.text != ACCESS_DENIED_MESSAGE
+    assert ans.abstained is True
+    assert llm.last_user is None
+
+
+def test_not_a_denial_when_filtering_removes_only_some_candidates():
+    """Filtering that narrows but doesn't empty the candidate set is ordinary retrieval,
+    not a denial -- an entitled user with access to *something* still gets a normal
+    answer grounded in what they can see."""
+
+    store = FakeVectorStore([make_chunk("x")])
     llm = FakeLLM(response="Answer [S1].")
-    policy = _StubPolicy(allowed=True)
-    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, authorization_policy=policy)
+    retriever = FakeRetriever(
+        [
+            make_chunk("hr_doc", access_tags=("people_ops",)),
+            make_chunk("eng_doc", text="deploy runbook"),
+        ]
+    )
+    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, retriever=retriever)
 
-    ans = engine.answer("soru", auth_context=AuthContext(identity="u1", is_authenticated=True))
+    ans = engine.answer(
+        "deploy steps", auth_context=AuthContext(identity="efe", roles=("engineering",))
+    )
 
     assert ans.text == "Answer [S1]."
     assert ans.abstained is False
-    assert policy.calls == [
-        (AuthContext(identity="u1", is_authenticated=True), "document", "read")
-    ]
+    assert [c.document_id for c in [rc.chunk for rc in ans.retrieved]] == ["eng_doc"]
 
 
-def test_policy_denial_writes_an_audit_record(tmp_path):
-    store = FakeVectorStore([make_chunk("d1", text="alpha")])
-    llm = FakeLLM()
-    policy = _StubPolicy(allowed=False)
-    audit_path = tmp_path / "audit.jsonl"
-    engine = RAGEngine(
-        FakeEmbeddings(), store, llm, top_k=4,
-        authorization_policy=policy, audit_log_path=str(audit_path),
+def test_denial_with_auth_context_none_and_no_roles_behave_the_same():
+    """`auth_context=None` and an `AuthContext` with empty `roles` both satisfy no tag
+    (Decision 1/Edge cases) -- both must be denials when only restricted content
+    matches."""
+
+    store = FakeVectorStore([make_chunk("x")])
+    retriever_factory = lambda: FakeRetriever(  # noqa: E731
+        [make_chunk("hr_doc", access_tags=("people_ops",))]
     )
 
-    engine.answer("soru", auth_context=AuthContext(identity="u1", is_authenticated=True))
+    engine_none = RAGEngine(
+        FakeEmbeddings(), store, FakeLLM(), top_k=4, retriever=retriever_factory()
+    )
+    ans_none = engine_none.answer("salary bands")  # no auth_context at all
+    assert ans_none.text == ACCESS_DENIED_MESSAGE
+
+    engine_empty_roles = RAGEngine(
+        FakeEmbeddings(), store, FakeLLM(), top_k=4, retriever=retriever_factory()
+    )
+    ans_empty = engine_empty_roles.answer(
+        "salary bands", auth_context=AuthContext(identity="efe", roles=())
+    )
+    assert ans_empty.text == ACCESS_DENIED_MESSAGE
+
+
+def test_denial_writes_an_audit_record(tmp_path):
+    store = FakeVectorStore([make_chunk("x")])
+    llm = FakeLLM()
+    retriever = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",))])
+    audit_path = tmp_path / "audit.jsonl"
+    engine = RAGEngine(
+        FakeEmbeddings(), store, llm, top_k=4, retriever=retriever,
+        audit_log_path=str(audit_path),
+    )
+
+    engine.answer(
+        "salary bands",
+        auth_context=AuthContext(identity="u1", is_authenticated=True, roles=("engineering",)),
+    )
 
     assert audit_path.is_file()
     row = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
     assert row["event_type"] == "authorization_denied"
     assert row["identity"] == "u1"
     assert row["is_authenticated"] is True
+    assert row["accessed_chunks"] == []
 
 
-def test_update_and_get_authorization_policy():
-    engine = RAGEngine(FakeEmbeddings(), FakeVectorStore([make_chunk("x")]), FakeLLM())
-    assert engine.get_authorization_policy() is None
+def test_denial_probe_result_never_reaches_citations_or_retrieved():
+    """The unrestricted probe (`_is_entitlement_denial`) must never leak the restricted
+    chunk it found -- the whole point of it is to pick an outcome label, not to surface
+    content the caller isn't entitled to."""
 
-    policy = _StubPolicy(allowed=True)
-    engine.update_authorization_policy(policy)
-    assert engine.get_authorization_policy() is policy
+    store = FakeVectorStore([make_chunk("x")])
+    retriever = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",), text="salary")])
+    engine = RAGEngine(FakeEmbeddings(), store, FakeLLM(), top_k=4, retriever=retriever)
 
-    engine.update_authorization_policy(None)
-    assert engine.get_authorization_policy() is None
+    ans = engine.answer(
+        "salary bands", auth_context=AuthContext(identity="efe", roles=("engineering",))
+    )
+
+    assert ans.retrieved == []
+    assert ans.citations == []
+    assert "hr_doc" not in ans.text
+    assert "salary" not in ans.text
 
 
 def test_retrieval_query_passed_to_retriever_is_sanitized():
@@ -935,6 +1005,18 @@ def test_ingest_document_without_rag_settings_falls_back_to_the_document_default
     engine.ingest_document("body", "runbook_x.md", chunk_size=500, overlap=50)
 
     assert store._chunks[0].doc_type == "document"
+
+
+def test_ingest_document_threads_access_tags_onto_every_chunk():
+    store = FakeVectorStore()
+    engine = RAGEngine(FakeEmbeddings(), store, FakeLLM())
+
+    engine.ingest_document(
+        "body", "salary_policy.md", chunk_size=500, overlap=50,
+        access_tags=["people_ops"],
+    )
+
+    assert all(c.access_tags == ("people_ops",) for c in store._chunks)
 
 
 def test_ingest_document_enforces_rag_settings_max_upload_bytes():

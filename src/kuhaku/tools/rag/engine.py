@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 
-from kuhaku.core.auth import AuthContext, AuthorizationPolicy
+from kuhaku.core.auth import AuthContext
 from kuhaku.core.llm.base import LLMError, LLMProvider, LLMUnavailableError
 from kuhaku.core.observability import (
     bind_trace_id,
@@ -94,7 +95,6 @@ class RAGEngine:
         confidence_threshold: float = 0.15,
         cache: QueryAnswerCache | None = None,
         guard: GuardPipeline | None = None,
-        authorization_policy: AuthorizationPolicy | None = None,
         audit_log_path: str = "",
         audit_enabled: bool = True,
         llm_version: str = "",
@@ -132,11 +132,6 @@ class RAGEngine:
         # existing behavior byte-identical -- the legacy `input_guard_enabled` path above
         # is completely independent of this.
         self._guard = guard
-        # Generic authorization: optional, dormant unless configured (mirrors `guard`
-        # above) -- see kuhaku.core.auth. Checked in `_answer()` only when the caller
-        # also supplies an `auth_context`; either one absent means "allow", so no
-        # existing call site (none of which pass `auth_context`) is affected.
-        self._authorization_policy = authorization_policy
         self._audit_log_path = audit_log_path
         # D53/D55: mirrors Settings.audit_enabled -- threaded through to every
         # record_audit() call site below so a disabled audit log is an immediate,
@@ -295,18 +290,6 @@ class RAGEngine:
             self._require_methods(guard, ("evaluate",), "guard")
         self._guard = guard
 
-    def update_authorization_policy(self, policy: AuthorizationPolicy | None) -> None:
-        """Replace the authorization policy, or ``None`` to disable it.
-
-        Dormant unless both this and a caller-supplied ``auth_context`` are set (see
-        ``kuhaku.core.auth`` and ``answer()``'s own docstring) -- kuhaku's
-        zero-configuration default remains "allow everything."
-        """
-
-        if policy is not None:
-            self._require_methods(policy, ("check",), "policy")
-        self._authorization_policy = policy
-
     def get_system_prompt(self) -> str:
         """The current system prompt text (D46 hot-reload target)."""
 
@@ -363,11 +346,6 @@ class RAGEngine:
 
         return self._guard
 
-    def get_authorization_policy(self) -> AuthorizationPolicy | None:
-        """The active authorization policy, or ``None`` if disabled."""
-
-        return self._authorization_policy
-
     def get_top_k(self) -> int:
         """The default number of chunks retrieved per query."""
 
@@ -400,7 +378,13 @@ class RAGEngine:
         return self._store.count()
 
     def ingest_document(
-        self, text: str, filename: str, *, chunk_size: int, overlap: int
+        self,
+        text: str,
+        filename: str,
+        *,
+        chunk_size: int,
+        overlap: int,
+        access_tags: Sequence[str] | None = None,
     ) -> tuple[int, list[Redaction]]:
         """Sanitize, chunk, embed, and add one operator-uploaded document.
 
@@ -413,6 +397,11 @@ class RAGEngine:
         when no ``rag_settings`` was supplied) and this engine's ``EngineMessages`` are
         both threaded through, so a too-large upload is rejected with an injectable error
         instead of being silently indexed.
+
+        ``access_tags``, when given, gates every chunk this document produces (document-
+        level access filtering; see ``retriever.is_entitled``). ``None`` (the default)
+        leaves the document untagged -- visible to any caller, unchanged from before this
+        parameter existed.
 
         Also notifies ``self._retriever`` a new chunk may exist (see
         ``retriever.refresh_retriever``), so a sparse or hybrid retriever's cached BM25
@@ -427,7 +416,7 @@ class RAGEngine:
             text, filename, self._embedder, self._store,
             chunk_size=chunk_size, overlap=overlap, chunker=self._chunker,
             rag_settings=self._rag_settings, max_upload_bytes=max_upload_bytes,
-            messages=self._messages,
+            messages=self._messages, access_tags=access_tags,
         )
         chunks_added, _redactions = result
         if chunks_added:
@@ -444,14 +433,12 @@ class RAGEngine:
     ) -> list[RetrievedChunk]:
         """Retrieve the most relevant chunks for an already-sanitized query.
 
-        ``auth_context`` defaults to ``None`` and is threaded straight to the retriever
-        purely as a pass-through -- the built-in retrievers perform no filtering based on
-        it (see ``kuhaku.tools.rag.retriever.Retriever``). This method itself applies
-        no authorization check either (that lives in ``answer()``/``_answer()``, which has
-        the trace/audit context a check like that needs); a caller invoking ``retrieve()``
-        directly bypasses it, the same way it already bypasses sanitization and the input
-        guards. ``doc_type`` (4.1) defaults to ``None`` -- no filtering, identical to
-        behavior before this parameter existed.
+        ``auth_context`` is threaded straight to the retriever, which enforces
+        document-level access filtering unconditionally (see
+        ``kuhaku.tools.rag.retriever.is_entitled``) -- ``auth_context=None`` means "no
+        roles", not "no filtering": only untagged chunks are visible. There is no way to
+        disable this from here or anywhere else. ``doc_type`` (4.1) defaults to ``None``
+        -- no filtering, identical to behavior before this parameter existed.
         """
 
         return self._retriever.retrieve(
@@ -475,15 +462,15 @@ class RAGEngine:
 
         ``trace_id`` may be supplied by the caller (e.g. a future API layer); otherwise
         one is generated and bound for the duration of this call. ``auth_context`` (see
-        ``kuhaku.core.auth``) comes from the authenticated caller when the API layer
-        has one -- it reaches retrieval as a pass-through, and, when a caller has also
-        configured an ``authorization_policy``, gates access before retrieval runs (see
-        ``_answer()``). It also reaches every audit record written for this request, so
-        the trail shows who accessed what without kuhaku assuming any fixed role
-        or clearance vocabulary. Defaults to ``None`` for callers with no per-request
-        identity (unauthenticated internal use, direct engine construction in tests/eval
-        scripts), in which case neither the authorization check nor any retriever-level
-        filtering happens -- unchanged from before this feature existed.
+        ``kuhaku.core.auth``) comes from the authenticated caller when the API layer has
+        one -- retrieval enforces document-level access filtering against it
+        unconditionally (see ``kuhaku.tools.rag.retriever.is_entitled``); a caller
+        passing ``None`` (the default, for unauthenticated internal use or direct engine
+        construction in tests/eval scripts) is treated as having no roles, so only
+        untagged chunks are visible to it -- there is no separate switch to disable this.
+        ``auth_context`` also reaches every audit record written for this request, so the
+        trail shows who accessed what without kuhaku assuming any fixed role or
+        clearance vocabulary.
         """
 
         with bind_trace_id(trace_id) as tid:
@@ -626,46 +613,6 @@ class RAGEngine:
                     abstained=True,
                 )
 
-        # 3c) AUTHORIZATION: optional, generic resource/action check -- distinct from the
-        # SECURITY guards above (which validate query *content*, not caller *identity*).
-        # Only runs when the caller supplies both an `auth_context` and a configured
-        # `authorization_policy`; either one absent means "allow" (see
-        # kuhaku.core.auth's zero-configuration default-allow contract), so every
-        # existing caller of `answer()` -- none of which pass `auth_context` -- is
-        # unaffected. Placed before retrieval (like the guard v2 reject above) so a
-        # denied request never touches the vector store.
-        if auth_context is not None and self._authorization_policy is not None:
-            with instrumented_step("authorize") as rec:
-                allowed = self._authorization_policy.check(auth_context, "document", "read")
-                rec.set(allowed=allowed)
-            if not allowed:
-                logger.warning(
-                    "access denied by authorization policy",
-                    extra={"status": "access_denied"},
-                )
-                REQUEST_COUNT.add(1, {"status": "access_denied"})
-                record_audit(
-                    self._audit_log_path,
-                    enabled=self._audit_enabled,
-                    trace_id=trace_id,
-                    raw_question=question or "",
-                    sanitized_retrieval_query=retrieval_query,
-                    event_type="authorization_denied",
-                    auth_context=auth_context,
-                    accessed_chunks=[],  # retrieval never ran -- denied before it
-                    llm_version=self._llm_version,
-                    embedding_version=self._embedding_version,
-                    system_prompt_version=self._system_prompt_version,
-                )
-                return Answer(
-                    text=self._messages.access_denied,
-                    citations=[],
-                    retrieved=[],
-                    redactions=redaction_labels,
-                    trace_id=trace_id,
-                    abstained=True,
-                )
-
         # 4) Retrieve.
         try:
             corpus_is_empty = self._store.count() == 0
@@ -699,6 +646,40 @@ class RAGEngine:
         # FR1: retrieval ran but found nothing relevant -- abstain rather than let the
         # LLM improvise an ungrounded answer from an empty prompt.
         if not retrieved:
+            # SECURITY (document-level access filtering): distinguish "entitlement
+            # filtering is what emptied the candidate set" from "nothing matched the
+            # query at all" -- see `_is_entitlement_denial`. Preserves the same audit/
+            # message/metric distinction the coarse resource/action authorization gate
+            # this replaced used to provide, now derived from the filter itself instead
+            # of a separate policy check.
+            if self._is_entitlement_denial(search_query, auth_context):
+                logger.warning(
+                    "access denied by document-level access filtering",
+                    extra={"status": "access_denied"},
+                )
+                REQUEST_COUNT.add(1, {"status": "access_denied"})
+                record_audit(
+                    self._audit_log_path,
+                    enabled=self._audit_enabled,
+                    trace_id=trace_id,
+                    raw_question=question or "",
+                    sanitized_retrieval_query=retrieval_query,
+                    event_type="authorization_denied",
+                    auth_context=auth_context,
+                    accessed_chunks=[],  # every candidate was filtered out
+                    llm_version=self._llm_version,
+                    embedding_version=self._embedding_version,
+                    system_prompt_version=self._system_prompt_version,
+                )
+                return Answer(
+                    text=self._messages.access_denied,
+                    citations=[],
+                    retrieved=[],
+                    redactions=redaction_labels,
+                    trace_id=trace_id,
+                    abstained=True,
+                )
+
             logger.info("no chunks retrieved for query; abstaining", extra={"status": "no_chunks"})
             REQUEST_COUNT.add(1, {"status": "no_chunks"})
             ABSTENTION_COUNT.add(1, {"reason": "zero_chunks"})
@@ -936,6 +917,38 @@ class RAGEngine:
             # detection is disabled, found nothing, or degraded silently on failure.
             contradiction_warning=contradiction_warning,
         )
+
+    def _is_entitlement_denial(
+        self, search_query: str, auth_context: AuthContext | None
+    ) -> bool:
+        """Feature 5: whether document-level access filtering (rather than a genuine
+        lack of matches) is why retrieval came back empty.
+
+        Only ever called from the ``if not retrieved:`` branch of ``_answer()``, i.e.
+        after the real, entitlement-filtered search already ran and found nothing.
+        Re-runs the exact same search through ``self._retriever`` -- so it reflects
+        whichever strategy (dense/sparse/hybrid) is actually configured, doc_type and
+        freshness filtering included -- with entitlement filtering alone switched off
+        via the engine-internal ``enforce_entitlement=False`` (never reachable from any
+        public method; see ``Retriever.retrieve``'s own docstring). The result is used
+        for nothing except this true/false answer: it is never turned into citations,
+        never added to ``Answer.retrieved``, never reaches the LLM prompt.
+
+        Best-effort: a retrieval failure here must not turn an otherwise-normal
+        abstention into a hard failure, so it degrades to "not a denial" (the safer,
+        non-revealing default) on any exception -- same idiom as the contradiction
+        detector's own try/except in step 4.5 above.
+        """
+
+        try:
+            unrestricted = self._retriever.retrieve(
+                search_query, self._top_k, auth_context=auth_context,
+                enforce_entitlement=False,
+            )
+        except Exception:
+            logger.warning("entitlement-denial probe failed; treating as no-match", exc_info=True)
+            return False
+        return bool(unrestricted)
 
     @staticmethod
     def _extract_citations(

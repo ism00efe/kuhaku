@@ -26,7 +26,7 @@ class _RawScoreRetriever:
     def __init__(self, items: list[RetrievedChunk]) -> None:
         self._items = items
 
-    def retrieve(self, query, top_k, *, auth_context=None, doc_type=None):
+    def retrieve(self, query, top_k, *, auth_context=None, doc_type=None, enforce_entitlement=True):
         return self._items[:top_k]
 
 

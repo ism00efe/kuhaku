@@ -11,6 +11,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+# Document-level access filtering: a small, domain-neutral starting vocabulary a caller
+# can reach for instead of inventing their own tag strings (Feature 6). Plain strings and
+# nothing more -- no enum, no validation, no implied ordering or hierarchy. Passing any
+# other string works identically; these exist purely as a suggestion.
+ACCESS_TAG_PUBLIC = "public"
+ACCESS_TAG_INTERNAL = "internal"
+ACCESS_TAG_RESTRICTED = "restricted"
+
+# Chroma-specific metadata key (see vectorstore.ChromaVectorStore/retriever.py's
+# `_entitlement_where`), NOT one of the keys Chunk.metadata() itself returns: Chroma
+# rejects an empty-list metadata value outright and has no "key is absent" where-operator
+# (verified against the installed client), so an untagged chunk is instead marked with
+# this boolean key at write time, letting a `where` filter select "carries no tags"
+# without either. Defined here (not in vectorstore.py) purely so vectorstore.py and
+# retriever.py -- and tests standing in for either -- agree on the same literal.
+ACCESS_TAGS_NONE_KEY = "access_tags_none"
+
 
 @dataclass(frozen=True)
 class Document:
@@ -28,6 +45,11 @@ class Document:
     effective_date: str = ""
     obsolete: bool = False
     expiry_date: str = ""
+    # Document-level access filtering: which access tags, if any, gate this document.
+    # Empty (the default) means "visible to everyone" -- tagging is opt-in. Propagated
+    # onto every Chunk this document produces at chunk time (see chunking.py), the same
+    # way effective_date/obsolete/expiry_date already are.
+    access_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,8 +70,13 @@ class Chunk:
     effective_date: str = ""
     obsolete: bool = False
     expiry_date: str = ""
+    # Same access-filtering field as Document, inherited at chunk time (chunking.py).
+    # Flat set semantics only: a chunk is visible when untagged, or when at least one tag
+    # here also appears in an AuthContext's roles (see retriever.py's `is_entitled`, the
+    # single place this field's meaning is interpreted) -- no hierarchy, no ordering.
+    access_tags: tuple[str, ...] = ()
 
-    def metadata(self) -> dict[str, str | int | bool]:
+    def metadata(self) -> dict[str, str | int | bool | list[str]]:
         """Flat metadata dict stored alongside the vector (used for citations)."""
 
         return {
@@ -62,6 +89,7 @@ class Chunk:
             "effective_date": self.effective_date,
             "obsolete": self.obsolete,
             "expiry_date": self.expiry_date,
+            "access_tags": list(self.access_tags),
         }
 
     def is_fresh(self, *, as_of: date | None = None) -> bool:

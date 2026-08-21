@@ -32,7 +32,16 @@ from .ingestion import (
 )
 from .loader import DocumentLoader, FileSystemLoader
 from .messages import DEFAULT_ENGINE_MESSAGES, EngineMessages
-from .models import Answer, Chunk, Citation, Document, RetrievedChunk
+from .models import (
+    ACCESS_TAG_INTERNAL,
+    ACCESS_TAG_PUBLIC,
+    ACCESS_TAG_RESTRICTED,
+    Answer,
+    Chunk,
+    Citation,
+    Document,
+    RetrievedChunk,
+)
 from .query_rewriter import QueryRewriter
 from .reranker import CrossEncoderReranker, Reranker
 from .retriever import (
@@ -40,6 +49,7 @@ from .retriever import (
     HybridRetriever,
     Retriever,
     SparseRetriever,
+    is_entitled,
     reciprocal_rank_fusion,
 )
 from .sparse_retriever import BM25Retriever, StoreBackedBM25Retriever, build_bm25_from_store
@@ -80,6 +90,7 @@ __all__ = [
     "HybridRetriever",
     "SparseRetriever",
     "reciprocal_rank_fusion",
+    "is_entitled",
     "BM25Retriever",
     "StoreBackedBM25Retriever",
     "build_bm25_from_store",
@@ -97,4 +108,8 @@ __all__ = [
     # Domain constants externalization
     "EngineMessages",
     "DEFAULT_ENGINE_MESSAGES",
+    # Document-level access filtering: default tag vocabulary (Feature 6, suggestions only)
+    "ACCESS_TAG_PUBLIC",
+    "ACCESS_TAG_INTERNAL",
+    "ACCESS_TAG_RESTRICTED",
 ]

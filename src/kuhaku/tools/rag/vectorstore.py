@@ -13,7 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from tenacity import wait_fixed
 
-from kuhaku.tools.rag.models import Chunk, RetrievedChunk
+from kuhaku.tools.rag.models import ACCESS_TAGS_NONE_KEY, Chunk, RetrievedChunk
 from kuhaku.core.retry import call_with_retry
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,21 @@ class VectorStore(Protocol):
 
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None: ...
 
-    def query(self, embedding: list[float], top_k: int) -> list[RetrievedChunk]: ...
+    def query(
+        self,
+        embedding: list[float],
+        top_k: int,
+        *,
+        where: Mapping[str, Any] | None = None,
+    ) -> list[RetrievedChunk]:
+        """``where``, when given, is a backend-native metadata filter applied *before*
+        similarity ranking (not a post-hoc trim of the ranked results) -- for
+        :class:`ChromaVectorStore` this is Chroma's own ``where`` filter syntax. Used by
+        :class:`~kuhaku.tools.rag.retriever.DenseRetriever` to push document-level access
+        filtering down into the query itself (Feature 3: filter before rank). ``None``
+        (the default) means no filtering, unchanged from before this parameter existed.
+        """
+        ...
 
     def count(self) -> int: ...
 
@@ -108,12 +122,13 @@ class ChromaVectorStore:
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
         if not chunks:
             return
+        metadatas = [self._to_stored_metadata(c) for c in chunks]
         try:
             self._collection.add(
                 ids=[c.id for c in chunks],
                 embeddings=embeddings,  # type: ignore[arg-type]
                 documents=[c.text for c in chunks],
-                metadatas=[dict(c.metadata()) for c in chunks],
+                metadatas=metadatas,
             )
         except Exception as e:
             if "does not exist" in str(e).lower():
@@ -121,12 +136,39 @@ class ChromaVectorStore:
                     ids=[c.id for c in chunks],
                     embeddings=embeddings,  # type: ignore[arg-type]
                     documents=[c.text for c in chunks],
-                    metadatas=[dict(c.metadata()) for c in chunks],
+                    metadatas=metadatas,
                 )
             else:
                 raise
 
-    def query(self, embedding: list[float], top_k: int) -> list[RetrievedChunk]:
+    @staticmethod
+    def _to_stored_metadata(chunk: Chunk) -> dict[str, Any]:
+        """``Chunk.metadata()`` -> the exact dict written to Chroma.
+
+        Chroma rejects an empty-list metadata value outright (verified against the
+        installed client: ``add()`` raises rather than storing ``[]``), so an untagged
+        chunk's ``"access_tags"`` key is dropped instead of stored empty; in its place,
+        ``ACCESS_TAGS_NONE_KEY`` is set so a `where` filter can still select "carries no
+        tags" -- this Chroma version has no ``$exists``-style operator either (also
+        verified directly). Never part of ``Chunk.metadata()``'s own shape: purely a
+        storage/query-time detail of this backend.
+        """
+
+        meta = dict(chunk.metadata())
+        tags = meta.pop("access_tags")
+        if tags:
+            meta["access_tags"] = tags
+        else:
+            meta[ACCESS_TAGS_NONE_KEY] = True
+        return meta
+
+    def query(
+        self,
+        embedding: list[float],
+        top_k: int,
+        *,
+        where: Mapping[str, Any] | None = None,
+    ) -> list[RetrievedChunk]:
         # Constant backoff (not exponential): disk I/O contention recovers fast, so
         # exponential growth is overkill here (D40). Only .query() is retried -- .add()
         # (ingestion), .count(), .reset() are unaffected.
@@ -135,6 +177,7 @@ class ChromaVectorStore:
                 lambda: self._collection.query(
                     query_embeddings=[embedding],  # type: ignore[arg-type]
                     n_results=top_k,
+                    where=where,  # type: ignore[arg-type]
                     include=["documents", "metadatas", "distances"],
                 ),
                 service="vectorstore",
@@ -149,6 +192,7 @@ class ChromaVectorStore:
                     lambda: self._collection.query(
                         query_embeddings=[embedding],  # type: ignore[arg-type]
                         n_results=top_k,
+                        where=where,  # type: ignore[arg-type]
                         include=["documents", "metadatas", "distances"],
                     ),
                     service="vectorstore",
@@ -292,6 +336,10 @@ class ChromaVectorStore:
             effective_date=str(meta.get("effective_date", "")),
             obsolete=bool(meta.get("obsolete", False)),
             expiry_date=str(meta.get("expiry_date", "")),
+            # Absent for an untagged chunk (see _to_stored_metadata) and for any row
+            # written before this field existed -- both default to "no tags", identical
+            # to Chunk's own field default.
+            access_tags=tuple(meta.get("access_tags") or ()),
         )
 
     def count(self) -> int:

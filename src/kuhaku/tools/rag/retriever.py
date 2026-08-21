@@ -16,9 +16,9 @@ similarity and a BM25 score — which is exactly why it is the standard choice h
 from __future__ import annotations
 
 import logging
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-from kuhaku.tools.rag.models import Chunk, RetrievedChunk
+from kuhaku.tools.rag.models import ACCESS_TAGS_NONE_KEY, Chunk, RetrievedChunk
 from kuhaku.core.auth import AuthContext
 from kuhaku.core.observability import instrumented_step
 
@@ -34,10 +34,17 @@ logger = logging.getLogger("kuhaku.tools.rag.retriever")
 class Retriever(Protocol):
     """Returns the most relevant chunks for a (already sanitized) query.
 
-    ``auth_context`` is threaded through purely as a pass-through for custom
-    implementations that want to filter on it -- the built-in retrievers below perform no
-    filtering of their own based on it (see ``RAGEngine``'s ``authorization_policy``,
-    which is where access decisions are made; ``kuhaku.core.auth``).
+    ``auth_context`` gates document-level access: every built-in retriever below enforces
+    ``is_entitled`` (see below) before ranking/truncating to ``top_k`` -- a chunk the
+    caller is not entitled to see never enters the ranked result at all, let alone the
+    LLM prompt. ``auth_context=None`` is not "no restriction"; it means "no roles", so
+    only untagged chunks are visible (see ``is_entitled``'s own docstring).
+
+    ``enforce_entitlement`` defaults to ``True`` everywhere and is not reachable from any
+    public ``RAGEngine``/``RAG`` method -- it exists solely so ``RAGEngine`` can ask,
+    internally, "would this query have matched at all, ignoring entitlement" to tell a
+    denial apart from a genuine no-match (see ``RAGEngine._is_entitlement_denial``, and
+    Decision 3: there is deliberately no caller-facing switch to disable filtering).
     """
 
     def retrieve(
@@ -47,6 +54,7 @@ class Retriever(Protocol):
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]: ...
 
 
@@ -82,6 +90,47 @@ def _filter_by_doc_type(
     return [item for item in items if item.chunk.doc_type == doc_type]
 
 
+def is_entitled(chunk: Chunk, auth_context: AuthContext | None) -> bool:
+    """Document-level access filtering: the single rule every retrieval strategy
+    enforces, so it needs defining in exactly one place (dense translates the same rule
+    into a Chroma ``where`` filter -- see ``_entitlement_where`` below -- rather than
+    calling this directly, but the two must always agree).
+
+    Flat set intersection only (no hierarchy, no ordering, no tag implies another): a
+    chunk with no ``access_tags`` is visible to everyone -- tagging is opt-in. A tagged
+    chunk is visible only when at least one of its tags also appears in
+    ``auth_context.roles``. ``auth_context=None`` satisfies no tag at all (equivalent to
+    an ``AuthContext`` with empty ``roles``), so it can only ever see untagged chunks --
+    there is no separate "disabled" state where filtering is skipped.
+
+    This is the seam a future caller-supplied predicate would replace: every call site
+    below calls this one function rather than inlining the set-intersection check.
+    """
+
+    if not chunk.access_tags:
+        return True
+    if auth_context is None:
+        return False
+    return not set(chunk.access_tags).isdisjoint(auth_context.roles)
+
+
+def _entitlement_where(auth_context: AuthContext | None) -> dict[str, Any]:
+    """``is_entitled``, expressed as a Chroma ``where`` filter -- the dense push-down
+    (Feature 3): match chunks carrying no tags at all (``ACCESS_TAGS_NONE_KEY``, set at
+    write time -- see ``vectorstore.ChromaVectorStore._to_stored_metadata``), OR chunks
+    whose stored ``access_tags`` list ``$contains`` at least one of the caller's roles.
+
+    Always applied, even when ``auth_context is None`` or has empty ``roles`` -- in both
+    cases this reduces to the single untagged-only clause, never "no filter at all"; see
+    ``is_entitled``.
+    """
+
+    roles = auth_context.roles if auth_context is not None else ()
+    clauses: list[dict[str, Any]] = [{ACCESS_TAGS_NONE_KEY: True}]
+    clauses.extend({"access_tags": {"$contains": role}} for role in roles if role)
+    return clauses[0] if len(clauses) == 1 else {"$or": clauses}
+
+
 class DenseRetriever:
     """Adapter exposing the existing embedder + vector store as a ``Retriever``."""
 
@@ -98,6 +147,7 @@ class DenseRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         if top_k <= 0:
             return []
@@ -107,7 +157,12 @@ class DenseRetriever:
             except Exception as exc:
                 raise EmbeddingServiceError(f"Query embedding failed: {exc}") from exc
         try:
-            candidates = self._store.query(query_vector, top_k)
+            # Feature 3: entitlement is pushed into the query itself -- an ineligible
+            # chunk is never scored/ranked in the first place, so it can never crowd an
+            # eligible chunk out of `top_k` (the failure mode a post-query filter would
+            # have). See `_entitlement_where`.
+            where = _entitlement_where(auth_context) if enforce_entitlement else None
+            candidates = self._store.query(query_vector, top_k, where=where)
         except Exception as exc:
             raise VectorStoreError(f"Vector store query failed: {exc}") from exc
 
@@ -301,6 +356,7 @@ class SparseRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         if top_k <= 0:
             return []
@@ -309,7 +365,8 @@ class SparseRetriever:
         # rationale as HybridRetriever's own `depth`.
         depth = max(self._candidates, top_k)
         ranking = self._sparse.retrieve(
-            query, depth, auth_context=auth_context, doc_type=doc_type
+            query, depth, auth_context=auth_context, doc_type=doc_type,
+            enforce_entitlement=enforce_entitlement,
         )
         normalized_scores = _min_max_normalize([item.score for item in ranking])
         candidates = [
@@ -374,6 +431,7 @@ class HybridRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         if top_k <= 0:
             return []
@@ -381,13 +439,15 @@ class HybridRetriever:
         # Pull a deeper candidate pool than top_k so fusion/re-ranking have room to work.
         depth = max(self._candidates, top_k)
         dense_ranking = self._dense.retrieve(
-            query, depth, auth_context=auth_context, doc_type=doc_type
+            query, depth, auth_context=auth_context, doc_type=doc_type,
+            enforce_entitlement=enforce_entitlement,
         )
         rankings = [dense_ranking]
         sparse_ranking: list[RetrievedChunk] | None = None
         if self._sparse is not None:
             sparse_ranking = self._sparse.retrieve(
-                query, depth, auth_context=auth_context, doc_type=doc_type
+                query, depth, auth_context=auth_context, doc_type=doc_type,
+                enforce_entitlement=enforce_entitlement,
             )
             rankings.append(sparse_ranking)
 

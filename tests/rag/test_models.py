@@ -23,6 +23,7 @@ def test_chunk_metadata_shape():
         "effective_date": "",
         "obsolete": False,
         "expiry_date": "",
+        "access_tags": [],
     }
 
 

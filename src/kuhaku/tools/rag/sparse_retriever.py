@@ -21,6 +21,7 @@ from collections import Counter
 from kuhaku.tools.rag.models import Chunk, RetrievedChunk
 from kuhaku.core.auth import AuthContext
 
+from .retriever import is_entitled
 from .vectorstore import VectorStore
 
 logger = logging.getLogger("kuhaku.tools.rag.sparse_retriever")
@@ -83,6 +84,7 @@ class BM25Retriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` highest-scoring chunks (score > 0 only)."""
 
@@ -100,7 +102,22 @@ class BM25Retriever:
                 contribution = idf * (freq * (self._k1 + 1)) / (freq + self._k1 * norm)
                 scores[doc_idx] = scores.get(doc_idx, 0.0) + contribution
 
-        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+        # Feature 3: entitlement narrows the candidate set *before* ranking/truncation --
+        # unlike the freshness filter below (pre-existing behavior, applied only within
+        # the already-truncated top_k window), an ineligible high-scoring chunk must
+        # never crowd an eligible lower-scoring one out of the top_k window.
+        # `enforce_entitlement=False` is engine-internal only (see RAGEngine
+        # ._is_entitlement_denial) -- never reachable from any public method.
+        entitled = (
+            {
+                idx: s
+                for idx, s in scores.items()
+                if is_entitled(self._chunks[idx], auth_context)
+            }
+            if enforce_entitlement
+            else scores
+        )
+        ranked = sorted(entitled.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
         # FR4: same freshness filter as DenseRetriever, so RRF fusion cannot resurface
         # an obsolete/out-of-window chunk via the sparse side (see DECISIONS.md D35).
         fresh = [
@@ -171,9 +188,11 @@ class StoreBackedBM25Retriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
+        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         return self._current().retrieve(
-            query, top_k, auth_context=auth_context, doc_type=doc_type
+            query, top_k, auth_context=auth_context, doc_type=doc_type,
+            enforce_entitlement=enforce_entitlement,
         )
 
 
