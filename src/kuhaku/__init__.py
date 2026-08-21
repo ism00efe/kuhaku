@@ -16,6 +16,7 @@ follows.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -37,6 +38,7 @@ from .tools.rag import (
     CrossEncoderReranker,
     DenseRetriever,
     HybridRetriever,
+    QueryAnswerCache,
     RAGEngine,
     RAGSettings,
     Retriever,
@@ -48,6 +50,8 @@ from .tools.rag import (
     extract_text,
 )
 from .tools.rag.prompts import load_system_prompt
+
+logger = logging.getLogger(__name__)
 
 __version__ = "0.1.0"
 
@@ -94,6 +98,7 @@ class RAG:
         vertex_location: str | None = None,
         audit_enabled: bool | None = None,
         audit_log_path: str | None = None,
+        cache: bool | str | None = None,
         persona: str | None = None,
         language_policy: str | None = None,
         system_prompt: str | None = None,
@@ -134,6 +139,22 @@ class RAG:
             audit_log_path: where audit records are written; ``None`` uses
                 ``Settings.audit_log_path`` if set, otherwise the kuhaku-managed
                 default (``./logs/kuhaku_audit.jsonl``).
+            cache: the query-answer cache (FR2). ``None`` (default) defers to
+                ``RAGSettings.cache_enabled`` (``True`` by default) and
+                ``RAGSettings.cache_db_path`` -- a caller who configures nothing gets
+                caching, at the kuhaku-managed default location
+                (``./data/kuhaku_qa_cache.sqlite3``). ``False`` disables caching
+                outright (no cache file is created). ``True`` forces caching on at
+                ``RAGSettings.cache_db_path``/the default location. A ``str`` forces
+                caching on at that explicit path, overriding ``RAGSettings.cache_db_path``.
+                ``RAGSettings.cache_ttl_seconds`` governs expiry in every case where a
+                cache is built. Building a cache here never itself touches disk --
+                schema creation is lazy, on the first request that actually reaches the
+                cache lookup (see ``rag/cache.py``) -- so a bare ``RAG()`` (or one whose
+                every request abstains before that point) creates no file. A cache that
+                cannot be created or opened when it is finally used (read-only
+                directory, corrupt file) degrades to no caching with a logged warning --
+                it never fails a query.
             persona: overrides the system prompt's persona layer (who the assistant is);
                 ``None`` uses the framework's neutral default (a general-purpose
                 assistant that answers from the supplied reference material). One layer
@@ -222,6 +243,7 @@ class RAG:
             llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
         self._llm = llm
         self._retriever = self._build_retriever(retrieval, reranker)
+        self._cache = self._build_cache(cache)
 
         # `system_prompt` replaces the whole thing outright; `persona`/`language_policy`
         # each override one layer of the framework-assembled prompt while leaving the
@@ -248,6 +270,7 @@ class RAG:
             confidence_threshold=rs.rag_confidence_threshold,
             audit_enabled=s.audit_enabled,
             audit_log_path=s.audit_log_path or "",
+            cache=self._cache,
             system_prompt=resolved_system_prompt,
             rag_settings=rs,
         )
@@ -291,6 +314,47 @@ class RAG:
             candidates=rs.rerank_candidates,
             max_chunks_per_document=rs.max_chunks_per_document,
         )
+
+    def _build_cache(self, cache: bool | str | None) -> QueryAnswerCache | None:
+        """The one construction site for the query-answer cache (FR2).
+
+        Deliberately three-state (``bool | str | None``), not the two-state
+        ``bool | str`` shape :meth:`_build_retriever`'s ``reranker`` uses: nothing here
+        reads ``RAGSettings.rerank_enabled``, so ``reranker``'s own facade default of
+        ``False`` is a safe stand-in for "not configured". ``RAGSettings.cache_enabled``
+        is different -- it defaults to ``True`` -- so "not configured" and "explicitly
+        off" must stay distinguishable, which needs a third state. ``None`` supplies
+        that state and mirrors ``audit_enabled: bool | None``'s own precedent above:
+        "the caller configured nothing" defers to ``RAGSettings.cache_enabled``/
+        ``cache_db_path`` rather than forcing a facade-level default that would
+        silently override them.
+
+        Never raises: ``QueryAnswerCache.__init__`` does no I/O at all (schema creation
+        is lazy -- see ``rag/cache.py``), and this adds one more layer of defense so a
+        cache that fails to build for some other reason disables caching rather than
+        failing ``RAG()`` construction outright.
+        """
+
+        rs = self._rag_settings
+        if cache is False:
+            return None
+        if cache is None:
+            if not rs.cache_enabled:
+                return None
+            db_path = rs.cache_db_path
+        elif cache is True:
+            db_path = rs.cache_db_path
+        else:
+            db_path = cache
+
+        try:
+            return QueryAnswerCache(db_path, rs.cache_ttl_seconds)
+        except Exception:
+            logger.warning(
+                "failed to initialize the query-answer cache; caching disabled",
+                exc_info=True,
+            )
+            return None
 
     def ingest(
         self,

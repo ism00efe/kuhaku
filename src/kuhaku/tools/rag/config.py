@@ -88,6 +88,11 @@ class RAGSettings:
     # --- Query-answer cache (SQLite) --------------------------------------------------
     cache_enabled: bool = True
     cache_ttl_seconds: int = 3600
+    # Mirrors Settings.audit_log_path's own convention: "" (the default) means "use the
+    # kuhaku-managed default location" (./data/kuhaku_qa_cache.sqlite3, created if
+    # missing -- see rag/cache.py's _DEFAULT_CACHE_DB_PATH), not "caching disabled" --
+    # that's what cache_enabled is for.
+    cache_db_path: str = ""
 
     # --- Model and prompt versioning (D42) --------------------------------------------
     prod_prompt_version: str = "v2"

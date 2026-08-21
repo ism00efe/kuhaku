@@ -30,7 +30,11 @@ def fake_rag_environment(monkeypatch):
     _patch_rag_deps(monkeypatch, fake_store, fake_embedder, fake_llm)
 
     settings = Settings(_env_file=None, audit_enabled=False)
-    rag = RAG(settings=settings)
+    # cache=False: these tests don't exercise caching, and cache_enabled defaults to
+    # True (Feature 2) -- without this, a test whose ask() reaches generation would
+    # write a real ./data/kuhaku_qa_cache.sqlite3 relative to the test runner's cwd.
+    # See tests/test_rag_cache_facade.py for the dedicated cache tests.
+    rag = RAG(settings=settings, cache=False)
     return rag, fake_store, fake_embedder, fake_llm
 
 
@@ -42,6 +46,7 @@ def build_rag(monkeypatch):
     def _build(**kwargs):
         _patch_rag_deps(monkeypatch, FakeVectorStore(), FakeEmbeddings(), FakeLLM())
         settings = Settings(_env_file=None, audit_enabled=False)
+        kwargs.setdefault("cache", False)  # see fake_rag_environment above
         return RAG(settings=settings, **kwargs)
 
     return _build

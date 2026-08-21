@@ -42,6 +42,7 @@ from kuhaku.core.security import (
     inspect_query,
     record_audit,
 )
+from kuhaku.core.security.audit import AuditWriteError
 from kuhaku.evaluation.sample import EvaluationSample
 from kuhaku.tools.rag.models import Answer, Citation, RetrievedChunk
 
@@ -495,6 +496,64 @@ class RAGEngine:
             metadata={"trace_id": result.trace_id, "abstained": result.abstained},
         )
 
+    def _write_audit(
+        self,
+        *,
+        trace_id: str,
+        raw_question: str,
+        sanitized_retrieval_query: str,
+        event_type: str,
+        auth_context: AuthContext | None,
+        accessed_chunks: list[str],
+        decision: GuardDecision | None = None,
+        guard_version: str | None = None,
+        model_version: str | None = None,
+        thresholds: tuple[float, float] | None = None,
+        output_checks: dict[str, object] | None = None,
+    ) -> None:
+        """One audit record for one request outcome (D41/FR8 extended to every exit of
+        ``_answer``, not just the two D41 originally covered).
+
+        ``event_type`` names the outcome (mirrors the ``REQUEST_COUNT`` status label at
+        the same exit, e.g. ``"empty_kb"``, ``"ok"``) so the audit trail can answer "what
+        happened", not just "who asked". Always ids/counts (``accessed_chunks``), never
+        chunk text or access tags -- same restriction the pre-existing successful-path
+        call already observed.
+
+        ``record_audit`` deliberately raises ``AuditWriteError`` while enabled (D53) so
+        an operator notices a broken audit sink -- but the record is written *for* the
+        operator, never read by the caller, so a broken sink must not turn an otherwise-
+        successful answer into a failed request. The write failure is still visible: the
+        exception is logged (with the metric ``record_audit`` itself already emitted
+        before raising), just not propagated past this point.
+        """
+
+        try:
+            record_audit(
+                self._audit_log_path,
+                enabled=self._audit_enabled,
+                trace_id=trace_id,
+                raw_question=raw_question,
+                sanitized_retrieval_query=sanitized_retrieval_query,
+                event_type=event_type,
+                decision=decision,
+                guard_version=guard_version,
+                model_version=model_version,
+                thresholds=thresholds,
+                output_checks=output_checks,
+                auth_context=auth_context,
+                accessed_chunks=accessed_chunks,
+                llm_version=self._llm_version,
+                embedding_version=self._embedding_version,
+                system_prompt_version=self._system_prompt_version,
+            )
+        except AuditWriteError:
+            logger.error(
+                "audit record could not be written; answer unaffected",
+                extra={"event_type": event_type, "trace_id": trace_id},
+                exc_info=True,
+            )
+
     def _answer(
         self,
         question: str,
@@ -535,6 +594,14 @@ class RAGEngine:
             )
         if not retrieval_query:
             REQUEST_COUNT.add(1, {"status": "empty"})
+            self._write_audit(
+                trace_id=trace_id,
+                raw_question=question or "",
+                sanitized_retrieval_query=retrieval_query,
+                event_type="empty",
+                auth_context=auth_context,
+                accessed_chunks=[],
+            )
             return Answer(
                 text=self._messages.empty_query,
                 citations=[],
@@ -556,6 +623,14 @@ class RAGEngine:
                     extra={"reason": reason, "status": "blocked"},
                 )
                 REQUEST_COUNT.add(1, {"status": "blocked"})
+                self._write_audit(
+                    trace_id=trace_id,
+                    raw_question=question or "",
+                    sanitized_retrieval_query=retrieval_query,
+                    event_type="blocked",
+                    auth_context=auth_context,
+                    accessed_chunks=[],
+                )
                 return Answer(
                     text=REFUSAL_MESSAGE,
                     citations=[],
@@ -587,22 +662,17 @@ class RAGEngine:
                     extra={"status": "guard_v2_reject", "guard_zone": "reject"},
                 )
                 REQUEST_COUNT.add(1, {"status": "guard_v2_reject"})
-                record_audit(
-                    self._audit_log_path,
-                    enabled=self._audit_enabled,
+                self._write_audit(
                     trace_id=trace_id,
                     raw_question=question or "",
                     sanitized_retrieval_query=retrieval_query,
+                    event_type="guard_v2_reject",
                     decision=guard_decision,
                     guard_version=self._guard.guard_version,
                     model_version=self._guard.model_version,
                     thresholds=(self._guard.low_threshold, self._guard.high_threshold),
-                    output_checks=None,
                     auth_context=auth_context,
                     accessed_chunks=[],  # retrieval never ran -- rejected before it
-                    llm_version=self._llm_version,
-                    embedding_version=self._embedding_version,
-                    system_prompt_version=self._system_prompt_version,
                 )
                 return Answer(
                     text=GUARD_REJECT_MESSAGE,
@@ -620,6 +690,14 @@ class RAGEngine:
             raise VectorStoreError(f"Vector store count failed: {exc}") from exc
         if corpus_is_empty:
             REQUEST_COUNT.add(1, {"status": "empty_kb"})
+            self._write_audit(
+                trace_id=trace_id,
+                raw_question=question or "",
+                sanitized_retrieval_query=retrieval_query,
+                event_type="empty_kb",
+                auth_context=auth_context,
+                accessed_chunks=[],
+            )
             return Answer(
                 text=self._messages.empty_kb,
                 citations=[],
@@ -653,6 +731,14 @@ class RAGEngine:
             logger.info("no chunks retrieved for query; abstaining", extra={"status": "no_chunks"})
             REQUEST_COUNT.add(1, {"status": "no_chunks"})
             ABSTENTION_COUNT.add(1, {"reason": "zero_chunks"})
+            self._write_audit(
+                trace_id=trace_id,
+                raw_question=question or "",
+                sanitized_retrieval_query=retrieval_query,
+                event_type="no_chunks",
+                auth_context=auth_context,
+                accessed_chunks=[],
+            )
             return Answer(
                 text=self._messages.no_chunks,
                 citations=[],
@@ -673,6 +759,18 @@ class RAGEngine:
                 },
             )
             ABSTENTION_COUNT.add(1, {"reason": "low_confidence"})
+            # No REQUEST_COUNT status label existed for this exit before this feature --
+            # "low_confidence" is the one chosen here, used only as the audit event_type
+            # (mirrors ABSTENTION_COUNT's own "low_confidence" reason above);
+            # REQUEST_COUNT itself is left as-is, out of this feature's scope.
+            self._write_audit(
+                trace_id=trace_id,
+                raw_question=question or "",
+                sanitized_retrieval_query=retrieval_query,
+                event_type="low_confidence",
+                auth_context=auth_context,
+                accessed_chunks=[c.chunk.id for c in retrieved],
+            )
             return Answer(
                 text=self._messages.no_chunks,
                 citations=[],
@@ -824,12 +922,11 @@ class RAGEngine:
             elif guard_decision.zone == "restricted":
                 text = f"{text}\n\n{RESTRICTED_WARNING}"
 
-            record_audit(
-                self._audit_log_path,
-                enabled=self._audit_enabled,
+            self._write_audit(
                 trace_id=trace_id,
                 raw_question=question or "",
                 sanitized_retrieval_query=retrieval_query,
+                event_type="ok",
                 decision=guard_decision,
                 guard_version=self._guard.guard_version,
                 model_version=self._guard.model_version,
@@ -842,25 +939,18 @@ class RAGEngine:
                 },
                 auth_context=auth_context,
                 accessed_chunks=[c.chunk.id for c in retrieved],
-                llm_version=self._llm_version,
-                embedding_version=self._embedding_version,
-                system_prompt_version=self._system_prompt_version,
             )
         elif self._guard is None:
             # D41/FR8: unconditional per-request audit record when guard v2 is disabled
             # -- the branch above already wrote one when guard ran, so this is the only
             # remaining path that reaches "the end" of _answer() with none written yet.
-            record_audit(
-                self._audit_log_path,
-                enabled=self._audit_enabled,
+            self._write_audit(
                 trace_id=trace_id,
                 raw_question=question or "",
                 sanitized_retrieval_query=retrieval_query,
+                event_type="ok",
                 auth_context=auth_context,
                 accessed_chunks=[c.chunk.id for c in retrieved],
-                llm_version=self._llm_version,
-                embedding_version=self._embedding_version,
-                system_prompt_version=self._system_prompt_version,
             )
 
         REQUEST_COUNT.add(1, {"status": "ok"})

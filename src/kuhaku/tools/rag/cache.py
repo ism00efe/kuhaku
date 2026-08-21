@@ -26,6 +26,7 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,12 @@ logger = logging.getLogger(__name__)
 # (`doc_id::index`), or prompt version ("v1") can plausibly contain, so it cannot cause
 # two distinct inputs to collide onto the same hash.
 _KEY_SEP = "\x1f"
+
+# Fallback location when RAGSettings.cache_db_path is unset/empty, so the cache is on by
+# default (RAGSettings.cache_enabled=True) without requiring an explicit path -- mirrors
+# core/security/audit.py's _DEFAULT_AUDIT_LOG_PATH convention (relative to the process's
+# current working directory, created if missing).
+_DEFAULT_CACHE_DB_PATH = "./data/kuhaku_qa_cache.sqlite3"
 
 
 def compute_cache_key(
@@ -65,12 +72,25 @@ def compute_cache_key(
 
 
 class QueryAnswerCache:
-    """Get/put the cached answer text for a cache key, with a TTL."""
+    """Get/put the cached answer text for a cache key, with a TTL.
+
+    ``db_path`` empty/``None`` (``RAGSettings.cache_db_path``'s own default) falls back
+    to :data:`_DEFAULT_CACHE_DB_PATH`.
+
+    Deliberately touches no filesystem state in ``__init__`` -- schema creation is
+    lazy, on first :meth:`get`/:meth:`put` (see ``_ensure_schema``). ``RAG.__init__``
+    builds one of these unconditionally whenever ``RAGSettings.cache_enabled`` is true
+    (its default), so *constructing* a cache must not itself be a guaranteed disk
+    write: plenty of ``RAG()`` callers (including ones that never call ``ask()``, or
+    whose every request abstains before the cache lookup even runs) would otherwise
+    create a database file they never use. This mirrors ``audit_log_path``'s own "no
+    write until there's something to write" behavior.
+    """
 
     def __init__(self, db_path: str, ttl_seconds: int) -> None:
-        self._db_path = db_path
+        self._db_path = db_path or _DEFAULT_CACHE_DB_PATH
         self._ttl_seconds = ttl_seconds
-        self._ensure_schema()
+        self._schema_ready = False
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -82,7 +102,29 @@ class QueryAnswerCache:
         finally:
             conn.close()
 
-    def _ensure_schema(self) -> None:
+    def _ensure_schema(self) -> bool:
+        """Create the table on first use, memoized so steady-state get/put calls skip
+        straight to their own query. Returns whether the schema is usable -- ``False``
+        leaves ``_schema_ready`` unset so the next call retries (a transient failure,
+        e.g. a directory that becomes writable later, self-heals)."""
+
+        if self._schema_ready:
+            return True
+
+        # sqlite3.connect() does not create missing parent directories (unlike
+        # security/audit.py's file-append path) -- do that first so a fresh default
+        # location (./data/) works out of the box. A read-only/unwritable parent must
+        # degrade to no caching, not fail the caller -- same idiom as the sqlite3.Error
+        # catch below.
+        try:
+            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            logger.warning(
+                "could not create qa_cache directory; caching disabled for this process",
+                exc_info=True,
+            )
+            return False
+
         try:
             with self._connection() as conn:
                 conn.execute(
@@ -97,9 +139,16 @@ class QueryAnswerCache:
                 "qa_cache schema init failed; caching disabled for this process",
                 exc_info=True,
             )
+            return False
+
+        self._schema_ready = True
+        return True
 
     def get(self, cache_key: str) -> str | None:
         """Return the cached answer text, or ``None`` on a miss/expiry/failure."""
+
+        if not self._ensure_schema():
+            return None
 
         try:
             with self._connection() as conn:
@@ -121,6 +170,9 @@ class QueryAnswerCache:
 
     def put(self, cache_key: str, answer_text: str) -> None:
         """Best-effort write; a failure here must never affect the caller's response."""
+
+        if not self._ensure_schema():
+            return
 
         try:
             with self._connection() as conn:
