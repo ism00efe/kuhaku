@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 # -- RAGEngine response strings ----------------------------------------------------
 
-EMPTY_QUERY_MESSAGE = "Please enter a question or upload a log file."
+EMPTY_QUERY_MESSAGE = "Please enter a question or provide some context."
 EMPTY_KB_MESSAGE = "The knowledge base appears to be empty. Please ingest documents first."
 NO_CHUNKS_MESSAGE = "Sorry, no documents relevant to this question were found in the knowledge base."
 ACCESS_DENIED_MESSAGE = "Sorry, you do not have permission to access documents for this request."
@@ -21,6 +21,9 @@ ACCESS_DENIED_MESSAGE = "Sorry, you do not have permission to access documents f
 UNVERIFIED_CITATIONS_WARNING_TEMPLATE = (
     "\n\n⚠️ Warning: some source references in this response ([{joined}]) could not be verified."
 )
+# Prefix RAGEngine._answer() attaches to the summarized context_text before appending it
+# to the retrieval query (e.g. "Context: error_code=E1001; status=failed").
+CONTEXT_LABEL = "Context:"
 
 # -- User prompt template pieces (rag/prompts.py's build_user_prompt) --------------
 
@@ -63,6 +66,7 @@ class EngineMessages:
     no_chunks: str = NO_CHUNKS_MESSAGE
     access_denied: str = ACCESS_DENIED_MESSAGE
     unverified_citations_warning: str = UNVERIFIED_CITATIONS_WARNING_TEMPLATE
+    context_label: str = CONTEXT_LABEL
     question_label: str = QUESTION_LABEL
     sources_label: str = SOURCES_LABEL
     no_sources_fallback: str = NO_SOURCES_FALLBACK

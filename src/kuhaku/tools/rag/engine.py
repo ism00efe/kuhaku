@@ -1,7 +1,7 @@
 """The RAG engine: the heart of the pipeline.
 
 Orchestrates the online query path:
-    sanitize -> (optional) log summary -> guard -> guard v2 (opt-in) -> retrieve ->
+    sanitize -> (optional) context summary -> guard -> guard v2 (opt-in) -> retrieve ->
     cache check -> prompt -> generate -> map citations -> flag unverified citations ->
     output guard v2 (opt-in) -> audit record (unconditional, D41).
 
@@ -50,7 +50,7 @@ from .config import RAGSettings
 from .contradiction_detector import ContradictionDetector
 from .embeddings import EmbeddingProvider
 from .ingestion import ingest_single_document
-from .logs import summarize_log
+from .context_summary import summarize_context
 from .messages import DEFAULT_ENGINE_MESSAGES, EngineMessages
 from .metrics import (
     ABSTENTION_COUNT,
@@ -73,10 +73,9 @@ logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"\[S(\d+)\]")
 
-# Defense-in-depth cap on log_text length, independent of any file-size check a caller
-# (e.g. the service layer's upload handling) may already apply — protects any direct
-# caller of `answer()`/`ask()`, not just the file-upload path.
-_MAX_LOG_CHARS = 500_000
+# Defense-in-depth cap on context_text length, independent of any length limit a caller
+# may already apply upstream — protects any direct caller of `answer()`/`ask()`.
+_MAX_CONTEXT_CHARS = 500_000
 
 
 class RAGEngine:
@@ -453,12 +452,17 @@ class RAGEngine:
     def answer(
         self,
         question: str,
-        log_text: str | None = None,
+        context_text: str | None = None,
         trace_id: str | None = None,
         *,
         auth_context: AuthContext | None = None,
     ) -> Answer:
-        """Answer a question, optionally grounded by an uploaded log.
+        """Answer a question, optionally grounded by supplementary structured context.
+
+        ``context_text`` is an optional blob (JSON, XML, or raw text) a caller supplies
+        alongside the question -- e.g. something a user pasted or uploaded -- whose
+        salient fields are extracted and folded into the retrieval query (see
+        ``context_summary.summarize_context``).
 
         ``trace_id`` may be supplied by the caller (e.g. a future API layer); otherwise
         one is generated and bound for the duration of this call. ``auth_context`` (see
@@ -475,7 +479,7 @@ class RAGEngine:
 
         with bind_trace_id(trace_id) as tid:
             with instrumented_step("answer", trace_id=tid) as rec:
-                result = self._answer(question, log_text, tid, auth_context=auth_context)
+                result = self._answer(question, context_text, tid, auth_context=auth_context)
                 rec.set(abstained=result.abstained)
                 return result
 
@@ -498,13 +502,13 @@ class RAGEngine:
     def _answer(
         self,
         question: str,
-        log_text: str | None,
+        context_text: str | None,
         trace_id: str,
         *,
         auth_context: AuthContext | None,
     ) -> Answer:
-        if log_text and len(log_text) > _MAX_LOG_CHARS:
-            log_text = log_text[:_MAX_LOG_CHARS]
+        if context_text and len(context_text) > _MAX_CONTEXT_CHARS:
+            context_text = context_text[:_MAX_CONTEXT_CHARS]
 
         # 1) SECURITY: sanitize every user-supplied input before it goes anywhere.
         with instrumented_step("sanitize") as rec:
@@ -512,25 +516,26 @@ class RAGEngine:
             redaction_labels = [f"{r.label}×{r.count}" for r in q_red]
             record_redactions(q_red)
 
-            log_summary = ""
-            if log_text:
-                # SECURITY: sanitize the RAW log first (the guaranteed gate), then
+            context_summary = ""
+            if context_text:
+                # SECURITY: sanitize the RAW context first (the guaranteed gate), then
                 # summarize the already-clean text. This does not rely on the
                 # summarizer's field allowlist to keep PII out, and it lets us report
                 # what was actually masked.
-                clean_log, l_red = sanitize_text(log_text)
-                redaction_labels += [f"{r.label}×{r.count}" for r in l_red]
-                record_redactions(l_red)
-                log_summary = summarize_log(clean_log)
+                clean_context, c_red = sanitize_text(context_text)
+                redaction_labels += [f"{r.label}×{r.count}" for r in c_red]
+                record_redactions(c_red)
+                context_summary = summarize_context(clean_context)
             rec.set(redaction_count=len(redaction_labels))
 
-        # 2) Build the retrieval query (question + salient log fields).
+        # 2) Build the retrieval query (question + salient context fields).
         retrieval_query = clean_question.strip()
-        if log_summary:
+        if context_summary:
+            label = self._messages.context_label
             retrieval_query = (
-                f"{retrieval_query}\nLog: {log_summary}"
+                f"{retrieval_query}\n{label} {context_summary}"
                 if retrieval_query
-                else f"Log: {log_summary}"
+                else f"{label} {context_summary}"
             )
         if not retrieval_query:
             REQUEST_COUNT.add(1, {"status": "empty"})

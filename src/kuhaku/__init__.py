@@ -42,6 +42,7 @@ from .tools.rag import (
     build_embedding_provider,
     extract_text,
 )
+from .tools.rag.prompts import load_system_prompt
 
 __version__ = "0.1.0"
 
@@ -53,12 +54,20 @@ class RAG:
     """Retrieval-augmented generation: sanitize -> retrieve -> generate, with citations.
 
     Wraps :class:`RAGEngine` behind a handful of simple, named parameters instead of its
-    full constructor-injection surface. For anything not exposed here (query rewriting,
-    contradiction detection, caching, the security guard, authentication/authorization
-    via ``kuhaku.core.auth``, custom messages/prompts, ...) construct
-    :class:`RAGEngine` directly -- see ``kuhaku.tools.rag`` -- or use the
-    :attr:`engine` escape hatch below (e.g. ``rag.engine.update_authorization_policy(...)``
-    and passing ``auth_context=`` to ``rag.engine.answer(...)``).
+    full constructor-injection surface. The system prompt is one of those parameters:
+    ``persona``/``language_policy`` each override one caller-owned layer of the
+    framework's default, layered prompt (see
+    :func:`~kuhaku.tools.rag.prompts.load_system_prompt`), while ``system_prompt``
+    replaces it outright. Replacing it outright means taking full ownership of the
+    safety rules -- kuhaku's instruction-precedence, data-marking, canary, grounding,
+    citation, and contradiction-handling rules only apply if your replacement text
+    includes them. For anything else not exposed here (query rewriting, contradiction
+    detection, caching, the security guard, authentication/authorization via
+    ``kuhaku.core.auth``, custom ``EngineMessages``, the prompt's format-preference/
+    example/masked-placeholder layers, ...) construct :class:`RAGEngine` directly -- see
+    ``kuhaku.tools.rag`` -- or use the :attr:`engine` escape hatch below (e.g.
+    ``rag.engine.update_authorization_policy(...)`` and passing ``auth_context=`` to
+    ``rag.engine.answer(...)``).
     """
 
     def __init__(
@@ -74,6 +83,9 @@ class RAG:
         vertex_location: str | None = None,
         audit_enabled: bool | None = None,
         audit_log_path: str | None = None,
+        persona: str | None = None,
+        language_policy: str | None = None,
+        system_prompt: str | None = None,
         settings: Settings | None = None,
         rag_settings: RAGSettings | None = None,
         enable_token_tracking: bool = True,
@@ -107,6 +119,24 @@ class RAG:
             audit_log_path: where audit records are written; ``None`` uses
                 ``Settings.audit_log_path`` if set, otherwise the kuhaku-managed
                 default (``./logs/kuhaku_audit.jsonl``).
+            persona: overrides the system prompt's persona layer (who the assistant is);
+                ``None`` uses the framework's neutral default (a general-purpose
+                assistant that answers from the supplied reference material). One layer
+                of :func:`~kuhaku.tools.rag.prompts.load_system_prompt` -- the
+                safety/grounding core (instruction precedence, data marking, the canary
+                rule, grounding, citations, contradiction handling, masked-value
+                preservation) is not affected by this and cannot be dropped through it.
+            language_policy: overrides the system prompt's output-language-policy layer;
+                ``None`` uses the framework default (answer in the language of the
+                question). Same safety-core guarantee as ``persona`` above.
+            system_prompt: replaces the entire system prompt outright, bypassing
+                ``persona``/``language_policy`` (and every other layer) entirely; ``None``
+                (the default) uses the layered, framework-assembled prompt. Supplying
+                this means taking full ownership of the safety rules yourself --
+                kuhaku no longer enforces instruction precedence, data marking, the
+                canary rule, grounding, citations, or any of the other rules
+                :func:`~kuhaku.tools.rag.prompts.load_system_prompt`'s template provides
+                unless your replacement text includes them.
             settings: a pre-built :class:`Settings` instance for the generic, cross-tool
                 knobs (LLM provider, Vertex auth, audit logging); ``None`` uses
                 :func:`get_settings`.
@@ -178,6 +208,21 @@ class RAG:
         self._llm = llm
         self._retriever = self._build_retriever(retrieval, reranker)
 
+        # `system_prompt` replaces the whole thing outright; `persona`/`language_policy`
+        # each override one layer of the framework-assembled prompt while leaving the
+        # safety core (and every other layer) at its default -- see load_system_prompt().
+        # `None` (nothing given) is passed straight through to RAGEngine, which already
+        # falls back to its own module-level default -- no separate "resolved" constant
+        # needed here.
+        resolved_system_prompt = system_prompt
+        if resolved_system_prompt is None and (persona is not None or language_policy is not None):
+            layer_overrides: dict[str, str] = {}
+            if persona is not None:
+                layer_overrides["persona"] = persona
+            if language_policy is not None:
+                layer_overrides["language_policy"] = language_policy
+            resolved_system_prompt = load_system_prompt(**layer_overrides)
+
         self._engine = RAGEngine(
             self._embedder,
             self._store,
@@ -188,6 +233,7 @@ class RAG:
             confidence_threshold=rs.rag_confidence_threshold,
             audit_enabled=s.audit_enabled,
             audit_log_path=s.audit_log_path or "",
+            system_prompt=resolved_system_prompt,
             rag_settings=rs,
         )
 
@@ -302,14 +348,18 @@ class RAG:
 
         return indexed
 
-    def ask(self, question: str, log_text: str | None = None) -> Answer:
-        """Answer ``question``, optionally grounded by an uploaded log's contents.
+    def ask(self, question: str, context_text: str | None = None) -> Answer:
+        """Answer ``question``, optionally grounded by supplementary structured context.
+
+        ``context_text`` is an optional blob (JSON, XML, or raw text) supplied alongside
+        the question -- e.g. something a user pasted or uploaded -- whose salient fields
+        are extracted and folded into the retrieval query.
 
         Thin pass-through to :meth:`RAGEngine.answer` -- see there for the full
         contract (sanitization, citations, abstention, ...).
         """
 
-        return self._engine.answer(question, log_text)
+        return self._engine.answer(question, context_text)
 
     def chat_repl(self) -> None:
         """Interactive terminal chat loop: read a question, print the answer, repeat.
@@ -342,10 +392,6 @@ class RAG:
                 answer = self.ask(question)
             except Exception as exc:
                 print(f"[error] {exc}")
-                continue
-
-            if answer.abstained:
-                print("Üzgünüm, bu soruya güvenilir bir yanıt veremiyorum.")
                 continue
 
             print(answer.text)

@@ -142,17 +142,17 @@ def test_full_pipeline_query_containing_pii_never_leaks(tmp_path):
         assert tag in joined, f"expected {tag} in redaction report"
 
 
-def test_full_pipeline_uploaded_log_containing_pii_never_leaks():
-    """Same as above but PII arrives via the uploaded-log path, not the question."""
+def test_full_pipeline_uploaded_context_containing_pii_never_leaks():
+    """Same as above but PII arrives via the uploaded-context path, not the question."""
 
     engine, llm = _build_engine([])  # empty KB is fine; we only inspect sanitization
 
-    dirty_log = (
+    dirty_context = (
         f'{{"error_code": "PAY-1001", "email": "{RAW_EMAIL}", "pan": "{RAW_CARD}", '
         f'"national_id": "{RAW_TCKN}", "ip": "{RAW_IP}", "phone": "{RAW_PHONE}", '
         f'"token": "{RAW_TOKEN}"}}'
     )
-    answer = engine.answer("Bu log neden declined oldu?", log_text=dirty_log)
+    answer = engine.answer("Bu log neden declined oldu?", context_text=dirty_context)
 
     # KB is empty, so the engine short-circuits before generation — but sanitization
     # and redaction reporting must have already run on the raw log before that point.
@@ -179,10 +179,10 @@ def test_no_raw_pii_in_captured_logs(tmp_path, caplog):
         f"Kart {RAW_CARD}, TCKN {RAW_TCKN}, mail {RAW_EMAIL}, ip {RAW_IP}, "
         f"tel {RAW_PHONE}, token {RAW_TOKEN} ile ilgili bir sorun var."
     )
-    dirty_log = f'{{"pan": "{RAW_CARD}", "email": "{RAW_EMAIL}"}}'
+    dirty_context = f'{{"pan": "{RAW_CARD}", "email": "{RAW_EMAIL}"}}'
 
     with caplog.at_level(logging.DEBUG):
-        engine.answer(dirty_question, log_text=dirty_log)
+        engine.answer(dirty_question, context_text=dirty_context)
 
     _assert_no_raw_pii(caplog.text, where="captured log output")
 

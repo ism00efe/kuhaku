@@ -1,4 +1,4 @@
-"""Lightweight parsing of uploaded JSON/XML payment logs.
+"""Lightweight parsing of structured context a caller supplies alongside a question.
 
 Extracts a short, human-readable summary (error codes, status, messages) that augments
 the retrieval query. Deliberately forgiving: anything it can't parse is passed through as
@@ -12,11 +12,12 @@ import json
 import re
 import xml.etree.ElementTree as ET
 
-# Field names that commonly carry troubleshooting signal in payment logs.
+# Field names that commonly carry diagnostic signal in a structured context blob (JSON or
+# XML) a user pastes or uploads alongside their question.
 _KEYS_OF_INTEREST = {
     "errorcode", "error_code", "code", "status", "statuscode", "status_code",
     "responsecode", "response_code", "message", "error", "reason", "detail",
-    "exception", "declinereason", "decline_reason", "result", "resultcode",
+    "exception", "result", "resultcode",
 }
 
 
@@ -70,8 +71,8 @@ def _summarize_xml(text: str) -> str | None:
     return "; ".join(f"{k}={v}" for k, v in found.items())
 
 
-def summarize_log(text: str) -> str:
-    """Return a compact summary of a log, or a trimmed raw fallback.
+def summarize_context(text: str) -> str:
+    """Return a compact summary of a structured context blob, or a trimmed raw fallback.
 
     Note: the returned string may still contain sensitive values — callers must sanitize
     it before embedding or sending to an LLM.
