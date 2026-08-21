@@ -97,7 +97,7 @@ def test_from_settings_reflects_defaults():
 def test_from_settings_overlays_vertex_project_and_location_from_settings():
     """vertex_project/vertex_location stay authoritative on Settings (generic Google
     Cloud platform settings) -- from_settings() overlays them onto the derived
-    RAGSettings, since RAG__* nested env vars have no way to reach them."""
+    RAGSettings, since KUHAKU_RAG__* nested env vars have no way to reach them."""
 
     settings = Settings(_env_file=None, vertex_project="p", vertex_location="l")
     rag_settings = RAGSettings.from_settings(settings)
@@ -157,15 +157,15 @@ def test_settings_rag_accepts_a_ragsettings_instance_directly():
 
 
 def test_settings_rag_loads_scalar_fields_from_nested_env_vars(monkeypatch):
-    monkeypatch.setenv("RAG__TOP_K", "9")
-    monkeypatch.setenv("RAG__RERANK_ENABLED", "false")
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "9")
+    monkeypatch.setenv("KUHAKU_RAG__RERANK_ENABLED", "false")
     settings = Settings(_env_file=None)
     assert settings.rag.top_k == 9
     assert settings.rag.rerank_enabled is False
 
 
 def test_settings_rag_loads_dict_field_from_nested_env_var(monkeypatch):
-    monkeypatch.setenv("RAG__DOC_TYPE_PREFIX_MAPPING", '{"log_": "log_sample"}')
+    monkeypatch.setenv("KUHAKU_RAG__DOC_TYPE_PREFIX_MAPPING", '{"log_": "log_sample"}')
     settings = Settings(_env_file=None)
     assert settings.rag.doc_type_prefix_mapping == {"log_": "log_sample"}
 
@@ -174,8 +174,8 @@ def test_settings_rag_nested_env_vars_do_not_affect_generic_fields(monkeypatch):
     """The "__" nested delimiter must not leak into ordinary flat env var parsing --
     no top-level Settings field name contains "__"."""
 
-    monkeypatch.setenv("RAG__TOP_K", "9")
-    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "9")
+    monkeypatch.setenv("KUHAKU_LLM_PROVIDER", "anthropic")
     settings = Settings(_env_file=None)
     assert settings.llm_provider == "anthropic"
     assert settings.rag.top_k == 9

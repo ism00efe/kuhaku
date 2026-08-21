@@ -8,7 +8,7 @@ the HTTP API, logging, ...) that stay on :class:`~kuhaku.core.config.Settings`.
 Every field has a sensible default, so ``RAGSettings()`` is usable standalone -- no
 ``Settings`` instance required. ``Settings.rag`` (a nested field, see ``core/config.py``)
 is the kuhaku-wide default instance, populated from the environment via
-``RAG__<FIELD>``-prefixed variables (e.g. ``RAG__TOP_K=8``); :meth:`RAGSettings.from_settings`
+``KUHAKU_RAG__<FIELD>``-prefixed variables (e.g. ``KUHAKU_RAG__TOP_K=8``); :meth:`RAGSettings.from_settings`
 additionally overlays the handful of fields that stay authoritative on ``Settings`` itself
 (``vertex_project``, ``vertex_location``, the ``retry_enabled`` master switch) for callers
 that only have a full ``Settings`` instance to hand.

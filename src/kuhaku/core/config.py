@@ -46,9 +46,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
-        # Enables nested env vars for `rag` (e.g. RAG__TOP_K=8, RAG__RERANK_ENABLED=true)
-        # -- no top-level field name here contains "__", so this is fully backward
-        # compatible with every existing flat env var.
+        # Enables nested env vars for `rag`. Combined with env_prefix above, the
+        # working names carry both: KUHAKU_RAG__TOP_K=8, KUHAKU_RAG__RERANK_ENABLED=true.
+        # No top-level field name here contains "__", so the delimiter never leaks
+        # into ordinary flat env var parsing.
         env_nested_delimiter="__",
     )
 
@@ -193,9 +194,10 @@ class Settings(BaseSettings):
     # All RAG-specific settings (corpus/chunking/retrieval/re-ranking/caching/
     # contradiction-detection/query-rewriting, the vector store, RAG-owned retry sites,
     # and RAG model/prompt versioning) live on RAGSettings, not here -- see
-    # kuhaku.tools.rag.config.RAGSettings. Supports nested env vars, e.g.
-    # RAG__TOP_K=8, RAG__RERANK_ENABLED=false, RAG__DOC_TYPE_PREFIX_MAPPING='{"log_":
-    # "log_sample"}'.
+    # kuhaku.tools.rag.config.RAGSettings. Supports nested env vars, which carry the
+    # KUHAKU_ prefix like every other field: KUHAKU_RAG__TOP_K=8,
+    # KUHAKU_RAG__RERANK_ENABLED=false,
+    # KUHAKU_RAG__DOC_TYPE_PREFIX_MAPPING='{"log_": "log_sample"}'.
     rag: RAGSettings = Field(default_factory=_default_rag_settings)
 
 
