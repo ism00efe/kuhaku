@@ -113,11 +113,11 @@ OLLAMA_MODEL=qwen2.5:7b-instruct
 ANTHROPIC_API_KEY=...
 OPENAI_API_KEY=...
 
-# RAG-specific settings nest under the RAG__ prefix (see RAGSettings)
-RAG__TOP_K=8
-RAG__RERANK_ENABLED=true
-RAG__CHUNK_SIZE=500
-RAG__CHUNKING_STRATEGY=paragraph   # paragraph | structural
+# RAG-specific settings nest under the KUHAKU_RAG__ prefix (see RAGSettings)
+KUHAKU_RAG__TOP_K=8
+KUHAKU_RAG__RERANK_ENABLED=true
+KUHAKU_RAG__CHUNK_SIZE=500
+KUHAKU_RAG__CHUNKING_STRATEGY=paragraph   # paragraph | structural
 ```
 
 `RAGSettings` (`kuhaku.tools.rag.RAGSettings`) is usable entirely standalone — it has
@@ -258,4 +258,4 @@ or running LLM server is required.
 
 ## License
 
-No license has been published for this package yet.
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
