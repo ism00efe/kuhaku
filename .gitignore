@@ -6,9 +6,9 @@ __pycache__/
 build/
 dist/
 
-# Virtual environments
-.venv/
-venv/
+# Virtual environments (any .venv* / venv* variant, not just the canonical name)
+.venv*/
+venv*/
 env/
 
 # Environment / secrets
