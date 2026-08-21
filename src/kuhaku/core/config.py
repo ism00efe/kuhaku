@@ -46,6 +46,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # Four fields below carry a validation_alias so ecosystem-standard names
+        # (OPENAI_API_KEY, GOOGLE_CLOUD_PROJECT, ...) keep working unprefixed. Without
+        # this, pydantic would accept ONLY those aliases, and constructing Settings in
+        # code by field name -- Settings(vertex_project="p") -- would be silently
+        # ignored rather than rejected.
+        populate_by_name=True,
         # Enables nested env vars for `rag`. Combined with env_prefix above, the
         # working names carry both: KUHAKU_RAG__TOP_K=8, KUHAKU_RAG__RERANK_ENABLED=true.
         # No top-level field name here contains "__", so the delimiter never leaks
