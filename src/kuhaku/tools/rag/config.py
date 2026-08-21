@@ -111,7 +111,7 @@ class RAGSettings:
         """Project the RAG-relevant settings out of a full :class:`Settings` instance.
 
         ``settings.rag`` already carries every RAG-owned field (populated from defaults
-        and/or ``RAG__*`` environment variables); this overlays the three fields that
+        and/or ``KUHAKU_RAG__*`` environment variables); this overlays the three fields that
         remain authoritative on ``Settings`` itself -- ``vertex_project``,
         ``vertex_location`` (generic Google Cloud platform settings, also needed by the
         Vertex embedding provider) and ``retry_enabled`` (the cross-subsystem master
