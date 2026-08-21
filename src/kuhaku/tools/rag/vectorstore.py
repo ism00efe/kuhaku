@@ -8,7 +8,7 @@ alongside each vector so retrieval can produce citations.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from tenacity import wait_fixed
@@ -41,6 +41,24 @@ class VectorStore(Protocol):
     def reset(self) -> None: ...
 
     def list_collections(self) -> list[str]: ...
+
+    def iter_chunks(self) -> Iterator[Chunk]:
+        """Every chunk currently held, in no particular order.
+
+        The single source of truth for "what is actually indexed" -- callers that need
+        to rebuild a secondary index (e.g. BM25, see
+        ``sparse_retriever.build_bm25_from_store``) from the same chunks the dense side
+        already has, instead of re-deriving them from wherever they originally came
+        from. A generator rather than a ``list``: the one real consumer needs every
+        chunk in memory at once regardless (BM25's corpus-wide statistics require it),
+        so this buys that consumer nothing extra -- but it keeps a future consumer that
+        only wants to stream through the corpus (e.g. a re-embedding job) from being
+        forced to materialize the whole thing too. Implementations must still page
+        through their backend rather than issuing one unbounded read (see
+        ``ChromaVectorStore.iter_chunks``); an empty store yields nothing rather than
+        raising.
+        """
+        ...
 
 
 class ChromaVectorStore:
@@ -215,11 +233,45 @@ class ChromaVectorStore:
             for cid, text, meta in zip(ids, docs, metas, strict=True)
         ]
 
+    def iter_chunks(self, *, page_size: int = 500) -> Iterator[Chunk]:
+        """Yield every chunk in the collection, reconstructed via :meth:`_chunk_from_row`.
+
+        Pages through Chroma's ``get(limit=, offset=)`` rather than one unbounded read,
+        so a large collection is never pulled into a single response. ``page_size`` is
+        the per-request page, not a cap on the total -- paging continues until a page
+        comes back short of ``page_size``.
+        """
+
+        offset = 0
+        while True:
+            try:
+                result = self._collection.get(
+                    include=["documents", "metadatas"], limit=page_size, offset=offset,
+                )
+            except Exception as e:
+                if "does not exist" in str(e).lower():
+                    result = self._refresh_collection_if_stale().get(
+                        include=["documents", "metadatas"], limit=page_size, offset=offset,
+                    )
+                else:
+                    raise
+            ids = result.get("ids", [])
+            if not ids:
+                return
+            docs = result.get("documents", []) or []
+            metas = result.get("metadatas", []) or []
+            for cid, text, meta in zip(ids, docs, metas, strict=True):
+                yield self._chunk_from_row(cid, text, meta)
+            if len(ids) < page_size:
+                return
+            offset += page_size
+
     @staticmethod
     def _chunk_from_row(cid: str, text: str, meta: Mapping[str, Any]) -> Chunk:
         """Reconstruct a :class:`Chunk` from a stored Chroma row (id/document/metadata).
 
-        Shared by :meth:`query` and :meth:`get_by_document_id` -- both read back the same
+        Shared by every read path (:meth:`query`, :meth:`get_by_document_id`,
+        :meth:`get_by_ids`, :meth:`iter_chunks`) -- all of them read back the same
         metadata shape written by :meth:`add` (``Chunk.metadata()``).
         """
 

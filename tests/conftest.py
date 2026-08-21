@@ -120,6 +120,9 @@ class FakeVectorStore:
         self.reset_called += 1
         self._chunks = []
 
+    def iter_chunks(self):
+        return iter(self._chunks)
+
 
 class FakeLLM:
     """LLM provider stub that returns a preset answer and records the last prompt."""

@@ -66,7 +66,7 @@ from .metrics import (
 )
 from .prompts import SYSTEM_PROMPT, build_user_prompt
 from .query_rewriter import QueryRewriter
-from .retriever import DenseRetriever, Retriever
+from .retriever import DenseRetriever, Retriever, refresh_retriever
 from .vectorstore import VectorStore, VectorStoreError
 
 logger = logging.getLogger(__name__)
@@ -413,17 +413,26 @@ class RAGEngine:
         when no ``rag_settings`` was supplied) and this engine's ``EngineMessages`` are
         both threaded through, so a too-large upload is rejected with an injectable error
         instead of being silently indexed.
+
+        Also notifies ``self._retriever`` a new chunk may exist (see
+        ``retriever.refresh_retriever``), so a sparse or hybrid retriever's cached BM25
+        index picks up the new document on the next query -- without this engine ever
+        needing to know it's talking to one.
         """
 
         max_upload_bytes = (
             self._rag_settings.max_upload_bytes if self._rag_settings is not None else None
         )
-        return ingest_single_document(
+        result = ingest_single_document(
             text, filename, self._embedder, self._store,
             chunk_size=chunk_size, overlap=overlap, chunker=self._chunker,
             rag_settings=self._rag_settings, max_upload_bytes=max_upload_bytes,
             messages=self._messages,
         )
+        chunks_added, _redactions = result
+        if chunks_added:
+            refresh_retriever(self._retriever)
+        return result
 
     def retrieve(
         self,

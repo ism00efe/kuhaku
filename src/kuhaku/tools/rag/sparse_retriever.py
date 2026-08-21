@@ -21,9 +21,7 @@ from collections import Counter
 from kuhaku.tools.rag.models import Chunk, RetrievedChunk
 from kuhaku.core.auth import AuthContext
 
-from .chunking import Chunker, ParagraphChunker
-from .config import RAGSettings
-from .ingestion import load_corpus
+from .vectorstore import VectorStore
 
 logger = logging.getLogger("kuhaku.tools.rag.sparse_retriever")
 
@@ -118,36 +116,77 @@ class BM25Retriever:
         return [item for item in fresh if item.chunk.doc_type == doc_type]
 
 
-def build_bm25_from_corpus(
-    corpus_dir: str,
-    *,
-    chunk_size: int,
-    overlap: int,
-    k1: float = 1.5,
-    b: float = 0.75,
-    chunker: Chunker | None = None,
-    rag_settings: RAGSettings | None = None,
-) -> BM25Retriever:
-    """Build a BM25 index from the corpus directory.
+class StoreBackedBM25Retriever:
+    """A :class:`BM25Retriever` sourced from a :class:`~.vectorstore.VectorStore`,
+    rebuilt lazily after :meth:`refresh` rather than on every ingest.
 
-    Reuses :func:`load_corpus` rather than reading the vector store, which keeps the
-    ``VectorStore`` abstraction unchanged. Importantly, ``load_corpus`` sanitizes at
-    load, so the sparse index inherits the same PII guarantee as the dense index —
-    reading the raw files here would have bypassed sanitization.
+    Both the dense and sparse sides now read the same ``Chunk`` objects (whatever the
+    store holds), so the historical dense/sparse chunker-mismatch hazard -- two
+    separately-chunked copies of the same corpus disagreeing under a shared chunk id --
+    is structurally impossible: there is only ever one chunking of any given document,
+    performed once at ingest time and written to the store.
 
-    ``chunker`` must match whatever chunker populated the dense (Chroma) index: RRF
-    fusion (``retriever.reciprocal_rank_fusion``) keys purely by chunk id
-    (``doc_id::index``), so a dense/sparse chunking-strategy mismatch would silently
-    fuse the wrong chunk's text under a shared id, with no error anywhere. Defaults to
-    ``ParagraphChunker`` (today's behavior) when omitted, same as ``ingest()``.
-
-    ``rag_settings``, when given, supplies ``doc_type_prefix_mapping`` for doc-type
-    inference (forwarded to :func:`load_corpus`), so sparse-indexed chunks get the same
-    ``doc_type``s the dense index would.
+    Satisfies the ``Retriever`` protocol in :mod:`.retriever`, exactly like the bare
+    ``BM25Retriever`` it wraps.
     """
 
-    chunker = chunker or ParagraphChunker()
-    chunks: list[Chunk] = []
-    for doc in load_corpus(corpus_dir, rag_settings=rag_settings):
-        chunks.extend(chunker.chunk(doc, chunk_size=chunk_size, overlap=overlap))
-    return BM25Retriever(chunks, k1=k1, b=b)
+    strategy = "sparse"
+
+    def __init__(self, store: VectorStore, *, k1: float = 1.5, b: float = 0.75) -> None:
+        self._store = store
+        self._k1 = k1
+        self._b = b
+        self._bm25: BM25Retriever | None = None
+        self._dirty = True
+
+    def refresh(self) -> None:
+        """Mark the cached index stale so the next :meth:`retrieve`/:meth:`count`
+        rebuilds it from the store's current chunks.
+
+        Deliberately lazy rather than rebuilding here: BM25's corpus-wide statistics
+        (avgdl, IDF) depend on every chunk, so a rebuild is O(corpus size) regardless of
+        how small the newly-ingested document was. Rebuilding immediately on every
+        ``refresh()`` call would make a run of N ingests cost O(N * corpus_size) --
+        quadratic in the number of documents ingested in a row (e.g.
+        ``RAG.load_documents`` looping over a directory). Deferring the rebuild to the
+        next actual query instead collapses any number of ingests that happen between
+        two queries into a single rebuild.
+        """
+
+        self._dirty = True
+
+    def _current(self) -> BM25Retriever:
+        if self._dirty or self._bm25 is None:
+            self._bm25 = BM25Retriever(list(self._store.iter_chunks()), k1=self._k1, b=self._b)
+            self._dirty = False
+        return self._bm25
+
+    def count(self) -> int:
+        return self._current().count()
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: int,
+        *,
+        auth_context: AuthContext | None = None,
+        doc_type: str | None = None,
+    ) -> list[RetrievedChunk]:
+        return self._current().retrieve(
+            query, top_k, auth_context=auth_context, doc_type=doc_type
+        )
+
+
+def build_bm25_from_store(
+    store: VectorStore, *, k1: float = 1.5, b: float = 0.75
+) -> StoreBackedBM25Retriever:
+    """Build a BM25 index from the vector store's own chunks (the single source of
+    truth for what is actually indexed), rather than re-reading and re-chunking source
+    files from disk.
+
+    The returned retriever rebuilds lazily on the next query after any :meth:`~
+    StoreBackedBM25Retriever.refresh` call, so it reflects documents ingested into
+    ``store`` after this factory ran -- see :class:`StoreBackedBM25Retriever`.
+    """
+
+    return StoreBackedBM25Retriever(store, k1=k1, b=b)

@@ -50,6 +50,23 @@ class Retriever(Protocol):
     ) -> list[RetrievedChunk]: ...
 
 
+def refresh_retriever(retriever: object) -> None:
+    """Tell ``retriever`` that new chunks may have been written to its backing store, if
+    it tracks any cached state that would otherwise go stale.
+
+    Duck-typed rather than a required ``Retriever`` protocol method: ``DenseRetriever``
+    always queries the live vector store and has nothing to refresh, and callers (see
+    ``RAGEngine.ingest_document``) must stay decoupled from which concrete retriever
+    they hold -- adding a mandatory method here would force every ``Retriever``,
+    dense included, to implement a no-op. A no-``refresh`` retriever is simply left
+    alone.
+    """
+
+    refresh = getattr(retriever, "refresh", None)
+    if callable(refresh):
+        refresh()
+
+
 def _filter_by_doc_type(
     items: list[RetrievedChunk], doc_type: str | None
 ) -> list[RetrievedChunk]:
@@ -272,6 +289,11 @@ class SparseRetriever:
 
         return "sparse+rerank" if self._reranker is not None else "sparse"
 
+    def refresh(self) -> None:
+        """Pass a post-ingest refresh through to the wrapped sparse retriever."""
+
+        refresh_retriever(self._sparse)
+
     def retrieve(
         self,
         query: str,
@@ -334,6 +356,16 @@ class HybridRetriever:
         if self._reranker is not None:
             return f"{base}+rerank"
         return base
+
+    def refresh(self) -> None:
+        """Pass a post-ingest refresh through to the sparse side, if any.
+
+        The dense side always queries the live vector store, so it has nothing to
+        refresh -- only ``self._sparse`` (when this is genuine dense+sparse fusion,
+        not the dense-only degenerate case) can hold cached state.
+        """
+
+        refresh_retriever(self._sparse)
 
     def retrieve(
         self,

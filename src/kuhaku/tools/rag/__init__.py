@@ -42,7 +42,7 @@ from .retriever import (
     SparseRetriever,
     reciprocal_rank_fusion,
 )
-from .sparse_retriever import BM25Retriever, build_bm25_from_corpus
+from .sparse_retriever import BM25Retriever, StoreBackedBM25Retriever, build_bm25_from_store
 from .vectorstore import ChromaVectorStore, VectorStore
 
 __all__ = [
@@ -81,7 +81,8 @@ __all__ = [
     "SparseRetriever",
     "reciprocal_rank_fusion",
     "BM25Retriever",
-    "build_bm25_from_corpus",
+    "StoreBackedBM25Retriever",
+    "build_bm25_from_store",
     "Reranker",
     "CrossEncoderReranker",
     # Category 2: query-answer cache

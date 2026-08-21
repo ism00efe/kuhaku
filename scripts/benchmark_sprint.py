@@ -57,7 +57,7 @@ from kuhaku.tools.rag import (  # noqa: E402
     RAGSettings,
     Retriever,
     SentenceTransformerEmbeddings,
-    build_bm25_from_corpus,
+    build_bm25_from_store,
     build_chunker,
     ingest,
 )
@@ -371,14 +371,10 @@ def main() -> None:
         embedding_note = f"embedding={best_model}"
 
         # --- Step 2: fill the rest of the table ---------------------------------------
-        sparse = build_bm25_from_corpus(
-            rag_settings.corpus_dir,
-            chunk_size=rag_settings.chunk_size,
-            overlap=rag_settings.chunk_overlap,
-            k1=rag_settings.bm25_k1,
-            b=rag_settings.bm25_b,
-            chunker=chunker,
-            rag_settings=rag_settings,
+        # Sourced from the default store's own chunks -- same corpus `default_store`
+        # was ingested with above, so dense/sparse fusion below shares one chunking.
+        sparse = build_bm25_from_store(
+            default_store, k1=rag_settings.bm25_k1, b=rag_settings.bm25_b
         )
 
         results[LABEL_BM25] = run_configuration(

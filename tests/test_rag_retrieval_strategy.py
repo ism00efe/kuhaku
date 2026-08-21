@@ -52,7 +52,7 @@ def test_build_retriever_dense_returns_bare_dense_retriever():
 
 def test_build_retriever_sparse_without_reranker_routes_through_sparse_retriever(monkeypatch):
     fake_sparse = _RawScoreRetriever([RetrievedChunk(chunk=make_chunk("a"), score=8.3)])
-    monkeypatch.setattr(kuhaku, "build_bm25_from_corpus", lambda *a, **k: fake_sparse)
+    monkeypatch.setattr(kuhaku, "build_bm25_from_store", lambda *a, **k: fake_sparse)
 
     stub = _stub_rag()
     retriever = RAG._build_retriever(stub, "sparse", False)
@@ -72,7 +72,7 @@ def test_build_retriever_sparse_normalizes_raw_bm25_scores(monkeypatch):
             RetrievedChunk(chunk=make_chunk("lo", 2), score=0.4),
         ]
     )
-    monkeypatch.setattr(kuhaku, "build_bm25_from_corpus", lambda *a, **k: fake_sparse)
+    monkeypatch.setattr(kuhaku, "build_bm25_from_store", lambda *a, **k: fake_sparse)
 
     stub = _stub_rag()
     retriever = RAG._build_retriever(stub, "sparse", False)
@@ -87,7 +87,7 @@ def test_build_retriever_sparse_normalizes_raw_bm25_scores(monkeypatch):
 
 def test_build_retriever_sparse_single_chunk_does_not_divide_by_zero(monkeypatch):
     fake_sparse = _RawScoreRetriever([RetrievedChunk(chunk=make_chunk("only"), score=5.0)])
-    monkeypatch.setattr(kuhaku, "build_bm25_from_corpus", lambda *a, **k: fake_sparse)
+    monkeypatch.setattr(kuhaku, "build_bm25_from_store", lambda *a, **k: fake_sparse)
 
     stub = _stub_rag()
     retriever = RAG._build_retriever(stub, "sparse", False)
@@ -98,7 +98,7 @@ def test_build_retriever_sparse_single_chunk_does_not_divide_by_zero(monkeypatch
 
 def test_build_retriever_sparse_with_reranker_strategy(monkeypatch):
     fake_sparse = _RawScoreRetriever([RetrievedChunk(chunk=make_chunk("a"), score=8.3)])
-    monkeypatch.setattr(kuhaku, "build_bm25_from_corpus", lambda *a, **k: fake_sparse)
+    monkeypatch.setattr(kuhaku, "build_bm25_from_store", lambda *a, **k: fake_sparse)
 
     stub = _stub_rag()
     retriever = RAG._build_retriever(stub, "sparse", True)
@@ -109,7 +109,7 @@ def test_build_retriever_sparse_with_reranker_strategy(monkeypatch):
 
 def test_build_retriever_hybrid_uses_hybrid_retriever(monkeypatch):
     fake_sparse = _RawScoreRetriever([RetrievedChunk(chunk=make_chunk("a"), score=8.3)])
-    monkeypatch.setattr(kuhaku, "build_bm25_from_corpus", lambda *a, **k: fake_sparse)
+    monkeypatch.setattr(kuhaku, "build_bm25_from_store", lambda *a, **k: fake_sparse)
 
     stub = _stub_rag()
     retriever = RAG._build_retriever(stub, "hybrid", False)

@@ -8,6 +8,7 @@ from kuhaku import RAG
 from kuhaku.core.config import Settings
 from kuhaku.core.security.guard import CANARY_TOKEN
 from kuhaku.tools.rag.ingestion import UnsupportedFileType
+from kuhaku.tools.rag.messages import DEFAULT_ENGINE_MESSAGES
 from kuhaku.tools.rag.prompts import SYSTEM_PROMPT
 from tests.conftest import FakeEmbeddings, FakeLLM, FakeVectorStore
 
@@ -212,3 +213,63 @@ def test_chat_repl_prints_the_engines_own_abstention_text(
     assert abstained_answer.text in captured.out
     assert "Üzgünüm" not in captured.out
     assert "Sources:" not in captured.out
+
+
+# --- sparse / hybrid retrieval sourced from the store, not corpus_dir (Feature 2) ----
+
+
+def test_hybrid_construction_and_query_with_no_corpus_dir_configured(build_rag):
+    """RAG(retrieval="hybrid") must not require corpus_dir at all -- BM25 is built from
+    whatever is already in the vector store."""
+
+    rag = build_rag(retrieval="hybrid")
+    answer = rag.ask("anything")
+    assert answer.text == DEFAULT_ENGINE_MESSAGES.empty_kb
+
+
+def test_ingest_after_construction_appears_in_hybrid_results(build_rag):
+    rag = build_rag(retrieval="hybrid")
+    rag.ingest("Refunds take 1-5 business days for PAY-9911 disputed cases.", "faq.md")
+
+    results = rag.engine.retrieve("PAY-9911", top_k=5)
+    assert any("PAY-9911" in r.chunk.text for r in results)
+
+
+def test_ingest_after_construction_appears_in_sparse_results(build_rag):
+    rag = build_rag(retrieval="sparse")
+    rag.ingest("Refunds take 1-5 business days for PAY-9911 disputed cases.", "faq.md")
+
+    results = rag.engine.retrieve("PAY-9911", top_k=5)
+    assert any("PAY-9911" in r.chunk.text for r in results)
+
+
+def test_repeated_ingests_all_become_searchable_via_sparse(build_rag):
+    rag = build_rag(retrieval="sparse")
+    for i in range(4):
+        rag.ingest(f"Document number {i} discusses topic PAY-{9000 + i}.", f"doc_{i}.md")
+
+    for i in range(4):
+        results = rag.engine.retrieve(f"PAY-{9000 + i}", top_k=5)
+        assert any(f"PAY-{9000 + i}" in r.chunk.text for r in results)
+
+
+def test_hybrid_retrieval_on_empty_store_returns_no_results_without_crashing(build_rag):
+    rag = build_rag(retrieval="hybrid")
+    assert rag.engine.retrieve("anything", top_k=5) == []
+
+
+def test_sparse_retrieval_on_empty_store_returns_no_results_without_crashing(build_rag):
+    rag = build_rag(retrieval="sparse")
+    assert rag.engine.retrieve("anything", top_k=5) == []
+
+
+def test_sparse_engine_answer_on_empty_store_distinguishes_empty_kb_from_no_chunks(build_rag):
+    """An empty store ("nothing has been ingested") must not read the same as a query
+    that found no matching chunks -- RAGEngine._answer() already gates on store.count()
+    before ever calling retrieve(), independent of retrieval strategy, so this behavior
+    was already correct for dense and carries over unchanged for sparse/hybrid."""
+
+    rag = build_rag(retrieval="sparse")
+    answer = rag.ask("anything")
+    assert answer.text == DEFAULT_ENGINE_MESSAGES.empty_kb
+    assert answer.text != DEFAULT_ENGINE_MESSAGES.no_chunks

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from kuhaku.tools.rag.models import Document
-from kuhaku.tools.rag.chunking import StructuralChunker
 from kuhaku.tools.rag.sparse_retriever import (
     BM25Retriever,
-    build_bm25_from_corpus,
+    build_bm25_from_store,
     tokenize,
 )
-from tests.conftest import make_chunk
+from tests.conftest import FakeVectorStore, make_chunk
 
 
 # --- tokenizer --------------------------------------------------------------
@@ -157,42 +155,95 @@ def test_rarer_term_outranks_common_term():
     assert results[0].chunk.document_id == "rare"
 
 
-# --- corpus builder ---------------------------------------------------------
-def test_build_from_corpus_sanitizes(tmp_path):
-    (tmp_path / "log_x.json").write_text(
-        '{"error_code": "PAY-1001", "email": "a@b.com", "pan": "4111 1111 1111 1111"}',
-        encoding="utf-8",
-    )
-    retriever = build_bm25_from_corpus(str(tmp_path), chunk_size=500, overlap=50)
+# --- store-backed factory ----------------------------------------------------
+# Sanitization coverage lives in tests/security/test_pii_leak_scan.py, which drives the
+# real ingest() -> store -> build_bm25_from_store path end to end. The
+# dense/sparse chunker-mismatch hazard the old corpus-reading factory carried is now
+# structurally impossible: both sides read the exact same Chunk objects out of the same
+# store, so there is only ever one chunking of a given document (see
+# StoreBackedBM25Retriever's docstring).
+def test_build_bm25_from_store_indexes_the_stores_current_chunks():
+    store = FakeVectorStore([make_chunk("errorcodes_payment", text="insufficient funds PAY-1001")])
+    retriever = build_bm25_from_store(store)
     assert retriever.count() == 1
-    # PII must not be searchable — the index inherits load_corpus's sanitization.
-    assert retriever.retrieve("a@b.com", top_k=5) == []
-    assert retriever.retrieve("4111", top_k=5) == []
-    # ...while the useful lexical content is still indexed.
     assert retriever.retrieve("PAY-1001", top_k=5)
 
 
-def test_build_bm25_from_corpus_uses_injected_chunker(tmp_path):
-    """Regression guard for the dense/sparse chunker-mismatch bug: BM25 must use
-    whatever chunker is passed in, not a hardcoded one (see DECISIONS.md D28)."""
+def test_build_bm25_from_store_empty_store_is_safe():
+    retriever = build_bm25_from_store(FakeVectorStore())
+    assert retriever.count() == 0
+    assert retriever.retrieve("anything", top_k=5) == []
 
-    (tmp_path / "errorcodes_x.md").write_text(
-        "# Kodlar\n\n| Kod | Anlam |\n|---|---|\n| RC-05 | Do Not Honor |",
-        encoding="utf-8",
-    )
-    chunker = StructuralChunker()
 
-    retriever = build_bm25_from_corpus(
-        str(tmp_path), chunk_size=500, overlap=50, chunker=chunker,
-    )
-    expected = chunker.chunk(
-        Document(
-            id="errorcodes_x", title="Kodlar", doc_type="error_codes",
-            text="# Kodlar\n\n| Kod | Anlam |\n|---|---|\n| RC-05 | Do Not Honor |",
-            source_path="errorcodes_x.md",
-        ),
-        chunk_size=500, overlap=50,
-    )
+def test_build_bm25_from_store_tolerates_duplicate_chunk_ids():
+    """Not every VectorStore need dedupe on id the way Chroma's own add() does (see
+    test_vectorstore.py's collision test) -- BM25 construction itself must not crash if
+    a store's enumeration ever yields two chunks sharing an id; it simply indexes both
+    by list position, same as any other pair of chunks."""
 
-    assert retriever.count() == len(expected)
-    assert any(c.content_type == "table" for c in expected)  # sanity: real table chunk
+    store = FakeVectorStore(
+        [make_chunk("a", text="alpha one"), make_chunk("a", text="alpha two")]
+    )
+    retriever = build_bm25_from_store(store)
+    assert retriever.count() == 2
+    assert retriever.retrieve("alpha", top_k=5)
+
+
+def test_refresh_picks_up_chunks_ingested_after_construction():
+    store = FakeVectorStore([make_chunk("a", text="alpha")])
+    retriever = build_bm25_from_store(store)
+    assert retriever.retrieve("beta", top_k=5) == []
+
+    store.add([make_chunk("b", text="beta")], [[0.0, 0.0, 0.0]])
+    # Without refresh(), the cached index must not silently see the new chunk.
+    assert retriever.retrieve("beta", top_k=5) == []
+
+    retriever.refresh()
+    results = retriever.retrieve("beta", top_k=5)
+    assert [r.chunk.document_id for r in results] == ["b"]
+
+
+def test_repeated_ingests_keep_the_index_correct():
+    store = FakeVectorStore([make_chunk("seed", text="seed term")])
+    retriever = build_bm25_from_store(store)
+    retriever.retrieve("seed", top_k=5)  # force the first build
+
+    for i in range(5):
+        store.add([make_chunk(f"doc_{i}", text=f"term{i}")], [[0.0, 0.0, 0.0]])
+        retriever.refresh()
+
+    assert retriever.count() == 6
+    for i in range(5):
+        results = retriever.retrieve(f"term{i}", top_k=5)
+        assert [r.chunk.document_id for r in results] == [f"doc_{i}"]
+
+
+def test_refresh_defers_rebuild_until_the_next_query(monkeypatch):
+    """Multiple refresh() calls between two queries must collapse into a single
+    rebuild, not one rebuild per refresh() call -- otherwise a run of N ingests with
+    no interleaved queries costs O(N * corpus_size), quadratic in N (see
+    StoreBackedBM25Retriever.refresh)."""
+
+    import kuhaku.tools.rag.sparse_retriever as sparse_retriever_module
+
+    build_calls: list[int] = []
+    original_init = sparse_retriever_module.BM25Retriever.__init__
+
+    def counting_init(self, chunks, **kwargs):
+        build_calls.append(len(chunks))
+        original_init(self, chunks, **kwargs)
+
+    monkeypatch.setattr(sparse_retriever_module.BM25Retriever, "__init__", counting_init)
+
+    store = FakeVectorStore([make_chunk("a", text="alpha")])
+    retriever = build_bm25_from_store(store)
+    retriever.retrieve("alpha", top_k=5)
+    assert len(build_calls) == 1
+
+    for i in range(5):
+        store.add([make_chunk(f"doc_{i}", text=f"term{i}")], [[0.0, 0.0, 0.0]])
+        retriever.refresh()
+    assert len(build_calls) == 1  # refresh() alone never rebuilds
+
+    retriever.retrieve("term3", top_k=5)
+    assert len(build_calls) == 2  # one rebuild covers all 5 pending refreshes

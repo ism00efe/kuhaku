@@ -978,6 +978,59 @@ def test_ingest_document_uses_engines_messages_for_upload_size_error():
         engine.ingest_document("way too long a body", "big.md", chunk_size=500, overlap=50)
 
 
+# --- ingest_document refreshes a stale sparse/hybrid retriever (Feature 2) -------
+class _RefreshTrackingRetriever:
+    """Minimal Retriever + refresh() combo standing in for a real sparse/hybrid
+    retriever without pulling in BM25 -- proves ingest_document's refresh wiring is
+    duck-typed against whatever `self._retriever` happens to expose, not any concrete
+    class (see retriever.refresh_retriever)."""
+
+    def __init__(self) -> None:
+        self.refresh_calls = 0
+
+    def retrieve(self, query, top_k, *, auth_context=None, doc_type=None):
+        return []
+
+    def refresh(self) -> None:
+        self.refresh_calls += 1
+
+
+def test_ingest_document_refreshes_a_retriever_that_supports_it():
+    store = FakeVectorStore()
+    retriever = _RefreshTrackingRetriever()
+    engine = RAGEngine(FakeEmbeddings(), store, FakeLLM(), retriever=retriever)
+
+    engine.ingest_document("a fairly long document body", "ok.md", chunk_size=500, overlap=50)
+
+    assert retriever.refresh_calls == 1
+
+
+def test_ingest_document_does_not_require_refresh_on_the_default_retriever():
+    """DenseRetriever (and any other retriever with no refresh()) is never required to
+    implement one -- ingest_document must not raise just because the retriever it holds
+    has nothing to refresh."""
+
+    store = FakeVectorStore()
+    engine = RAGEngine(FakeEmbeddings(), store, FakeLLM())  # default DenseRetriever
+
+    engine.ingest_document("a fairly long document body", "ok.md", chunk_size=500, overlap=50)
+
+
+def test_ingest_document_skips_refresh_when_zero_chunks_were_added():
+    """An ingest that produces no chunks (e.g. empty content after chunking) must not
+    trigger a pointless refresh -- there is nothing new for a cached sparse index to
+    see."""
+
+    store = FakeVectorStore()
+    retriever = _RefreshTrackingRetriever()
+    engine = RAGEngine(FakeEmbeddings(), store, FakeLLM(), retriever=retriever)
+
+    count, _ = engine.ingest_document("", "empty.md", chunk_size=500, overlap=50)
+
+    assert count == 0
+    assert retriever.refresh_calls == 0
+
+
 # --- context_text edge cases ----------------------------------------------------
 def test_context_text_none_adds_no_label_or_redactions():
     store = FakeVectorStore([make_chunk("faq_general")])

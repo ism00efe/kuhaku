@@ -42,8 +42,7 @@ from kuhaku.tools.rag import (  # noqa: E402
     RAGSettings,
     Retriever,
     SentenceTransformerEmbeddings,
-    build_bm25_from_corpus,
-    build_chunker,
+    build_bm25_from_store,
 )
 
 QUESTION_TIMEOUT_SECONDS = 30
@@ -177,18 +176,9 @@ def main() -> None:
     store = ChromaVectorStore(rag_settings.chroma_persist_dir, rag_settings.chroma_collection)
     if store.count() == 0:
         raise SystemExit("Vector store is empty. Run `python scripts/ingest.py` first.")
-    chunker = build_chunker(rag_settings)
 
     dense = DenseRetriever(embedder, store)
-    sparse = build_bm25_from_corpus(
-        rag_settings.corpus_dir,
-        chunk_size=rag_settings.chunk_size,
-        overlap=rag_settings.chunk_overlap,
-        k1=rag_settings.bm25_k1,
-        b=rag_settings.bm25_b,
-        chunker=chunker,
-        rag_settings=rag_settings,
-    )
+    sparse = build_bm25_from_store(store, k1=rag_settings.bm25_k1, b=rag_settings.bm25_b)
 
     def rrf(dense_r: Retriever | None, sparse_r: Retriever | None, reranker) -> Retriever:
         # Whichever of dense_r/sparse_r is non-None occupies the required `dense` slot --

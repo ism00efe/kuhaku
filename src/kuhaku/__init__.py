@@ -37,7 +37,7 @@ from .tools.rag import (
     Retriever,
     SparseRetriever,
     UnsupportedFileType,
-    build_bm25_from_corpus,
+    build_bm25_from_store,
     build_chunker,
     build_embedding_provider,
     extract_text,
@@ -94,8 +94,11 @@ class RAG:
         """
         Args:
             retrieval: ``"dense"`` (embedding similarity, the default), ``"sparse"``
-                (BM25 keyword search, requires ``corpus_dir``), or ``"hybrid"`` (both,
-                fused with RRF, requires ``corpus_dir``).
+                (BM25 keyword search, built from whatever is already in the vector
+                store), or ``"hybrid"`` (both, fused with RRF). Neither ``"sparse"``
+                nor ``"hybrid"`` needs ``corpus_dir``: BM25 is built from the store's
+                own chunks, not by re-reading source files from disk, and it picks up
+                documents ingested after construction via :meth:`ingest`.
             reranker: ``False`` (default, no re-ranking), ``True`` (cross-encoder
                 re-ranking using ``RAGSettings.reranker_model``), or a specific
                 HuggingFace cross-encoder model name.
@@ -107,9 +110,10 @@ class RAG:
                 ``RAGSettings.chroma_persist_dir`` if set, otherwise a fresh temporary
                 directory (so a bare ``RAG()`` never depends on -- or writes into --
                 the current working directory).
-            corpus_dir: directory of source documents, only needed for
-                ``retrieval="sparse"``/``"hybrid"`` (BM25 is rebuilt from disk, not
-                stored); ``None`` uses ``RAGSettings.corpus_dir``.
+            corpus_dir: accepted for ``RAGSettings`` compatibility, but not read by
+                anything ``RAG`` does -- neither construction nor any retrieval mode
+                loads documents from it; use :meth:`load_documents` to ingest a
+                directory instead. ``None`` uses ``RAGSettings.corpus_dir``.
             vertex_project: Google Cloud project for the ``vertex`` LLM/embedding
                 providers; ``None`` uses ``Settings.vertex_project``.
             vertex_location: Google Cloud location for the ``vertex`` LLM/embedding
@@ -243,15 +247,9 @@ class RAG:
 
         sparse = None
         if retrieval in ("sparse", "hybrid"):
-            sparse = build_bm25_from_corpus(
-                rs.corpus_dir,
-                chunk_size=rs.chunk_size,
-                overlap=rs.chunk_overlap,
-                k1=rs.bm25_k1,
-                b=rs.bm25_b,
-                chunker=self._chunker,
-                rag_settings=rs,
-            )
+            # Sourced from the same store the dense side reads -- not from corpus_dir --
+            # so both sides always chunk each document exactly once (Feature 2).
+            sparse = build_bm25_from_store(self._store, k1=rs.bm25_k1, b=rs.bm25_b)
 
         reranker_instance = None
         if reranker:

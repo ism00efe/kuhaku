@@ -23,9 +23,9 @@ import pytest
 from kuhaku.tools.rag.models import Chunk
 from kuhaku.core.sanitization import sanitize_text
 from kuhaku.tools.rag.engine import RAGEngine
-from kuhaku.tools.rag.ingestion import chunk_document, load_corpus
+from kuhaku.tools.rag.ingestion import chunk_document, ingest, load_corpus
 from kuhaku.tools.rag.retriever import DenseRetriever
-from kuhaku.tools.rag.sparse_retriever import build_bm25_from_corpus
+from kuhaku.tools.rag.sparse_retriever import build_bm25_from_store
 from tests.conftest import FakeEmbeddings, FakeVectorStore
 
 # Fake-but-format-valid PII covering every category sanitization.py claims to mask.
@@ -92,20 +92,30 @@ def test_ingestion_strips_all_pii_categories(tmp_path):
 
 # --- 2) Sparse index: must inherit sanitization (the historical regression) ---
 def test_sparse_index_never_contains_raw_pii(tmp_path):
+    """The sparse index is now built from the vector store's own chunks (see
+    sparse_retriever.build_bm25_from_store), not by re-reading corpus_dir -- so this
+    drives the real ingest() -> store -> BM25 path end to end, the same chunks the
+    dense side would search, to prove the store-sourced index inherits ingest()'s
+    sanitization rather than bypassing it."""
+
     (tmp_path / "log_leak_test.xml").write_text(
         f"<log><email>{RAW_EMAIL}</email><ip>{RAW_IP}</ip>"
         f"<message>card {RAW_CARD} phone {RAW_PHONE} id {RAW_TCKN}</message></log>",
         encoding="utf-8",
     )
 
-    bm25 = build_bm25_from_corpus(
-        str(tmp_path), chunk_size=500, overlap=50
-    )
-    indexed_text = "\n".join(c.text for c in bm25._chunks)  # noqa: SLF001
+    store = FakeVectorStore()
+    ingest(str(tmp_path), FakeEmbeddings(), store, chunk_size=500, overlap=50)
+
+    bm25 = build_bm25_from_store(store)
+    indexed_text = "\n".join(c.text for c in store.iter_chunks())
     _assert_no_raw_pii(indexed_text, where="BM25 sparse index")
     # The masks themselves should be present — proving the text was sanitized, not
     # silently dropped.
     assert "[EMAIL]" in indexed_text and "[CARD]" in indexed_text
+    # And the raw values must not be searchable through the retriever itself either.
+    assert bm25.retrieve(RAW_EMAIL, top_k=5) == []
+    assert bm25.retrieve(RAW_CARD, top_k=5) == []
 
 
 # --- 3) Full query path: prompt + "response" + retrieved chunks --------------

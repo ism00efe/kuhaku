@@ -205,6 +205,61 @@ def test_get_by_ids_empty_input_returns_empty_list_without_querying(tmp_path):
     assert store.get_by_ids([]) == []
 
 
+# --- iter_chunks (Feature 1: enumerate every chunk the store holds) --------------
+def test_iter_chunks_round_trips_id_text_and_metadata(tmp_path):
+    store = _store(tmp_path)
+    chunks = [
+        make_chunk("doc_a", 0, text="first chunk", obsolete=True, effective_date="2025-01-01"),
+        make_chunk("doc_b", 0, text="second chunk", content_type="table"),
+    ]
+    store.add(chunks, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+
+    read_back = {c.id: c for c in store.iter_chunks()}
+    assert set(read_back) == {c.id for c in chunks}
+    for original in chunks:
+        got = read_back[original.id]
+        assert got.text == original.text
+        assert got.metadata() == original.metadata()
+
+
+def test_iter_chunks_empty_store_yields_nothing(tmp_path):
+    store = _store(tmp_path)
+    assert list(store.iter_chunks()) == []
+
+
+def test_iter_chunks_pages_through_collections_larger_than_page_size(tmp_path):
+    store = _store(tmp_path)
+    chunks = [make_chunk(f"doc_{i}", text=f"content {i}") for i in range(12)]
+    embeddings = [[float(i), 0.0, 0.0] for i in range(12)]
+    store.add(chunks, embeddings)
+
+    got = list(store.iter_chunks(page_size=5))
+    assert {c.id for c in got} == {c.id for c in chunks}
+    assert len(got) == 12
+
+
+def test_iter_chunks_refreshes_stale_collection(tmp_path):
+    store = _store(tmp_path)
+    store.add([make_chunk("a")], [[1.0, 0.0, 0.0]])
+    store._client.delete_collection(store._collection_name)  # noqa: SLF001
+    assert list(store.iter_chunks()) == []
+
+
+def test_iter_chunks_reflects_add_semantics_on_id_collision(tmp_path):
+    """``add()`` ignores a duplicate id rather than overwriting it (verified against the
+    installed Chroma client) -- ``iter_chunks()`` must faithfully reflect that
+    store-level behavior, not paper over it, since it's the only enumeration path a
+    consumer like BM25 index construction has."""
+
+    store = _store(tmp_path)
+    store.add([make_chunk("a", text="original")], [[1.0, 0.0, 0.0]])
+    store.add([make_chunk("a", text="colliding")], [[0.0, 1.0, 0.0]])  # same id "a::0"
+
+    chunks = list(store.iter_chunks())
+    assert len(chunks) == 1
+    assert chunks[0].text == "original"
+
+
 def test_stale_collection_refreshes_automatically(tmp_path):
     """If the underlying Chroma collection is deleted or reset externally, count/query/add
     refreshes the stale collection reference automatically without failing."""
