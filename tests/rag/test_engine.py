@@ -30,8 +30,8 @@ from tests.conftest import (
     prometheus_counter_value as _counter_value,
 )
 from kuhaku.tools.rag.engine import RAGEngine
-from kuhaku.tools.rag.messages import ACCESS_DENIED_MESSAGE, NO_CHUNKS_MESSAGE
-from kuhaku.tools.rag.metrics import CACHE_HITS, CACHE_MISSES, UNVERIFIED_CITATIONS
+from kuhaku.tools.rag.messages import NO_CHUNKS_MESSAGE
+from kuhaku.tools.rag.metrics import CACHE_HITS, CACHE_MISSES, REQUEST_COUNT, UNVERIFIED_CITATIONS
 from kuhaku.tools.rag.models import RetrievedChunk
 from kuhaku.tools.rag.prompts import ABSTENTION_PHRASE
 from kuhaku.tools.rag.retriever import DenseRetriever
@@ -537,48 +537,11 @@ def test_answer_defaults_auth_context_to_none():
     assert retriever.auth_context_calls == [None]
 
 
-# --- Feature 5: document-level access filtering derives denied/no-match/empty-kb -----
-def test_denied_when_only_restricted_content_matches():
-    """Retrieval (entitlement-filtered) finds nothing, but an unrestricted probe would
-    have -- this is a denial, not a genuine no-match, and must be answered/audited/
-    metriced as one, without ever calling the LLM."""
-
-    store = FakeVectorStore([make_chunk("x")])  # just needs to be non-empty
-    llm = FakeLLM()
-    retriever = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",))])
-    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, retriever=retriever)
-
-    ans = engine.answer(
-        "salary bands", auth_context=AuthContext(identity="efe", roles=("engineering",))
-    )
-
-    assert ans.text == ACCESS_DENIED_MESSAGE
-    assert ans.citations == [] and ans.retrieved == []
-    assert ans.abstained is True
-    assert llm.last_user is None  # generate() never invoked
-
-
-def test_not_a_denial_when_nothing_matches_at_all():
-    """An empty retrieval result with no restricted content behind it either is a
-    genuine no-match -- must stay distinct from access_denied."""
-
-    store = FakeVectorStore([make_chunk("x")])
-    llm = FakeLLM()
-    retriever = FakeRetriever([])  # nothing at all, restricted or not
-    engine = RAGEngine(FakeEmbeddings(), store, llm, top_k=4, retriever=retriever)
-
-    ans = engine.answer("soru", auth_context=AuthContext(identity="efe", roles=("engineering",)))
-
-    assert ans.text == NO_CHUNKS_MESSAGE
-    assert ans.text != ACCESS_DENIED_MESSAGE
-    assert ans.abstained is True
-    assert llm.last_user is None
-
-
-def test_not_a_denial_when_filtering_removes_only_some_candidates():
-    """Filtering that narrows but doesn't empty the candidate set is ordinary retrieval,
-    not a denial -- an entitled user with access to *something* still gets a normal
-    answer grounded in what they can see."""
+# --- SECURITY: an unentitled result must be indistinguishable from a no-match one -----
+def test_filtering_removes_only_some_candidates_still_answers_normally():
+    """Filtering that narrows but doesn't empty the candidate set is ordinary retrieval
+    -- an entitled user with access to *something* still gets a normal answer grounded in
+    what they can see."""
 
     store = FakeVectorStore([make_chunk("x")])
     llm = FakeLLM(response="Answer [S1].")
@@ -599,71 +562,49 @@ def test_not_a_denial_when_filtering_removes_only_some_candidates():
     assert [c.document_id for c in [rc.chunk for rc in ans.retrieved]] == ["eng_doc"]
 
 
-def test_denial_with_auth_context_none_and_no_roles_behave_the_same():
-    """`auth_context=None` and an `AuthContext` with empty `roles` both satisfy no tag
-    (Decision 1/Edge cases) -- both must be denials when only restricted content
-    matches."""
+def test_unentitled_result_indistinguishable_from_no_match(tmp_path):
+    """The security property this task exists to establish: a caller whose query was
+    filtered down to nothing by entitlement, and a caller whose query genuinely matches
+    nothing, must be impossible to tell apart -- from the answer, from the metrics
+    label, or from the audit trail -- otherwise repeating varied queries against a
+    "denied" signal would map the restricted corpus without ever reading it."""
 
-    store = FakeVectorStore([make_chunk("x")])
-    retriever_factory = lambda: FakeRetriever(  # noqa: E731
-        [make_chunk("hr_doc", access_tags=("people_ops",))]
+    restricted_only = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",), text="salary bands")])
+    nothing_at_all = FakeRetriever([])
+    auth_context = AuthContext(identity="efe", roles=("engineering",))
+
+    unentitled_audit = tmp_path / "unentitled.jsonl"
+    no_match_audit = tmp_path / "no_match.jsonl"
+    llm_unentitled = FakeLLM()
+    llm_no_match = FakeLLM()
+    engine_unentitled = RAGEngine(
+        FakeEmbeddings(), FakeVectorStore([make_chunk("x")]), llm_unentitled,
+        top_k=4, retriever=restricted_only, audit_log_path=str(unentitled_audit),
+    )
+    engine_no_match = RAGEngine(
+        FakeEmbeddings(), FakeVectorStore([make_chunk("x")]), llm_no_match,
+        top_k=4, retriever=nothing_at_all, audit_log_path=str(no_match_audit),
     )
 
-    engine_none = RAGEngine(
-        FakeEmbeddings(), store, FakeLLM(), top_k=4, retriever=retriever_factory()
-    )
-    ans_none = engine_none.answer("salary bands")  # no auth_context at all
-    assert ans_none.text == ACCESS_DENIED_MESSAGE
+    before = _counter_value(REQUEST_COUNT, status="no_chunks")
+    ans_unentitled = engine_unentitled.answer("salary bands", auth_context=auth_context)
+    ans_no_match = engine_no_match.answer("salary bands", auth_context=auth_context)
+    after = _counter_value(REQUEST_COUNT, status="no_chunks")
 
-    engine_empty_roles = RAGEngine(
-        FakeEmbeddings(), store, FakeLLM(), top_k=4, retriever=retriever_factory()
-    )
-    ans_empty = engine_empty_roles.answer(
-        "salary bands", auth_context=AuthContext(identity="efe", roles=())
-    )
-    assert ans_empty.text == ACCESS_DENIED_MESSAGE
+    assert ans_unentitled.text == ans_no_match.text == NO_CHUNKS_MESSAGE
+    assert "hr_doc" not in ans_unentitled.text and "salary" not in ans_unentitled.text
+    assert ans_unentitled.abstained is True and ans_no_match.abstained is True
+    assert ans_unentitled.citations == ans_no_match.citations == []
+    assert ans_unentitled.retrieved == ans_no_match.retrieved == []
+    assert llm_unentitled.last_user is None and llm_no_match.last_user is None
+    # Both requests land on the exact same status label -- no separate "denied" label
+    # for an observer to distinguish.
+    assert after == before + 2
 
-
-def test_denial_writes_an_audit_record(tmp_path):
-    store = FakeVectorStore([make_chunk("x")])
-    llm = FakeLLM()
-    retriever = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",))])
-    audit_path = tmp_path / "audit.jsonl"
-    engine = RAGEngine(
-        FakeEmbeddings(), store, llm, top_k=4, retriever=retriever,
-        audit_log_path=str(audit_path),
-    )
-
-    engine.answer(
-        "salary bands",
-        auth_context=AuthContext(identity="u1", is_authenticated=True, roles=("engineering",)),
-    )
-
-    assert audit_path.is_file()
-    row = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[0])
-    assert row["event_type"] == "authorization_denied"
-    assert row["identity"] == "u1"
-    assert row["is_authenticated"] is True
-    assert row["accessed_chunks"] == []
-
-
-def test_denial_probe_result_never_reaches_citations_or_retrieved():
-    """The unrestricted probe (`_is_entitlement_denial`) must never leak the restricted
-    chunk it found -- the whole point of it is to pick an outcome label, not to surface
-    content the caller isn't entitled to."""
-
-    store = FakeVectorStore([make_chunk("x")])
-    retriever = FakeRetriever([make_chunk("hr_doc", access_tags=("people_ops",), text="salary")])
-    engine = RAGEngine(FakeEmbeddings(), store, FakeLLM(), top_k=4, retriever=retriever)
-
-    ans = engine.answer(
-        "salary bands", auth_context=AuthContext(identity="efe", roles=("engineering",))
-    )
-
-    assert ans.retrieved == []
-    assert ans.citations == []
-    assert "hr_doc" not in ans.text
-    assert "salary" not in ans.text
+    # Neither case writes an audit record on this path, so there is nothing in the
+    # audit trail for the two cases to differ in.
+    assert not unentitled_audit.exists()
+    assert not no_match_audit.exists()
 
 
 def test_retrieval_query_passed_to_retriever_is_sanitized():

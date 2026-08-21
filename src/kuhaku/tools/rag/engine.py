@@ -646,40 +646,10 @@ class RAGEngine:
         # FR1: retrieval ran but found nothing relevant -- abstain rather than let the
         # LLM improvise an ungrounded answer from an empty prompt.
         if not retrieved:
-            # SECURITY (document-level access filtering): distinguish "entitlement
-            # filtering is what emptied the candidate set" from "nothing matched the
-            # query at all" -- see `_is_entitlement_denial`. Preserves the same audit/
-            # message/metric distinction the coarse resource/action authorization gate
-            # this replaced used to provide, now derived from the filter itself instead
-            # of a separate policy check.
-            if self._is_entitlement_denial(search_query, auth_context):
-                logger.warning(
-                    "access denied by document-level access filtering",
-                    extra={"status": "access_denied"},
-                )
-                REQUEST_COUNT.add(1, {"status": "access_denied"})
-                record_audit(
-                    self._audit_log_path,
-                    enabled=self._audit_enabled,
-                    trace_id=trace_id,
-                    raw_question=question or "",
-                    sanitized_retrieval_query=retrieval_query,
-                    event_type="authorization_denied",
-                    auth_context=auth_context,
-                    accessed_chunks=[],  # every candidate was filtered out
-                    llm_version=self._llm_version,
-                    embedding_version=self._embedding_version,
-                    system_prompt_version=self._system_prompt_version,
-                )
-                return Answer(
-                    text=self._messages.access_denied,
-                    citations=[],
-                    retrieved=[],
-                    redactions=redaction_labels,
-                    trace_id=trace_id,
-                    abstained=True,
-                )
-
+            # SECURITY: an empty result is reported identically whether entitlement
+            # filtering removed every candidate or the query genuinely matched nothing --
+            # distinguishing the two would let a caller map restricted content by varying
+            # the query and watching which empty results are "denials".
             logger.info("no chunks retrieved for query; abstaining", extra={"status": "no_chunks"})
             REQUEST_COUNT.add(1, {"status": "no_chunks"})
             ABSTENTION_COUNT.add(1, {"reason": "zero_chunks"})
@@ -917,38 +887,6 @@ class RAGEngine:
             # detection is disabled, found nothing, or degraded silently on failure.
             contradiction_warning=contradiction_warning,
         )
-
-    def _is_entitlement_denial(
-        self, search_query: str, auth_context: AuthContext | None
-    ) -> bool:
-        """Feature 5: whether document-level access filtering (rather than a genuine
-        lack of matches) is why retrieval came back empty.
-
-        Only ever called from the ``if not retrieved:`` branch of ``_answer()``, i.e.
-        after the real, entitlement-filtered search already ran and found nothing.
-        Re-runs the exact same search through ``self._retriever`` -- so it reflects
-        whichever strategy (dense/sparse/hybrid) is actually configured, doc_type and
-        freshness filtering included -- with entitlement filtering alone switched off
-        via the engine-internal ``enforce_entitlement=False`` (never reachable from any
-        public method; see ``Retriever.retrieve``'s own docstring). The result is used
-        for nothing except this true/false answer: it is never turned into citations,
-        never added to ``Answer.retrieved``, never reaches the LLM prompt.
-
-        Best-effort: a retrieval failure here must not turn an otherwise-normal
-        abstention into a hard failure, so it degrades to "not a denial" (the safer,
-        non-revealing default) on any exception -- same idiom as the contradiction
-        detector's own try/except in step 4.5 above.
-        """
-
-        try:
-            unrestricted = self._retriever.retrieve(
-                search_query, self._top_k, auth_context=auth_context,
-                enforce_entitlement=False,
-            )
-        except Exception:
-            logger.warning("entitlement-denial probe failed; treating as no-match", exc_info=True)
-            return False
-        return bool(unrestricted)
 
     @staticmethod
     def _extract_citations(

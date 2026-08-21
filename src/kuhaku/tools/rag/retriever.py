@@ -38,13 +38,8 @@ class Retriever(Protocol):
     ``is_entitled`` (see below) before ranking/truncating to ``top_k`` -- a chunk the
     caller is not entitled to see never enters the ranked result at all, let alone the
     LLM prompt. ``auth_context=None`` is not "no restriction"; it means "no roles", so
-    only untagged chunks are visible (see ``is_entitled``'s own docstring).
-
-    ``enforce_entitlement`` defaults to ``True`` everywhere and is not reachable from any
-    public ``RAGEngine``/``RAG`` method -- it exists solely so ``RAGEngine`` can ask,
-    internally, "would this query have matched at all, ignoring entitlement" to tell a
-    denial apart from a genuine no-match (see ``RAGEngine._is_entitlement_denial``, and
-    Decision 3: there is deliberately no caller-facing switch to disable filtering).
+    only untagged chunks are visible (see ``is_entitled``'s own docstring). Filtering is
+    unconditional: there is no argument, anywhere, that turns it off.
     """
 
     def retrieve(
@@ -54,7 +49,6 @@ class Retriever(Protocol):
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
-        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]: ...
 
 
@@ -147,7 +141,6 @@ class DenseRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
-        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         if top_k <= 0:
             return []
@@ -161,7 +154,7 @@ class DenseRetriever:
             # chunk is never scored/ranked in the first place, so it can never crowd an
             # eligible chunk out of `top_k` (the failure mode a post-query filter would
             # have). See `_entitlement_where`.
-            where = _entitlement_where(auth_context) if enforce_entitlement else None
+            where = _entitlement_where(auth_context)
             candidates = self._store.query(query_vector, top_k, where=where)
         except Exception as exc:
             raise VectorStoreError(f"Vector store query failed: {exc}") from exc
@@ -356,7 +349,6 @@ class SparseRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
-        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         if top_k <= 0:
             return []
@@ -366,7 +358,6 @@ class SparseRetriever:
         depth = max(self._candidates, top_k)
         ranking = self._sparse.retrieve(
             query, depth, auth_context=auth_context, doc_type=doc_type,
-            enforce_entitlement=enforce_entitlement,
         )
         normalized_scores = _min_max_normalize([item.score for item in ranking])
         candidates = [
@@ -431,7 +422,6 @@ class HybridRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
-        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         if top_k <= 0:
             return []
@@ -440,14 +430,12 @@ class HybridRetriever:
         depth = max(self._candidates, top_k)
         dense_ranking = self._dense.retrieve(
             query, depth, auth_context=auth_context, doc_type=doc_type,
-            enforce_entitlement=enforce_entitlement,
         )
         rankings = [dense_ranking]
         sparse_ranking: list[RetrievedChunk] | None = None
         if self._sparse is not None:
             sparse_ranking = self._sparse.retrieve(
                 query, depth, auth_context=auth_context, doc_type=doc_type,
-                enforce_entitlement=enforce_entitlement,
             )
             rankings.append(sparse_ranking)
 

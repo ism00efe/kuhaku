@@ -192,7 +192,6 @@ class FakeRetriever:
         *,
         auth_context: AuthContext | None = None,
         doc_type: str | None = None,
-        enforce_entitlement: bool = True,
     ) -> list[RetrievedChunk]:
         self.calls.append((query, top_k))
         self.auth_context_calls.append(auth_context)
@@ -200,8 +199,7 @@ class FakeRetriever:
         chunks = self._chunks
         if doc_type is not None:
             chunks = [c for c in chunks if c.doc_type == doc_type]
-        if enforce_entitlement:
-            chunks = [c for c in chunks if is_entitled(c, auth_context)]
+        chunks = [c for c in chunks if is_entitled(c, auth_context)]
         return [
             RetrievedChunk(chunk=c, score=1.0 - 0.1 * i)
             for i, c in enumerate(chunks[:top_k])

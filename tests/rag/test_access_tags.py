@@ -2,9 +2,9 @@
 
 Covers the security-critical guarantees end to end: tag storage/round-trip (Feature 1),
 per-strategy entitlement enforcement and the rank-cliff regression (Feature 3), and the
-default tag vocabulary (Feature 6). Cache isolation (Feature 4) and denied/no-match/
-empty-kb (Feature 5) live in test_engine.py; the public-facade acceptance test lives in
-test_rag_facade.py.
+default tag vocabulary (Feature 6). Cache isolation and the unentitled/no-match
+indistinguishability property live in test_engine.py; the public-facade acceptance test
+lives in test_rag_facade.py.
 """
 
 from __future__ import annotations
@@ -286,8 +286,14 @@ def test_sparse_rank_cliff_regression():
     eligible = [make_chunk(f"eligible_{i}", text="salary mentioned once") for i in range(5)]
     retriever = BM25Retriever(restricted + eligible)
 
-    unfiltered = retriever.retrieve("salary", top_k=4, enforce_entitlement=False)
-    assert all(c.chunk.document_id.startswith("restricted") for c in unfiltered)
+    # Sanity check on the test setup itself: with full visibility (a caller entitled to
+    # both the restricted and the untagged content -- everything here is either
+    # untagged or tagged "hr"), raw BM25 ranking surfaces only the higher-scoring
+    # restricted chunks.
+    fully_entitled = retriever.retrieve(
+        "salary", top_k=4, auth_context=AuthContext(identity="u", roles=("hr",))
+    )
+    assert all(c.chunk.document_id.startswith("restricted") for c in fully_entitled)
 
     results = retriever.retrieve(
         "salary", top_k=4, auth_context=AuthContext(identity="u", roles=("engineering",))

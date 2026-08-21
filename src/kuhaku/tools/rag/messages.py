@@ -16,7 +16,6 @@ from dataclasses import dataclass
 EMPTY_QUERY_MESSAGE = "Please enter a question or provide some context."
 EMPTY_KB_MESSAGE = "The knowledge base appears to be empty. Please ingest documents first."
 NO_CHUNKS_MESSAGE = "Sorry, no documents relevant to this question were found in the knowledge base."
-ACCESS_DENIED_MESSAGE = "Sorry, you do not have permission to access documents for this request."
 # Formatted with a single ``joined`` keyword -- see RAGEngine._flag_unverified_citations.
 UNVERIFIED_CITATIONS_WARNING_TEMPLATE = (
     "\n\n⚠️ Warning: some source references in this response ([{joined}]) could not be verified."
@@ -64,7 +63,6 @@ class EngineMessages:
     empty_query: str = EMPTY_QUERY_MESSAGE
     empty_kb: str = EMPTY_KB_MESSAGE
     no_chunks: str = NO_CHUNKS_MESSAGE
-    access_denied: str = ACCESS_DENIED_MESSAGE
     unverified_citations_warning: str = UNVERIFIED_CITATIONS_WARNING_TEMPLATE
     context_label: str = CONTEXT_LABEL
     question_label: str = QUESTION_LABEL
