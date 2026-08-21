@@ -124,3 +124,80 @@ def test_build_retriever_dense_with_reranker_strategy():
 
     assert isinstance(retriever, HybridRetriever)
     assert retriever.strategy == "dense+rerank"
+
+
+# --- reranker resolution: None defers to RAGSettings.rerank_enabled, explicit wins ----
+
+
+class _FakeCrossEncoderReranker:
+    """Records the model name it was constructed with -- stands in for
+    `CrossEncoderReranker` so these tests never reach `sentence_transformers`/
+    HuggingFace, proving no download happens when the setting turns re-ranking on."""
+
+    instances: list[str] = []
+
+    def __init__(self, model_name: str) -> None:
+        _FakeCrossEncoderReranker.instances.append(model_name)
+        self.model_name = model_name
+
+
+def test_build_retriever_reranker_none_defers_to_rerank_enabled_true(monkeypatch):
+    _FakeCrossEncoderReranker.instances = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+
+    stub = _stub_rag(rag=RAGSettings(rerank_enabled=True, reranker_model="fake/model"))
+    retriever = RAG._build_retriever(stub, "dense", None)
+
+    assert isinstance(retriever, HybridRetriever)
+    assert retriever.strategy == "dense+rerank"
+    assert _FakeCrossEncoderReranker.instances == ["fake/model"]
+
+
+def test_build_retriever_reranker_none_defers_to_rerank_enabled_false_by_default(monkeypatch):
+    """`RAGSettings.rerank_enabled` defaults to False, so a bare `RAG()` (reranker=None)
+    must construct no `CrossEncoderReranker` at all -- not merely one that goes unused."""
+
+    _FakeCrossEncoderReranker.instances = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+
+    stub = _stub_rag()
+    retriever = RAG._build_retriever(stub, "dense", None)
+
+    assert isinstance(retriever, DenseRetriever)
+    assert _FakeCrossEncoderReranker.instances == []
+
+
+def test_build_retriever_explicit_reranker_false_overrides_rerank_enabled_true(monkeypatch):
+    _FakeCrossEncoderReranker.instances = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+
+    stub = _stub_rag(rag=RAGSettings(rerank_enabled=True))
+    retriever = RAG._build_retriever(stub, "dense", False)
+
+    assert isinstance(retriever, DenseRetriever)
+    assert _FakeCrossEncoderReranker.instances == []
+
+
+def test_build_retriever_reranker_empty_string_is_treated_as_off(monkeypatch):
+    """`reranker=""` must not silently become a blank model name -- it is "off", the
+    same as `False`, even when `rerank_enabled=True` would otherwise turn it on."""
+
+    _FakeCrossEncoderReranker.instances = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+
+    stub = _stub_rag(rag=RAGSettings(rerank_enabled=True))
+    retriever = RAG._build_retriever(stub, "dense", "")
+
+    assert isinstance(retriever, DenseRetriever)
+    assert _FakeCrossEncoderReranker.instances == []
+
+
+def test_build_retriever_explicit_reranker_string_overrides_rerank_enabled_model(monkeypatch):
+    _FakeCrossEncoderReranker.instances = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+
+    stub = _stub_rag(rag=RAGSettings(rerank_enabled=True, reranker_model="settings/model"))
+    retriever = RAG._build_retriever(stub, "dense", "explicit/model")
+
+    assert isinstance(retriever, HybridRetriever)
+    assert _FakeCrossEncoderReranker.instances == ["explicit/model"]

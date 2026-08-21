@@ -88,8 +88,8 @@ class RAG:
     def __init__(
         self,
         *,
-        retrieval: str = "dense",
-        reranker: bool | str = False,
+        retrieval: str | None = None,
+        reranker: bool | str | None = None,
         chunking: str | None = None,
         embedding: str | None = None,
         vector_store: str | None = None,
@@ -109,15 +109,30 @@ class RAG:
     ) -> None:
         """
         Args:
-            retrieval: ``"dense"`` (embedding similarity, the default), ``"sparse"``
-                (BM25 keyword search, built from whatever is already in the vector
-                store), or ``"hybrid"`` (both, fused with RRF). Neither ``"sparse"``
-                nor ``"hybrid"`` needs ``corpus_dir``: BM25 is built from the store's
-                own chunks, not by re-reading source files from disk, and it picks up
-                documents ingested after construction via :meth:`ingest`.
-            reranker: ``False`` (default, no re-ranking), ``True`` (cross-encoder
-                re-ranking using ``RAGSettings.reranker_model``), or a specific
-                HuggingFace cross-encoder model name.
+            retrieval: ``"dense"`` (embedding similarity), ``"sparse"`` (BM25 keyword
+                search, built from whatever is already in the vector store), or
+                ``"hybrid"`` (both, fused with RRF); ``None`` (the default) uses
+                ``RAGSettings.retrieval``, which is ``"hybrid"`` by default -- a caller
+                who configures nothing gets hybrid retrieval. Hybrid costs CPU/memory
+                only (no model download), and covers dense's weak spot on exact-match/
+                rare-term queries via BM25. Neither ``"sparse"`` nor ``"hybrid"`` needs
+                ``corpus_dir``: BM25 is built from the store's own chunks, not by
+                re-reading source files from disk, and it picks up documents ingested
+                after construction via :meth:`ingest`. That BM25 index is built lazily,
+                on the first query after construction (or after an ingest) -- not at
+                construction time -- so a caller with a large corpus should expect that
+                first query to pay an O(corpus size) indexing cost; ``retrieval="dense"``
+                avoids it entirely.
+            reranker: ``None`` (the default) defers to ``RAGSettings.rerank_enabled``
+                (``False`` by default -- ``reranker_model`` is roughly a gigabyte to
+                download plus VRAM, so a bare ``RAG()`` never fetches it; set
+                ``KUHAKU_RAG__RERANK_ENABLED=true`` to opt in without touching code).
+                ``False`` forces re-ranking off outright, overriding
+                ``rerank_enabled``. ``True`` forces it on using
+                ``RAGSettings.reranker_model``. A non-empty ``str`` forces it on using
+                that HuggingFace cross-encoder model name instead. An empty string
+                (``""``) is treated the same as ``False`` -- off, not a request to load
+                a blank model name.
             chunking: ``"paragraph"`` or ``"structural"``; ``None`` uses
                 ``RAGSettings.chunking_strategy``.
             embedding: an embedding model name; ``None`` uses
@@ -192,11 +207,6 @@ class RAG:
             unexpected = next(iter(kwargs))
             raise TypeError(f"RAG.__init__() got an unexpected keyword argument {unexpected!r}")
 
-        if retrieval not in _VALID_RETRIEVAL_MODES:
-            raise ValueError(
-                f"retrieval must be one of {_VALID_RETRIEVAL_MODES}; got {retrieval!r}"
-            )
-
         base = settings or get_settings()
         settings_overrides: dict[str, object] = {}
         if vertex_project is not None:
@@ -233,6 +243,17 @@ class RAG:
             dataclasses.replace(base_rag, **rag_overrides) if rag_overrides else base_rag
         )
 
+        # One place decides the effective retrieval strategy: an explicit `retrieval`
+        # argument always wins; `None` defers to `RAGSettings.retrieval` (default
+        # "hybrid"). Whichever value wins is validated the same way regardless of
+        # source, so a bad KUHAKU_RAG__RETRIEVAL value fails exactly like a bad
+        # explicit argument -- no silent fallback to a strategy nobody asked for.
+        effective_retrieval = retrieval if retrieval is not None else self._rag_settings.retrieval
+        if effective_retrieval not in _VALID_RETRIEVAL_MODES:
+            raise ValueError(
+                f"retrieval must be one of {_VALID_RETRIEVAL_MODES}; got {effective_retrieval!r}"
+            )
+
         s = self._settings
         rs = self._rag_settings
         self._chunker = build_chunker(rs)
@@ -242,7 +263,7 @@ class RAG:
         if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
             llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
         self._llm = llm
-        self._retriever = self._build_retriever(retrieval, reranker)
+        self._retriever = self._build_retriever(effective_retrieval, reranker)
         self._cache = self._build_cache(cache)
 
         # `system_prompt` replaces the whole thing outright; `persona`/`language_policy`
@@ -275,7 +296,7 @@ class RAG:
             rag_settings=rs,
         )
 
-    def _build_retriever(self, retrieval: str, reranker: bool | str) -> Retriever:
+    def _build_retriever(self, retrieval: str, reranker: bool | str | None) -> Retriever:
         rs = self._rag_settings
         dense = DenseRetriever(self._embedder, self._store)
 
@@ -285,9 +306,20 @@ class RAG:
             # so both sides always chunk each document exactly once (Feature 2).
             sparse = build_bm25_from_store(self._store, k1=rs.bm25_k1, b=rs.bm25_b)
 
+        # One place decides the effective re-ranker: an explicit `reranker` (including
+        # `False`/`""`, both "off") always wins; `None` defers to
+        # `RAGSettings.rerank_enabled` (`False` by default -- see config.py -- so a bare
+        # RAG() builds no CrossEncoderReranker and downloads nothing).
+        if reranker is None:
+            effective_reranker: bool | str = rs.reranker_model if rs.rerank_enabled else False
+        else:
+            effective_reranker = reranker
+
         reranker_instance = None
-        if reranker:
-            model_name = reranker if isinstance(reranker, str) else rs.reranker_model
+        if effective_reranker:
+            model_name = (
+                effective_reranker if isinstance(effective_reranker, str) else rs.reranker_model
+            )
             reranker_instance = CrossEncoderReranker(model_name)
 
         if retrieval == "dense" and reranker_instance is None:
@@ -318,16 +350,12 @@ class RAG:
     def _build_cache(self, cache: bool | str | None) -> QueryAnswerCache | None:
         """The one construction site for the query-answer cache (FR2).
 
-        Deliberately three-state (``bool | str | None``), not the two-state
-        ``bool | str`` shape :meth:`_build_retriever`'s ``reranker`` uses: nothing here
-        reads ``RAGSettings.rerank_enabled``, so ``reranker``'s own facade default of
-        ``False`` is a safe stand-in for "not configured". ``RAGSettings.cache_enabled``
-        is different -- it defaults to ``True`` -- so "not configured" and "explicitly
-        off" must stay distinguishable, which needs a third state. ``None`` supplies
-        that state and mirrors ``audit_enabled: bool | None``'s own precedent above:
-        "the caller configured nothing" defers to ``RAGSettings.cache_enabled``/
-        ``cache_db_path`` rather than forcing a facade-level default that would
-        silently override them.
+        Three-state (``bool | str | None``), same convention :meth:`_build_retriever`'s
+        ``reranker`` uses for ``RAGSettings.rerank_enabled``: ``None`` means "the caller
+        configured nothing", distinct from an explicit ``False``, so it can defer to
+        ``RAGSettings.cache_enabled``/``cache_db_path`` rather than forcing a
+        facade-level default that would silently override them -- mirroring
+        ``audit_enabled: bool | None``'s own precedent above.
 
         Never raises: ``QueryAnswerCache.__init__`` does no I/O at all (schema creation
         is lazy -- see ``rag/cache.py``), and this adds one more layer of defense so a

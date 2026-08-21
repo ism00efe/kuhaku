@@ -66,14 +66,24 @@ class RAGSettings:
     vertex_project: str | None = None
     vertex_location: str | None = "us-central1"
 
-    # --- Hybrid retrieval (dense + sparse BM25, fused with RRF) ------------------
-    hybrid_enabled: bool = True
+    # --- Retrieval strategy + hybrid fusion (dense + sparse BM25, fused with RRF) ----
+    # "dense" | "sparse" | "hybrid" -- the same vocabulary as kuhaku.RAG's `retrieval`
+    # kwarg / `_VALID_RETRIEVAL_MODES` (validated there, at RAG() construction, not
+    # here -- see RAG.__init__). Defaults to "hybrid": per the project's "a default may
+    # cost CPU/memory, never a download" rule, hybrid needs neither (BM25 is built from
+    # the vector store's own chunks) and dense alone is weak on exact-match/rare-term
+    # queries that BM25 covers.
+    retrieval: str = "hybrid"
     rrf_k: int = 60
     bm25_k1: float = 1.5
     bm25_b: float = 0.75
 
     # --- Cross-encoder re-ranking (must be multilingual) --------------------------
-    rerank_enabled: bool = True
+    # False by default: reranker_model is ~1GB to download plus VRAM, and no default may
+    # trigger that on a bare RAG()/`pip install kuhaku` (the same CPU/memory-only rule
+    # above). Set true -- or KUHAKU_RAG__RERANK_ENABLED=true -- to opt in from the
+    # environment without touching code.
+    rerank_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-base"
     rerank_candidates: int = 20
 

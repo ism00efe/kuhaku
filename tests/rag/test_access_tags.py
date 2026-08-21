@@ -302,6 +302,45 @@ def test_sparse_rank_cliff_regression():
     assert all(r.chunk.document_id.startswith("eligible") for r in results)
 
 
+def test_hybrid_rank_cliff_regression(tmp_path):
+    """Same regression as dense/sparse (this is the new default retrieval strategy, so it
+    needs the same coverage), through genuine dense+sparse fusion: restricted chunks rank
+    first on *both* sides (nearest by embedding, highest by BM25 term repetition), so
+    fusion would surface only them too, unless entitlement narrows each side's candidate
+    set before ranking/fusion ever runs -- not merely after."""
+
+    store = ChromaVectorStore(str(tmp_path / "chroma"), "hybrid_rank_cliff")
+    restricted_chunks = [
+        make_chunk(
+            f"restricted_{i}", access_tags=("hr",), text="salary salary salary salary bands"
+        )
+        for i in range(10)
+    ]
+    eligible_chunks = [
+        make_chunk(f"eligible_{i}", text="salary mentioned once") for i in range(5)
+    ]
+    store.add(restricted_chunks, [_unit_vector(i + 1) for i in range(10)])
+    store.add(eligible_chunks, [_unit_vector(30 + i) for i in range(5)])
+
+    dense = DenseRetriever(_FixedQueryEmbedder([1.0, 0.0]), store)
+    sparse = BM25Retriever(restricted_chunks + eligible_chunks)
+    hybrid = HybridRetriever(dense, sparse, candidates=20)
+
+    # Sanity check on the test setup itself: with full visibility, both the ANN search
+    # and BM25 rank every restricted chunk ahead of every eligible one, so fusion does
+    # too.
+    fully_entitled = hybrid.retrieve(
+        "salary", 4, auth_context=AuthContext(identity="u", roles=("hr",))
+    )
+    assert all(r.chunk.document_id.startswith("restricted") for r in fully_entitled)
+
+    results = hybrid.retrieve(
+        "salary", 4, auth_context=AuthContext(identity="u", roles=("engineering",))
+    )
+    assert len(results) == 4
+    assert all(r.chunk.document_id.startswith("eligible") for r in results)
+
+
 # --- is_entitled: the single predicate -----------------------------------------------
 def test_is_entitled_untagged_always_true():
     assert is_entitled(make_chunk("a"), None) is True

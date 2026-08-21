@@ -15,7 +15,8 @@ def test_ragsettings_instantiates_with_no_arguments():
     settings = RAGSettings()
     assert settings.top_k == 4
     assert settings.chunk_size == 500
-    assert settings.rerank_enabled is True
+    assert settings.retrieval == "hybrid"
+    assert settings.rerank_enabled is False
     assert settings.embedding_model == "intfloat/multilingual-e5-small"
 
 
@@ -162,6 +163,17 @@ def test_settings_rag_loads_scalar_fields_from_nested_env_vars(monkeypatch):
     settings = Settings(_env_file=None)
     assert settings.rag.top_k == 9
     assert settings.rag.rerank_enabled is False
+
+
+def test_settings_rag_loads_retrieval_from_nested_env_var(monkeypatch):
+    """KUHAKU_RAG__RETRIEVAL is a plain string field here -- RAGSettings itself does not
+    validate it against dense/sparse/hybrid (RAG.__init__ is the one place that does,
+    the same way for an explicit argument or a settings-derived value -- see
+    kuhaku/__init__.py)."""
+
+    monkeypatch.setenv("KUHAKU_RAG__RETRIEVAL", "sparse")
+    settings = Settings(_env_file=None)
+    assert settings.rag.retrieval == "sparse"
 
 
 def test_settings_rag_loads_dict_field_from_nested_env_var(monkeypatch):

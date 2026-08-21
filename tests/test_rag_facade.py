@@ -324,3 +324,75 @@ def test_sparse_engine_answer_on_empty_store_distinguishes_empty_kb_from_no_chun
     answer = rag.ask("anything")
     assert answer.text == DEFAULT_ENGINE_MESSAGES.empty_kb
     assert answer.text != DEFAULT_ENGINE_MESSAGES.no_chunks
+
+
+# --- default retrieval strategy: hybrid, and re-ranker resolution --------------------
+
+
+class _FakeCrossEncoderReranker:
+    """Records the model name it was constructed with -- stands in for
+    `CrossEncoderReranker` so these tests never reach `sentence_transformers`/
+    HuggingFace, proving the setting turns re-ranking on without downloading anything."""
+
+    instances: list[str] = []
+
+    def __init__(self, model_name: str) -> None:
+        _FakeCrossEncoderReranker.instances.append(model_name)
+
+
+class _ExplodingCrossEncoderReranker:
+    """Fails the test if `RAG` ever constructs one -- the strongest possible proof that
+    a bare `RAG()` builds no re-ranker (and therefore downloads no model)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        raise AssertionError("CrossEncoderReranker must not be constructed")
+
+
+def test_bare_rag_uses_hybrid_retrieval_by_default(build_rag):
+    rag = build_rag()
+    assert rag.engine.get_retriever().strategy == "hybrid"
+
+
+def test_explicit_retrieval_dense_still_means_dense(build_rag):
+    rag = build_rag(retrieval="dense")
+    assert rag.engine.get_retriever().strategy == "dense"
+
+
+def test_explicit_invalid_retrieval_argument_raises(build_rag):
+    with pytest.raises(ValueError, match="retrieval must be one of"):
+        build_rag(retrieval="nonsense")
+
+
+def test_invalid_retrieval_setting_from_env_var_raises(monkeypatch, build_rag):
+    monkeypatch.setenv("KUHAKU_RAG__RETRIEVAL", "nonsense")
+    with pytest.raises(ValueError, match="retrieval must be one of"):
+        build_rag()
+
+
+def test_bare_rag_constructs_no_reranker_and_downloads_nothing(monkeypatch, build_rag):
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _ExplodingCrossEncoderReranker)
+    rag = build_rag()
+    assert "rerank" not in rag.engine.get_retriever().strategy
+
+
+def test_rerank_enabled_env_var_turns_on_reranking_for_a_bare_rag(monkeypatch, build_rag):
+    """The whole point of RAGSettings.rerank_enabled: turn re-ranking on from the
+    environment without the caller passing `reranker=` at all."""
+
+    _FakeCrossEncoderReranker.instances = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+    monkeypatch.setenv("KUHAKU_RAG__RERANK_ENABLED", "true")
+
+    rag = build_rag()
+
+    assert rag.engine.get_retriever().strategy == "hybrid+rerank"
+    assert _FakeCrossEncoderReranker.instances == ["BAAI/bge-reranker-base"]
+
+
+def test_explicit_reranker_false_beats_rerank_enabled_env_var(monkeypatch, build_rag):
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _ExplodingCrossEncoderReranker)
+    monkeypatch.setenv("KUHAKU_RAG__RERANK_ENABLED", "true")
+
+    rag = build_rag(reranker=False)
+
+    assert rag.engine.get_retriever().strategy == "hybrid"
