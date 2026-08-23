@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "kuhaku: a provider-agnostic AI orchestration framework (LLM abstraction, retrieval, evaluation, observability, security)."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{name = "İsmail Efe Terlemez"}]
+authors = [{name = "ism00efe"}]
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 classifiers = [
@@ -20,6 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
+
 dependencies = [
     "pydantic-settings>=2.2",
     "chromadb>=0.5",
@@ -48,6 +49,12 @@ dependencies = [
     # JWT authentication (core/auth/providers.py)
     "PyJWT>=2.8",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ism00efe/kuhaku"
+Repository = "https://github.com/ism00efe/kuhaku"
+Issues = "https://github.com/ism00efe/kuhaku/issues"
+Changelog = "https://github.com/ism00efe/kuhaku/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "build>=1.2"]
