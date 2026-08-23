@@ -1,261 +1,309 @@
 # kuhaku
 
-kuhaku is a provider-agnostic AI orchestration framework. It provides a generic,
-tool-agnostic runtime core — LLM abstraction, security, observability, authentication,
-retry/resilience, and an evaluation harness — plus **RAG (retrieval-augmented
-generation)** as its first reference tool, built entirely on top of that core.
+[![PyPI](https://img.shields.io/pypi/v/kuhaku.svg)](https://pypi.org/project/kuhaku/)
+[![Python](https://img.shields.io/pypi/pyversions/kuhaku.svg)](https://pypi.org/project/kuhaku/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-The core makes no assumption about what tool is running on it; the RAG tool makes no
-assumption about where its documents come from. Either layer can be used on its own.
+A provider-agnostic AI orchestration framework for Python. Retrieval-augmented generation
+in three lines, with document-level access control, an evaluation harness and an audit
+trail already in the box.
 
-## Package layout
+```python
+from kuhaku import RAG
 
-```
-kuhaku/
-├── core/            generic, tool-agnostic infrastructure
-│   ├── config.py        typed, env-driven Settings
-│   ├── llm/              LLMProvider interface + Ollama/Anthropic/OpenAI/Vertex AI backends
-│   ├── auth/              AuthContext, AuthorizationPolicy, API-key/JWT providers
-│   ├── security/          prompt-injection guard pipeline, output checks, audit log
-│   ├── observability/     structured logging, OpenTelemetry tracing + metrics
-│   ├── sanitization.py    deterministic, regex-based PII masking
-│   ├── retry.py           retry-with-backoff + circuit breaker
-│   ├── policy.py          startup fallback/strictness policy for optional components
-│   └── models.py          generic domain primitives (Message, ToolCall, ExecutionResult)
-├── evaluation/      tool-agnostic evaluation harness (dataset, metrics, runner, stores)
-└── tools/
-    └── rag/         the RAG tool: ingestion, chunking, embeddings, vector store,
-                      retrieval, re-ranking, query rewriting, contradiction detection,
-                      caching, and RAGEngine
+rag = RAG()
+rag.ingest(open("handbook.md").read(), filename="handbook.md")
+print(rag.ask("How do I reset my password?").text)
 ```
 
-A tool is only ever allowed to depend on `kuhaku.core`, never the other way around —
-adding a second tool alongside RAG means giving it its own `tools/<name>` package, not
-adding tool-specific fields to `core`.
+That runs against a local Ollama model. No API key, nothing sent anywhere.
+
+> **Alpha.** Version 0.1.0. The API may change before 1.0. See
+> [Status](#status) for what is and is not implemented.
+
+---
+
+## Why kuhaku
+
+**RAG is a tool here, not the product.** `kuhaku.core` is tool-agnostic runtime
+infrastructure — LLM abstraction, configuration, security, observability, retry. RAG is
+the first tool built on top of it. Core never depends on a tool, so a second tool is a new
+package under `tools/`, not a new field on core.
+
+**Document-level access control that actually filters.** Tag a document, and a caller
+without a matching tag never retrieves it — enforced *before* ranking, in every retrieval
+strategy, so an entitled user still gets a full result set. Most implementations rank
+first and drop afterwards, which silently returns nothing to someone who was allowed to
+see material sitting just below the cut.
+
+**Evaluation is not an afterthought.** `kuhaku.evaluation` is a tool-agnostic harness with
+retrieval metrics (hit rate@k, MRR, nDCG@k, precision, recall) and answer-quality metrics,
+runnable against `RAGEngine` or anything else implementing the target contract.
+
+**Zero configuration, honest defaults.** Every knob is optional. The rule for what runs by
+default: **a default may cost CPU and memory, never a download.** Hybrid retrieval is on
+because it costs neither; the cross-encoder re-ranker is off because it is a gigabyte.
+
+---
 
 ## Installation
 
 Requires Python 3.11+.
 
 ```bash
-# from the repository root, editable install
-pip install -e ./kuhaku
-
-# with the optional Google Vertex AI provider (LLM + embeddings)
-pip install -e "./kuhaku[vertex]"
-
-# with development tooling (pytest, ruff, mypy)
-pip install -e "./kuhaku[dev]"
+pip install kuhaku
 ```
 
-The default LLM provider is a local [Ollama](https://ollama.com) server
-(`qwen2.5:7b-instruct`) — nothing external is required to try kuhaku out. Switch
-providers with the `LLM_PROVIDER` environment variable (see [Configuration](#configuration)).
+Optional extras:
 
-## Quickstart
+```bash
+pip install "kuhaku[vertex]"   # Google Vertex AI provider
+pip install "kuhaku[dev]"      # pytest, ruff, mypy, build
+```
+
+### Prerequisites
+
+The default provider is a local [Ollama](https://ollama.com) server:
+
+```bash
+ollama serve
+ollama pull qwen2.5:7b-instruct
+```
+
+Prefer a hosted model instead? Set `KUHAKU_LLM_PROVIDER=openai` (or `anthropic`, `vertex`)
+and the matching API key — no Ollama needed.
+
+### What gets downloaded
+
+| What | When | Approximate size |
+|---|---|---|
+| PyTorch (a `sentence-transformers` dependency) | on install | 2–3 GB |
+| Embedding model `intfloat/multilingual-e5-small` | first ingest | ~0.5 GB |
+| LLM `qwen2.5:7b-instruct` | `ollama pull` | ~4.7 GB |
+| Re-ranker `BAAI/bge-reranker-base` | only if you enable it | ~1 GB |
+
+Sizes are approximate and depend on your platform. Only the last one is optional at
+runtime — nothing downloads a re-ranker unless you ask for it.
+
+---
+
+## Access control
+
+The part worth reading even if you skim the rest.
 
 ```python
-from kuhaku import RAG
+from kuhaku import RAG, AuthContext
 
-rag = RAG()  # dense retrieval, local Ollama, no re-ranking — all overridable
-rag.load_documents("path/to/docs")  # indexes every .txt / .md / .pdf in the directory
+rag = RAG()
 
-answer = rag.ask("What does error code 96 mean?")
-print(answer.text)
-for citation in answer.citations:
-    print(f"  [{citation.tag}] {citation.title} (score={citation.score:.3f})")
+rag.ingest(hr_text, filename="salary_policy.md", access_tags=["people_ops"])
+rag.ingest(eng_text, filename="deploy_runbook.md")          # untagged → visible to all
+
+answer = rag.ask(
+    "what are the salary bands",
+    auth_context=AuthContext(identity="ada", roles=("engineering",)),
+)
+# salary_policy.md is never retrieved, never cited, never reaches the model
 ```
 
-`RAG` also exposes `ingest(text, filename)` for indexing a single in-memory document, and
-`chat_repl()` for an interactive terminal chat loop.
+**How it behaves**
 
-Common knobs, all optional keyword arguments to `RAG(...)`:
+- An **untagged** chunk is visible to everyone. Tagging is opt-in; existing corpora keep
+  working.
+- A **tagged** chunk is visible only when one of its tags appears in the caller's
+  `roles`. Flat set intersection — no hierarchy, no ordering, no tag implying another.
+- A tagged chunk with **no `auth_context`** is not retrievable. Tagging a document is what
+  turns protection on for it, so there is no enable/disable switch to forget.
+- Filtering happens **before ranking** in dense, sparse and hybrid alike.
+- An unentitled empty result is indistinguishable from a genuine no-match. Saying
+  "you may not see this" would confirm that matching restricted material exists.
+
+**Tags are your vocabulary.** kuhaku never assigns meaning to a tag string —
+`["people_ops"]`, `["level-3"]`, `["muhasebe"]` all work identically. Three constants ship
+as a starting point and nothing more:
+
+```python
+from kuhaku import ACCESS_TAG_PUBLIC, ACCESS_TAG_INTERNAL, ACCESS_TAG_RESTRICTED
+```
+
+**What kuhaku does not do:** authentication. Your application proves who the user is and
+hands kuhaku the result. kuhaku's job is enforcement — making sure retrieval cannot return
+a chunk that `AuthContext` is not entitled to see.
+
+---
+
+## What you get without configuring anything
+
+| | Default |
+|---|---|
+| Retrieval | Hybrid — dense embeddings + BM25, fused with Reciprocal Rank Fusion |
+| LLM | Ollama, `qwen2.5:7b-instruct`, `http://localhost:11434` |
+| Embeddings | `intfloat/multilingual-e5-small` on CPU |
+| Vector store | ChromaDB, persistent |
+| Chunking | Paragraph, 500 chars, 80 overlap |
+| `top_k` | 4 |
+| PII sanitization | On — email, token, IP, card, national ID, phone |
+| Prompt-injection guard | On — the deterministic input guard |
+| Audit log | On — one record per request, whatever the outcome |
+| Query cache | On — SQLite, 1 hour TTL, keyed by the entitled chunk set |
+| Re-ranker | **Off** — enable with `RAG(reranker=True)` |
+
+The first query after ingestion builds the BM25 index over the whole store. With a large
+corpus that is a visible one-off cost; `RAG(retrieval="dense")` avoids it.
+
+---
+
+## Going further
 
 ```python
 rag = RAG(
-    retrieval="hybrid",             # "dense" | "sparse" | "hybrid"
-    reranker=True,                  # False | True | a HuggingFace cross-encoder model name
-    corpus_dir="path/to/docs",      # required for "sparse"/"hybrid" (BM25 is rebuilt from disk)
-    vector_store="path/to/chroma",  # persistent Chroma dir; defaults to a temp directory
+    retrieval="hybrid",                          # "dense" | "sparse" | "hybrid"
+    reranker=True,                               # ~1 GB model, significant VRAM
     embedding="intfloat/multilingual-e5-small",
+    vector_store="./data/chroma",                # persistent directory
+    cache=False,                                 # or a path to a cache database
+    persona="You are a support engineer for a payments platform.",
+    language_policy="Always answer in Turkish.",
 )
 ```
 
-For anything the facade doesn't expose (query rewriting, contradiction detection,
-caching, the security guard, auth), either construct `RAGEngine` directly (see
-[Beyond the facade](#beyond-the-facade)) or reach through the escape hatch:
+`persona` and `language_policy` each override one layer of the system prompt. The
+safety core underneath — instruction precedence, `[DOC]` data marking, a canary rule,
+grounding, mandatory citations, contradiction handling — is framework-owned and applies
+unconditionally. `system_prompt=` replaces the whole thing and hands that responsibility
+back to you.
+
+Anything the facade does not expose is reachable through `rag.engine`, a `RAGEngine` built
+by constructor injection — swap the retriever, inject an authorization policy, supply your
+own `EngineMessages`.
+
+### The answer
 
 ```python
-rag.engine.update_authorization_policy(my_policy)
-answer = rag.engine.answer(question, auth_context=my_auth_context)
+answer = rag.ask("...")
+answer.text          # the generated answer, with [S1]-style citation tags
+answer.citations     # [Citation(tag, document_id, title, doc_type, source_path, score)]
+answer.retrieved     # the chunks it was grounded in
+answer.redactions    # what PII sanitization masked, e.g. ["EMAIL×2"]
+answer.trace_id      # correlates logs, metrics and the audit record
 ```
+
+When retrieval finds nothing relevant, kuhaku abstains rather than letting the model
+improvise.
+
+---
 
 ## Configuration
 
-Settings are typed (`pydantic-settings`) and read from process environment variables,
-plus an optional `.env` file a caller opts into explicitly — kuhaku never assumes a
-current working directory. All fields have defaults; nothing is required to run the
-local Ollama default.
-
-```python
-from kuhaku import get_settings, Settings
-
-settings = get_settings()                 # cached, environment-driven
-settings = Settings(_env_file=".env")     # or load a specific dotenv file
-```
-
-Key environment variables:
+Every setting reads from the environment with a `KUHAKU_` prefix. RAG-specific settings
+nest under `KUHAKU_RAG__`:
 
 ```bash
-LLM_PROVIDER=ollama            # ollama | anthropic | openai | vertex
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b-instruct
-ANTHROPIC_API_KEY=...
-OPENAI_API_KEY=...
-
-# RAG-specific settings nest under the RAG__ prefix (see RAGSettings)
-RAG__TOP_K=8
-RAG__RERANK_ENABLED=true
-RAG__CHUNK_SIZE=500
-RAG__CHUNKING_STRATEGY=paragraph   # paragraph | structural
+KUHAKU_LLM_PROVIDER=openai
+KUHAKU_RAG__TOP_K=8
+KUHAKU_RAG__RETRIEVAL=dense
+KUHAKU_RAG__RERANK_ENABLED=true
 ```
 
-`RAGSettings` (`kuhaku.tools.rag.RAGSettings`) is usable entirely standalone — it has
-its own sensible defaults and does not require a `Settings` instance.
+Four ecosystem-standard names are also accepted unprefixed, because another library
+reading them means the same thing: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`. Everything else is kuhaku's own
+vocabulary and carries the prefix.
 
-## Beyond the facade
-
-`RAG` wraps `RAGEngine` behind a handful of named parameters. For full
-composition-root control, construct the pieces directly — this is exactly what `RAG`
-does internally:
+Or construct settings directly:
 
 ```python
-from kuhaku.core.config import Settings
-from kuhaku.core.llm import build_llm_provider
-from kuhaku.tools.rag import (
-    ChromaVectorStore, DenseRetriever, RAGEngine, RAGSettings,
-    build_chunker, build_embedding_provider,
-)
+from kuhaku import RAG, Settings
 
-settings = Settings()
-rag_settings = RAGSettings.from_settings(settings)
-
-embedder = build_embedding_provider(rag_settings)
-store = ChromaVectorStore(rag_settings.chroma_persist_dir, rag_settings.chroma_collection)
-llm = build_llm_provider(settings)
-
-engine = RAGEngine(
-    embedder, store, llm,
-    top_k=rag_settings.top_k,
-    retriever=DenseRetriever(embedder, store),
-    chunker=build_chunker(rag_settings),
-    rag_settings=rag_settings,
-)
-
-answer = engine.answer("What does error code 96 mean?")
+rag = RAG(settings=Settings(llm_provider="openai", openai_api_key="sk-..."))
 ```
 
-`RAGEngine` depends only on the `EmbeddingProvider`, `VectorStore`, `LLMProvider`, and
-`Retriever` protocols — never a concrete SDK — so any of them can be swapped or faked
-independently (see `tests/conftest.py` for in-memory fakes used by the test
-suite).
+kuhaku never configures logging or reads a `.env` file on its own — both belong to your
+application.
 
-### Retrieval
+---
 
-- **Dense** — embedding similarity search against the Chroma store (`DenseRetriever`).
-- **Sparse** — BM25 keyword search, rebuilt from `corpus_dir` on construction
-  (`SparseRetriever` / `build_bm25_from_corpus`).
-- **Hybrid** — dense + sparse fused with Reciprocal Rank Fusion (`HybridRetriever`).
-- **Re-ranking** — an optional cross-encoder pass (`CrossEncoderReranker`) over the top
-  candidates from any of the above; use a multilingual model if your queries and corpus
-  are in different languages.
+## Architecture
 
-### Beyond retrieval
+```
+kuhaku/
+├── core/          tool-agnostic runtime infrastructure
+│   ├── config       typed, environment-driven Settings
+│   ├── llm          LLMProvider + Ollama / Anthropic / OpenAI / Vertex AI
+│   ├── auth         AuthContext, AuthorizationPolicy, API-key and JWT providers
+│   ├── security     prompt-injection guard, output checks, PII sanitization, audit
+│   ├── observability structured logging, OpenTelemetry tracing and metrics
+│   └── retry        retry with backoff, circuit breakers
+├── evaluation/    tool-agnostic evaluation harness
+└── tools/
+    └── rag/       the first tool: ingestion, chunking, embeddings, vector store,
+                   retrieval, fusion, re-ranking, access filtering, caching
+```
 
-- **Query rewriting** (`QueryRewriter`) — optional, LLM-based, cached query rewriting
-  ahead of retrieval.
-- **Contradiction detection** (`ContradictionDetector`) — flags when the retrieved
-  chunks disagree with each other on the same topic (distinct from faithfulness, which
-  checks the *answer* against *some* retrieved chunk).
-- **Query-answer cache** (`QueryAnswerCache`) — SQLite-backed cache keyed on the
-  sanitized query + retrieval configuration.
+**The rule:** a tool may depend on `kuhaku.core`. Core may never depend on a tool. Adding
+a second tool means a new `tools/<name>` package, never a tool-specific field on core.
 
-## Security
-
-- **Sanitization** (`kuhaku.core.sanitization.sanitize_text`) — deterministic,
-  regex-based PII masking, run before embedding and before any LLM call, on both the
-  ingestion and query paths. Masks emails, tokens, IPs, credit card numbers (Luhn-
-  validated) and Turkish national IDs / TCKN (checksum-validated), and phone numbers.
-  The LLM is never asked to sanitize.
-- **Prompt-injection guard** (`kuhaku.core.security.GuardPipeline` / `inspect_query`) —
-  a deterministic, regex/classifier-based guard pipeline (normalize → two-stage
-  classify → `"pass"` / `"restricted"` / `"reject"` zone decision), independent of any
-  LLM call.
-- **Audit log** (`kuhaku.core.security.record_audit` / `read_audit_log`) — every
-  request is recorded regardless of guard configuration.
-- **Auth** (`kuhaku.core.auth`) — `AuthContext`, `AuthorizationPolicy`, and
-  `AuthProvider` (API key / JWT) primitives. kuhaku defines no role or permission
-  vocabulary itself; nothing here is wired in automatically — an unconfigured policy
-  means "allow everything," unchanged from before the package existed.
-
-## Observability
-
-- **Structured logging** — JSON log lines with a `trace_id` propagated through
-  `contextvars`, no signature changes required at call sites.
-- **OpenTelemetry tracing + metrics** — `kuhaku.core.observability.instrumented_step`
-  opens a span, times a pipeline stage, logs it, and records the duration on a
-  histogram, in a single `with` block:
-
-  ```python
-  from kuhaku.core.observability import instrumented_step
-
-  with instrumented_step("retrieve") as rec:
-      retrieved = engine.retrieve(query)
-      rec.set(chunk_count=len(retrieved))
-  ```
-
-- Metrics are exported to Prometheus via `opentelemetry-exporter-prometheus`.
+---
 
 ## Evaluation
-
-`kuhaku.evaluation` is a tool-agnostic evaluation harness: it speaks only in terms of
-`EvaluationTarget`/`TargetAdapter` (anything exposing `evaluate_sample()`, or
-`ask()`/`answer()` and `retrieve()`/`search()`), so it works against `RAGEngine` or any
-other target.
 
 ```python
 from kuhaku.evaluation import EvaluationRunner, HitRateAtKMetric, MRRMetric
 
 runner = EvaluationRunner(
     metrics=[HitRateAtKMetric(k=5), MRRMetric()],
-    dataset_path="path/to/eval_dataset.jsonl",  # JSONL: question_id, question, expected_sources, ...
+    dataset_path="golden.jsonl",
 )
-summary = runner.run(rag.engine)  # dict[str, float] of aggregate scores
+scores = runner.run(rag.engine, top_k=5)
 ```
 
-Built-in metrics: retrieval (`hit_rate_at_k`, `mrr`, `ndcg_at_k`, `precision_at_k`,
-`recall_at_k`) and answer quality (`faithfulness`, `answer_correctness`, with an
-LLM-judge-based faithfulness evaluator). Results can be persisted via
-`InMemoryEvaluationStore` or `SqliteEvaluationStore`.
+Retrieval metrics need no LLM. Answer-quality metrics (faithfulness, correctness) use an
+LLM judge you supply via `judge_llm_provider`. Results go to an in-memory or SQLite store.
 
-## Resilience
+---
 
-Every external call site (LLM providers, the embedding provider, the vector store, the
-re-ranker) goes through the same retry-with-backoff and circuit-breaker logic
-(`kuhaku.core.retry.call_with_retry`), configured independently per subsystem. On
-exhaustion, the original exception is re-raised unchanged — retry is a policy layered
-on top of each component's own error handling, not a replacement for it.
+## Status
 
-## Testing
+**Working and reachable from the public API**
+
+Ingestion (`.txt`, `.md`, `.pdf`) · paragraph and structural chunking · dense, sparse and
+hybrid retrieval · cross-encoder re-ranking · ChromaDB storage · document-level access
+filtering · query-answer caching · PII sanitization · prompt-injection input guard ·
+per-request audit logging · OpenTelemetry tracing and metrics · retry and circuit breakers
+· four LLM providers · the evaluation harness.
+
+1023 tests, all passing, entirely offline — in-memory fakes for the embedder, vector store
+and LLM. No network, no model download, no running LLM server.
+
+**In the package but not wired to the facade**
+
+Query rewriting, contradiction detection, and the layered prompt-injection guard v2. Guard
+v2 additionally needs a model you train yourself; no weights ship with kuhaku. These are
+reachable through `rag.engine` if you construct `RAGEngine` directly, and are not
+recommended for 0.1.0.
+
+**Not implemented**
+
+Per-file access tags in `load_documents` (one tag set applies to the whole call) ·
+incremental BM25 updates (the index rebuilds on the next query after ingestion) ·
+async APIs · vector stores other than Chroma.
+
+---
+
+## Contributing
+
+Issues and pull requests are welcome. The one hard requirement is architectural: `core`
+stays tool-agnostic. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
+git clone https://github.com/ism00efe/kuhaku
+cd kuhaku
+pip install -e ".[dev]"
 pytest
 ```
 
-The suite runs entirely against in-memory fakes for the embedding provider, vector
-store, and LLM (see `tests/conftest.py`) — no external network, model download,
-or running LLM server is required.
+---
 
 ## License
 
-No license has been published for this package yet.
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
