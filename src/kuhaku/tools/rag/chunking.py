@@ -8,7 +8,6 @@ Two chunkers satisfy the same small ``Chunker`` protocol, selected via
 - ``StructuralChunker``: splits along Markdown heading hierarchy (#, ##, ###) and
   pulls Markdown tables and "Term: Definition" glossary lines into their own
   chunks (``content_type`` "table" / "glossary") instead of packing them as prose.
-  See DECISIONS.md D28.
 """
 
 from __future__ import annotations

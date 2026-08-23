@@ -25,7 +25,7 @@ class EmbeddingServiceError(RuntimeError):
     """The embedding backend failed (model load error, OOM, or similar).
 
     Raised by :class:`~kuhaku.tools.rag.retriever.DenseRetriever` when the
-    injected :class:`EmbeddingProvider` raises — see DECISIONS.md D33.
+    injected :class:`EmbeddingProvider` raises.
     """
 
 
@@ -86,8 +86,8 @@ class SentenceTransformerEmbeddings:
     def embed_query(self, text: str) -> list[float]:
         # Retry only applies here, not embed_documents/_encode directly -- that method is
         # also used by the ingestion pipeline, which is explicitly out of scope for
-        # retry (D40). This is a local in-process computation (no network), so "any
-        # exception" is the retryable set here, per D40 -- the motivating transient
+        # retry. This is a local in-process computation (no network), so "any
+        # exception" is the retryable set here -- the motivating transient
         # failure is momentary GPU memory pressure, which has no clean exception type to
         # filter on.
         if self._use_e5_prefixes:

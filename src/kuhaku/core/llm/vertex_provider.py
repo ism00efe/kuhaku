@@ -29,7 +29,7 @@ get_settings().vertex_location = "us-central1\""""
 def is_retryable_vertex_exception(exc: BaseException) -> bool:
     """True for connection errors/timeouts and 5xx API errors; false for 4xx (retry won't
     help a bad request or auth failure) and anything else -- mirrors
-    ``is_retryable_request_exception`` (D40) for the google-genai SDK's own exception
+    ``is_retryable_request_exception`` for the google-genai SDK's own exception
     types, which are not ``requests.RequestException`` subclasses.
     """
 
@@ -99,7 +99,7 @@ class VertexAIProvider:
             if circuit_breaker_enabled
             else None
         )
-        # Set by generate() when Vertex reports usage; read by TokenTrackingLLM (D33).
+        # Set by generate() when Vertex reports usage; read by TokenTrackingLLM.
         self.last_usage = None
 
     @property
@@ -139,7 +139,7 @@ class VertexAIProvider:
             )
         except CircuitOpenError as exc:
             raise LLMError(str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 - SDK exception types must not leak (D33)
+        except Exception as exc:  # noqa: BLE001 - SDK exception types must not leak
             raise LLMError(f"Vertex AI request failed: {exc}") from exc
 
         text = getattr(response, "text", None)

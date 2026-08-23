@@ -99,9 +99,9 @@ __all__ = [
     # Category 2: query-answer cache
     "QueryAnswerCache",
     "compute_cache_key",
-    # Query rewriting (D48)
+    # Query rewriting
     "QueryRewriter",
-    # Contradiction detection (D50)
+    # Contradiction detection
     "ContradictionDetector",
     "ContradictionPair",
     "ContradictionResult",

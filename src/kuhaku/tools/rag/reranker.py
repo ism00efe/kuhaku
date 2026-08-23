@@ -78,7 +78,7 @@ class CrossEncoderReranker:
         pairs = [(query, item.chunk.text) for item in candidates]
         # On exhaustion this re-raises the original exception unchanged -- the caller
         # (HybridRetriever.retrieve) catches it and gracefully skips reranking rather
-        # than failing the whole request (D40).
+        # than failing the whole request.
         scores = call_with_retry(
             lambda: model.predict(pairs),
             service="reranker",

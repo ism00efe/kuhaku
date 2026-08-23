@@ -32,7 +32,7 @@ from .output_guard import SAFE_FALLBACK, OutputGuardResult, evaluate_output
 __all__ = [
     "inspect_query",
     "REFUSAL_MESSAGE",
-    # Prompt Injection Guard v2 (D39)
+    # Prompt Injection Guard v2
     "CANARY_TOKEN",
     "GUARD_REJECT_MESSAGE",
     "RESTRICTED_WARNING",

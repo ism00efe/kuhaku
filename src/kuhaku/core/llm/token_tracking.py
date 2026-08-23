@@ -1,13 +1,13 @@
 """Token-tracking decorator around any :class:`~kuhaku.core.llm.base.LLMProvider`.
 
-An observer, not a protocol change (D33/D34 in DECISIONS.md): ``TokenTrackingLLM``
+An observer, not a protocol change: ``TokenTrackingLLM``
 implements the same ``generate()``/``name`` shape and delegates every call to the
 wrapped provider, so ``RAGEngine`` neither knows nor cares that usage is being tracked.
 Recording is strictly best-effort -- a metrics, tracing, or logging failure must never
 turn a successful answer into a failed request, so any exception while recording is
 caught and logged, never propagated.
 
-D57: also annotates whatever OTel span is currently open (typically the "generate" span
+Also annotates whatever OTel span is currently open (typically the "generate" span
 ``RAGEngine`` opens around the call this class wraps -- see
 ``tools/rag/engine.py``/``core/observability/__init__.py``'s ``instrumented_step``) with
 GenAI semantic-convention attributes. This class still knows nothing about span
@@ -51,7 +51,7 @@ class TokenTrackingLLM:
         return text
 
     def _record_usage(self) -> None:
-        # Duck-typed: only the three concrete providers set this (see D33). Any other
+        # Duck-typed: only the three concrete providers set this. Any other
         # LLMProvider implementation (e.g. a test fake) simply isn't token-tracked.
         usage = getattr(self._wrapped, "last_usage", None)
         if usage is None:

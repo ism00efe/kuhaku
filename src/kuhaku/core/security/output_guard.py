@@ -1,4 +1,4 @@
-"""Output-side validation — FR4 of the v2 guard pipeline.
+"""Output-side validation for the v2 guard pipeline.
 
 Runs on a tool's generated answer, after citation extraction but before the response
 reaches the caller: citation grounding (annotate only), canary/extraction detection
@@ -8,7 +8,7 @@ tool-agnostic: they operate on plain context strings and citation tags, not on a
 RAG-specific type, so a different tool built on kuhaku can reuse them unchanged.
 
 Never raises: any internal failure here returns the original answer text unmodified,
-mirroring `RAGEngine._flag_unverified_citations`' exact fail-open idiom (FR6) — a bug in
+mirroring `RAGEngine._flag_unverified_citations`' exact fail-open idiom — a bug in
 this module must never break an otherwise-good answer.
 """
 

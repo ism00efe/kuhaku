@@ -48,7 +48,7 @@ _EXTRA_FIELDS = (
     "token_count",
     "prompt_token_count",
     "error",
-    # FR3 token tracking. `provider`/`model` are fixed, low-cardinality configured
+    # Token tracking. `provider`/`model` are fixed, low-cardinality configured
     # strings, never user content.
     "provider",
     "model",
@@ -57,7 +57,7 @@ _EXTRA_FIELDS = (
     # `sanitization.py` exists to mask, so the API keys its rate limiter on the address
     # in memory and never logs it.
     "status_code",
-    # POST /api/ingest audit trail. Unlike a query or log excerpt, a filename is not
+    # Document-upload audit trail. Unlike a query or log excerpt, a filename is not
     # end-user free text — it is named by a trusted internal operator uploading a
     # knowledge-base document, and knowing *which* document changed the KB is the whole
     # point of logging this endpoint. Still bytes, not raw content: nothing here can carry
@@ -66,19 +66,19 @@ _EXTRA_FIELDS = (
     # (the source .py file of the log call) — passing it via `extra` raises `KeyError`.
     "upload_filename",
     "file_size_bytes",
-    # FR4 citation verification: the raw `[S#]` tags a response cited that did not match
+    # Citation verification: the raw `[S#]` tags a response cited that did not match
     # any retrieved source. Not end-user content -- a small, fixed-shape token the model
     # emitted, not text copied from the user's query or a document body.
     "invalid_citations",
-    # FR3 feedback: a closed two-value word ("positive"/"negative"), enforced by the
+    # Feedback: a closed two-value word ("positive"/"negative"), enforced by the
     # `Literal` on the wire schema before this code ever runs -- as safe to log as
     # `status` already is.
     "feedback",
-    # Guard v2 (D39). All computed/fixed values -- never raw query or LLM output text.
+    # Guard v2. All computed/fixed values -- never raw query or LLM output text.
     "guard_zone",  # closed 3-value word ("pass"/"restricted"/"reject")
     "stage1_score",  # a float the classifier computed, not user content
     "stage2_score",  # a float the classifier computed, or absent when Stage-2 didn't run
-    "guard_component",  # closed word set, which subsystem degraded (FR6)
+    "guard_component",  # closed word set, which subsystem degraded
     "escalation_reason",  # closed word set (None/"threshold"/"sampled"/"elevated_access")
     "norm_drift",  # an int (character-count delta), not the text itself
     "canary_detected",  # a bool

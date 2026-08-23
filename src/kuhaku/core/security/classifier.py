@@ -1,14 +1,14 @@
-"""Two-stage risk classification — FR2 of the v2 guard pipeline.
+"""Two-stage risk classification for the v2 guard pipeline.
 
 Stage 1 is always available: a deterministic rule-based scorer combining several cheap
 signal groups into a 0.0-1.0 risk score, with an optional swap-in path for a trained
 ``sklearn`` char-n-gram Logistic Regression model (``models/stage1_lr.joblib``) once one
 exists (see ``scripts/train_stage1.py``). Stage 2 is an optional multilingual transformer
 classifier (ONNX); no model ships with this change, so it runs permanently degraded until
-one is deployed — see ``guard.py``'s three-zone decision and DECISIONS.md D39.
+one is deployed — see ``guard.py``'s three-zone decision.
 
 Both stages fail open/degrade rather than raise: a missing or broken model must never
-crash a request (FR6).
+crash a request.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class Stage2Result:
 # A shared "Stage-2 did not run" sentinel, imported lazily by guard.py (inside
 # GuardPipeline.__init__, not at module scope) to avoid a circular import — this module
 # imports `guard._PATTERNS`, so guard.py cannot import this module back at its own
-# top level. See DECISIONS.md D39.
+# top level.
 NOT_RUN_STAGE2 = Stage2Result(ran=False, degraded=False, label=None, confidence=None)
 
 
@@ -66,7 +66,7 @@ _REGEX_GROUP_WEIGHTS: dict[str, float] = {
 }
 
 # Injection/jailbreak phrasing beyond the 5 regex categories, English + Turkish (Turkish
-# coverage is the documented gap D18 left for the legacy regex guard). Word/phrase
+# coverage is a documented gap in the legacy regex guard). Word/phrase
 # substring match on lowercased text, deliberately fuzzier and lower-weighted than the
 # strict regexes.
 _KEYWORD_PHRASES: tuple[str, ...] = (
@@ -157,8 +157,8 @@ def _script_of(ch: str) -> str | None:
 class RuleBasedScorer:
     """Combines several cheap, deterministic signal groups into a 0.0-1.0 risk score.
 
-    Weights below are a documented starting point (DECISIONS.md non-critical assumption
-    A9), expected to be superseded once ``scripts/train_stage1.py`` has real labeled data
+    Weights below are a documented starting point, expected to be superseded once
+    ``scripts/train_stage1.py`` has real labeled data
     to retune them against. The sum of every group's maximum comfortably exceeds 1.0 by
     design: a single maxed-out signal should not alone reach HIGH_THRESH — REJECT should
     require corroborating signals, not one keyword hit. The final ``min(1.0, total)`` clip
@@ -237,7 +237,7 @@ class LRModelScorer:
 
     Raises on construction if the file is missing/corrupt/wrong-shaped; the caller
     (``TwoStageClassifier``) is responsible for catching that and falling back to
-    :class:`RuleBasedScorer` (FR2's literal fail-open requirement).
+    :class:`RuleBasedScorer` (this pipeline's fail-open requirement).
     """
 
     def __init__(self, model_path: str) -> None:
@@ -277,9 +277,9 @@ class Stage2Classifier:
     """Loads an ONNX sequence-classification model + HuggingFace tokenizer, if both the
     ``onnxruntime``/``tokenizers`` libraries and the model/tokenizer files are present.
 
-    Neither library is a declared project dependency (see DECISIONS.md D39) — a missing
+    Neither library is a declared project dependency — a missing
     library is treated identically to a missing model file: both permanently degrade this
-    instance for the lifetime of the process (FR6), never raise.
+    instance for the lifetime of the process, never raise.
     """
 
     def __init__(self, onnx_path: str, tokenizer_path: str) -> None:

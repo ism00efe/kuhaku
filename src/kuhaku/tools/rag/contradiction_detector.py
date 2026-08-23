@@ -1,6 +1,6 @@
-"""Real-time contradiction detection over retrieved chunks (D50).
+"""Real-time contradiction detection over retrieved chunks.
 
-Distinct from Faithfulness (D47, ``evaluation/faithfulness.py``): Faithfulness checks
+Distinct from Faithfulness (``evaluation/metrics/faithfulness.py``): Faithfulness checks
 whether the *generated answer* is supported by *some* retrieved chunk -- it would still
 score an answer as "faithful" if the LLM picked a stale chunk while a corrected one sat
 right next to it in the same retrieval. This module instead inspects the *retrieved
@@ -11,7 +11,7 @@ Two-stage design, mirroring the task's own algorithm: cheap embedding-based topi
 clustering (cosine similarity over already-normalized vectors, no new provider call)
 narrows an O(n^2) chunk-pair space down to same-topic candidates, then only those
 candidates go to the judge LLM (temperature=0, the same instance
-``AssistantService._judge_llm`` already uses for Faithfulness/query rewriting, D47/D48)
+``AssistantService._judge_llm`` already uses for Faithfulness/query rewriting)
 for an actual contradiction verdict. Judge-call/JSON-parsing failure handling mirrors
 ``evaluation/faithfulness.py``'s ``LLMFaithfulnessEvaluator`` exactly.
 

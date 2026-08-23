@@ -4,8 +4,8 @@ Ollama model-load delays, momentary GPU memory pressure, ChromaDB lock contentio
 CPU spikes during embedding/reranking are usually transient — retrying after a short wait
 often succeeds where failing immediately would surface an error to the user for no
 lasting reason. ``call_with_retry`` is the one place this policy lives, used identically
-by the LLM providers, the embedder, the vector store, and the reranker (see
-DECISIONS.md D40) rather than reimplemented per component.
+by the LLM providers, the embedder, the vector store, and the reranker rather than
+reimplemented per component.
 
 Sits strictly between the call and each component's existing exception handling: on
 exhaustion the *original* exception is re-raised unchanged, so callers keep wrapping it

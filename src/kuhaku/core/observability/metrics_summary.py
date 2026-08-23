@@ -1,10 +1,10 @@
-"""In-process Prometheus registry summarization for the admin metrics dashboard (D44).
+"""In-process Prometheus registry summarization for the admin metrics dashboard.
 
 Reads the current Prometheus metric families via ``telemetry.collect_prometheus_families``
 -- never scrapes the external ``/metrics`` HTTP port -- so this works even when
 ``Settings.metrics_enabled=False`` (the exposition server is optional; the underlying OTel
 instruments always collect, per ``metrics.py``'s own module docstring). ``telemetry.py`` is
-kuhaku's one deliberate direct dependency on ``prometheus_client`` (D57); this
+kuhaku's one deliberate direct dependency on ``prometheus_client``; this
 module goes through its ``collect_prometheus_families`` wrapper rather than importing
 ``prometheus_client`` itself, so that dependency stays contained to one place. A separate
 reader/aggregator module rather than growing ``metrics.py`` (pure metric *definitions*) --

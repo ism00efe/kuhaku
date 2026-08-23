@@ -1,11 +1,8 @@
-"""Tests for LLM resilience settings, load_settings, and configure_logging."""
+"""Tests for LLM resilience settings and load_settings."""
 
 from __future__ import annotations
 
-import logging
-
-from kuhaku.core.config import Settings, configure_logging, load_settings
-from kuhaku.core.observability.logging_context import JsonFormatter, TraceIdFilter
+from kuhaku.core.config import Settings, load_settings
 
 
 def test_llm_resilience_defaults():
@@ -86,7 +83,6 @@ def test_load_settings_app_config_loader_overrides_settings():
             "llm_provider": "openai",
             "llm_temperature": "0.8",
             "llm_max_tokens": "2048",
-            "log_level": "DEBUG",
             "strict_performance_components": "true",
         }
 
@@ -95,14 +91,12 @@ def test_load_settings_app_config_loader_overrides_settings():
     assert settings.llm_provider == "openai"
     assert settings.llm_temperature == 0.8
     assert settings.llm_max_tokens == 2048
-    assert settings.log_level == "DEBUG"
     assert settings.strict_performance_components is True
 
 
 def test_load_settings_app_config_loader_ignores_bootstrap_and_unknown_keys():
     def fake_loader() -> dict[str, str]:
         return {
-            "sqlite_db_path": "/injected/path.db",
             "anthropic_api_key": "injected-key",
             "openai_api_key": "injected-key",
             "ollama_base_url": "http://injected-url:11434",
@@ -112,7 +106,6 @@ def test_load_settings_app_config_loader_ignores_bootstrap_and_unknown_keys():
 
     settings = load_settings(app_config_loader=fake_loader, env_file=None)
     # Bootstrap keys must NOT be overridden by app_config
-    assert settings.sqlite_db_path == ""
     assert settings.anthropic_api_key is None
     assert settings.openai_api_key is None
     assert settings.ollama_base_url == "http://localhost:11434"
@@ -124,34 +117,4 @@ def test_load_settings_empty_app_config_loader_returns_base():
     settings = load_settings(app_config_loader=lambda: {}, env_file=None)
     assert isinstance(settings, Settings)
     assert settings.llm_temperature == 0.1
-
-
-# --- configure_logging -------------------------------------------------------------
-def test_configure_logging_json_format():
-    configure_logging(level="DEBUG", log_format="json")
-
-    root = logging.getLogger()
-    assert root.level == logging.DEBUG
-    assert len(root.handlers) == 1
-    handler = root.handlers[0]
-    assert any(isinstance(f, TraceIdFilter) for f in handler.filters)
-    assert isinstance(handler.formatter, JsonFormatter)
-
-
-def test_configure_logging_text_format():
-    configure_logging(level="WARNING", log_format="text")
-
-    root = logging.getLogger()
-    assert root.level == logging.WARNING
-    assert len(root.handlers) == 1
-    handler = root.handlers[0]
-    assert any(isinstance(f, TraceIdFilter) for f in handler.filters)
-    assert isinstance(handler.formatter, logging.Formatter)
-
-
-def test_configure_logging_defaults():
-    configure_logging()
-    root = logging.getLogger()
-    assert len(root.handlers) == 1
-
 

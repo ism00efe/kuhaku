@@ -57,7 +57,7 @@ class EvaluationRunner:
         judge_llm_provider: LLMProvider | None, settings: Settings | None
     ) -> LLMFaithfulnessEvaluator | None:
         """Explicit injection wins. Otherwise, given ``settings``, auto-create a
-        zero-temperature judge provider (ADR D47: a judge must be deterministic,
+        zero-temperature judge provider (a judge must be deterministic,
         independent of whatever temperature the live target's own provider runs at).
         With neither, stays ``None`` -- faithfulness scoring is opt-in everywhere in this
         package (see ``judges.py``), never a hard requirement to construct a runner."""

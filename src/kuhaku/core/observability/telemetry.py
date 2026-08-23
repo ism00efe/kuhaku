@@ -1,4 +1,4 @@
-"""OpenTelemetry initialization: the single telemetry standard for kuhaku (D57).
+"""OpenTelemetry initialization: the single telemetry standard for kuhaku.
 
 ``init_telemetry()`` installs the process-wide tracer/meter providers exactly once and is
 called automatically at the bottom of this module -- importing
@@ -154,7 +154,7 @@ def collect_prometheus_families() -> list:
     """Read every registered Prometheus metric family from the default ``REGISTRY``.
 
     This module is kuhaku's one deliberate direct dependency on
-    ``prometheus_client`` (see ``pyproject.toml``'s D57 note); everything else --
+    ``prometheus_client`` (see ``pyproject.toml``'s note on it); everything else --
     ``metrics_summary.py``'s registry read included -- goes through this function rather
     than importing ``prometheus_client`` itself. Reading it here (not scraping the
     external ``/metrics`` HTTP port) works even when exposition is disabled, since

@@ -8,6 +8,7 @@ from kuhaku import RAG
 from kuhaku.core.auth import AuthContext
 from kuhaku.core.config import Settings
 from kuhaku.core.security.guard import CANARY_TOKEN
+from kuhaku.tools.rag.config import RAGSettings
 from kuhaku.tools.rag.ingestion import UnsupportedFileType
 from kuhaku.tools.rag.messages import DEFAULT_ENGINE_MESSAGES
 from kuhaku.tools.rag.prompts import SYSTEM_PROMPT
@@ -330,14 +331,16 @@ def test_sparse_engine_answer_on_empty_store_distinguishes_empty_kb_from_no_chun
 
 
 class _FakeCrossEncoderReranker:
-    """Records the model name it was constructed with -- stands in for
-    `CrossEncoderReranker` so these tests never reach `sentence_transformers`/
+    """Records the model name (and any retry kwargs) it was constructed with -- stands
+    in for `CrossEncoderReranker` so these tests never reach `sentence_transformers`/
     HuggingFace, proving the setting turns re-ranking on without downloading anything."""
 
     instances: list[str] = []
+    kwargs: list[dict] = []
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, **kwargs) -> None:
         _FakeCrossEncoderReranker.instances.append(model_name)
+        _FakeCrossEncoderReranker.kwargs.append(kwargs)
 
 
 class _ExplodingCrossEncoderReranker:
@@ -396,3 +399,72 @@ def test_explicit_reranker_false_beats_rerank_enabled_env_var(monkeypatch, build
     rag = build_rag(reranker=False)
 
     assert rag.engine.get_retriever().strategy == "hybrid"
+
+
+# --- retry settings reach the vector store / re-ranker constructors (Feature 2) ------
+
+
+class _SpyChromaVectorStore(FakeVectorStore):
+    """Records the retry kwargs it was constructed with, on top of FakeVectorStore's
+    normal in-memory behavior -- proves a RAGSettings retry-setting change reaches
+    ChromaVectorStore's constructor without touching a real Chroma instance."""
+
+    calls: list[dict] = []
+
+    def __init__(self, persist_dir: str, collection_name: str, **kwargs) -> None:
+        super().__init__()
+        _SpyChromaVectorStore.calls.append(kwargs)
+
+
+def test_vectorstore_retry_settings_reach_chromavectorstore_construction(monkeypatch):
+    _SpyChromaVectorStore.calls = []
+    monkeypatch.setattr(kuhaku, "ChromaVectorStore", _SpyChromaVectorStore)
+    monkeypatch.setattr(kuhaku, "build_embedding_provider", lambda rs: FakeEmbeddings())
+    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s: FakeLLM())
+
+    rag_settings = RAGSettings(
+        retry_enabled=False,
+        retry_vectorstore_max_attempts=7,
+        retry_vectorstore_backoff_seconds=2.5,
+    )
+    kuhaku.RAG(
+        settings=Settings(_env_file=None, audit_enabled=False),
+        rag_settings=rag_settings,
+        cache=False,
+    )
+
+    assert _SpyChromaVectorStore.calls == [
+        {
+            "retry_enabled": False,
+            "retry_max_attempts": 7,
+            "retry_backoff_seconds": 2.5,
+        }
+    ]
+
+
+def test_reranker_retry_settings_reach_crossencoderreranker_construction(monkeypatch, build_rag):
+    """A re-ranker that is never constructed (the default) must not require its retry
+    settings to be resolved -- this test only exercises the `rerank_enabled=True` path,
+    where CrossEncoderReranker is actually built."""
+
+    _FakeCrossEncoderReranker.instances = []
+    _FakeCrossEncoderReranker.kwargs = []
+    monkeypatch.setattr(kuhaku, "CrossEncoderReranker", _FakeCrossEncoderReranker)
+
+    rag_settings = RAGSettings(
+        rerank_enabled=True,
+        retry_enabled=False,
+        retry_reranker_max_attempts=9,
+        retry_reranker_backoff_base_seconds=1.5,
+        retry_reranker_backoff_max_seconds=8.0,
+    )
+    build_rag(rag_settings=rag_settings)
+
+    assert _FakeCrossEncoderReranker.kwargs == [
+        {
+            "retry_enabled": False,
+            "retry_max_attempts": 9,
+            "retry_backoff_base_seconds": 1.5,
+            "retry_backoff_max_seconds": 8.0,
+        }
+    ]

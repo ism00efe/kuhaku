@@ -18,7 +18,7 @@ class TokenUsage:
     """Token counts from one ``generate()`` call, when the provider's API reports them.
 
     Not part of the ``LLMProvider`` protocol's return type (``generate()`` still returns
-    a plain ``str`` — see D33): providers instead record their own usage on a
+    a plain ``str``): providers instead record their own usage on a
     ``last_usage`` instance attribute, which ``TokenTrackingLLM`` (``llm/token_tracking.py``)
     reads via ``getattr`` after the call completes. This is an addition every provider
     already did the hard part of (all three parse usage out of their response body for
@@ -38,7 +38,7 @@ class LLMUnavailableError(LLMError):
 
     Raised by :class:`~kuhaku.tools.rag.engine.RAGEngine` when a provider's
     ``generate()`` raises :class:`LLMError` — translated at that boundary so the API
-    layer can map it to a 503 without importing provider internals. See DECISIONS.md D33.
+    layer can map it to a 503 without importing provider internals.
     """
 
 
@@ -54,7 +54,7 @@ class LLMProvider(Protocol):
 
 def is_retryable_request_exception(exc: BaseException) -> bool:
     """True for connection errors/timeouts and 5xx responses; false for 4xx (retry won't
-    help a bad request or auth failure) and anything else (D40).
+    help a bad request or auth failure) and anything else.
 
     Shared by all three providers (Ollama, Anthropic, OpenAI) -- each currently wraps the
     same ``requests.RequestException`` into ``LLMError`` identically, regardless of status

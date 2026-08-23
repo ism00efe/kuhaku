@@ -1,13 +1,13 @@
-"""Append-only audit logging — FR5 (guard v2 decisions), D41/FR8 (every request), D42
-(model/prompt version provenance), D43 (optional ``event_type`` labeling), and D44
-(``action``/``target`` fields plus a :func:`read_recent` reader for the admin panel).
+"""Append-only audit logging — covers guard v2 decisions, an unconditional record of
+every request, model/prompt version provenance, optional ``event_type`` labeling, and
+``action``/``target`` fields, plus a :func:`read_recent` reader for the admin panel.
 
 One JSON line per audit-worthy event, written to a local JSONL file (``data/audit.jsonl``
 by default). Never carries raw user input or raw LLM output — only a hash of the raw
 question and a short prefix of the already-sanitized retrieval query, plus whatever
 decision/identity metadata is available at the call site.
 
-Two kinds of call site share this one ``record()`` function and schema (D41): the
+Two kinds of call site share this one ``record()`` function and schema: the
 guard-v2-specific ones in ``RAGEngine._answer()`` (only reached when ``guard_enabled``),
 which pass a real ``decision``/``guard_version``/``model_version``/``thresholds``; and the
 unconditional per-request one (reached regardless of ``guard_enabled``), which passes
@@ -17,7 +17,7 @@ also carry ``auth_context``/``accessed_chunks``, letting every record answer "wh
 what" -- without kuhaku assuming any fixed role or clearance vocabulary (see
 ``kuhaku.core.auth``).
 
-Security-critical (D53), unlike ``rag.cache.QueryAnswerCache``: while audit logging is
+Security-critical, unlike ``rag.cache.QueryAnswerCache``: while audit logging is
 enabled (``Settings.audit_enabled``, default ``True``), a failure to write a record is
 never swallowed -- it raises ``AuditWriteError`` so the operator sees it instead of
 silently losing audit coverage. An operator who wants to run without audit logging must
@@ -43,8 +43,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Guards interleaved writes from FastAPI's threadpool-dispatched sync handlers (same
-# single-process-MVP scope as api/middleware.py's RateLimiter -- see D19/D23). Does not
+# Guards interleaved writes from the embedding application's threadpool-dispatched
+# request handlers (same single-process-MVP scope as its own rate limiter). Does not
 # protect against multiple OS processes writing the same file concurrently.
 _write_lock = threading.Lock()
 
@@ -59,7 +59,7 @@ class AuditWriteError(Exception):
     directory could not be created, or the file could not be opened for append).
 
     Raised rather than logged-and-swallowed: audit coverage silently going missing is a
-    security regression, not a degraded-but-functional state (D53).
+    security regression, not a degraded-but-functional state.
     """
 
 
@@ -93,14 +93,14 @@ def record(
     the already-sanitized text computed earlier in ``RAGEngine._answer()`` -- truncated to
     100 chars, never re-derived from raw input. ``decision``/``guard_version``/
     ``model_version``/``thresholds`` are ``None`` for the unconditional per-request call
-    site (D41/FR8), which has no guard-v2 decision to report -- their JSON keys are still
+    site, which has no guard-v2 decision to report -- their JSON keys are still
     present, just null, so every audit line has the same shape regardless of call site.
-    ``llm_version``/``embedding_version``/``system_prompt_version`` (D42) are the
+    ``llm_version``/``embedding_version``/``system_prompt_version`` are the
     deployed versions from ``Settings`` at the time this record was written -- ``None``
     only when the caller has none to report (e.g. a direct/test construction of
-    ``RAGEngine`` with no versions configured). ``event_type`` (D43) is an optional free-text
+    ``RAGEngine`` with no versions configured). ``event_type`` is an optional free-text
     label distinguishing what kind of event this record represents. ``action``/``target``
-    (D44) are free-form fields for a mutating event -- the specific action performed
+    are free-form fields for a mutating event -- the specific action performed
     (e.g. ``"lock_user"``) and the thing it acted on. ``auth_context`` (see
     ``kuhaku.core.auth``) is the acting identity, if any -- its ``identity``/
     ``is_authenticated``/``roles`` are written as their own top-level fields so the audit
@@ -108,10 +108,10 @@ def record(
     clearance vocabulary; anything else about the identity (a custom "admin tier", a
     session id, ...) belongs in ``auth_context.metadata`` or the generic ``metadata``
     parameter below, not a new named parameter here. ``faithfulness_score``/
-    ``hallucination_rate`` (D47) are set only by the asynchronous
-    ``event_type="faithfulness_evaluation"`` call site (``api/routes.py``'s background
-    task) -- ``None`` everywhere else. All default to ``None``, so every existing call
-    site keeps working unchanged.
+    ``hallucination_rate`` are set only by the asynchronous
+    ``event_type="faithfulness_evaluation"`` call site (an embedding application's
+    background evaluation task) -- ``None`` everywhere else. All default to ``None``, so
+    every existing call site keeps working unchanged.
 
     ``metadata`` is a generic, tool-scoped bag for anything a caller wants recorded that
     doesn't warrant its own named parameter here (this module is core, tool-agnostic
@@ -198,10 +198,10 @@ def record(
 
 
 def read_recent(path: str) -> list[dict[str, object]]:
-    """Read every parseable audit record from ``path``, oldest first (file order) (D44).
+    """Read every parseable audit record from ``path``, oldest first (file order).
 
     Best-effort on the read side (unlike :func:`record`'s write side, which now raises
-    on failure while enabled -- see D56): a missing file returns ``[]``; a line that
+    on failure while enabled): a missing file returns ``[]``; a line that
     fails to parse as JSON is skipped (logged), never raised. Reading is not
     security-critical the way writing is -- a corrupt/missing log file surfaces as an
     empty admin-panel view, not a silently-missing audit trail.

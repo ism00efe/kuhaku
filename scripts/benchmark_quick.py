@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -33,7 +34,7 @@ for _p in (str(_ROOT), str(_SRC)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from kuhaku.core.config import configure_logging, get_settings  # noqa: E402
+from kuhaku.core.config import get_settings  # noqa: E402
 from kuhaku.tools.rag.models import RetrievedChunk  # noqa: E402
 from kuhaku.tools.rag import (  # noqa: E402
     ChromaVectorStore,
@@ -164,7 +165,9 @@ def _evaluate(retriever: Retriever, dataset: list[dict]) -> tuple[float, float]:
 
 
 def main() -> None:
-    configure_logging(level="WARNING")
+    # A script is an application, so configuring the root logger here is correct --
+    # which is exactly why kuhaku itself no longer offers to do it.
+    logging.basicConfig(level="WARNING")
     _empty_cuda_cache()
     settings = get_settings()
     rag_settings = RAGSettings.from_settings(settings)

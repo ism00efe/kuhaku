@@ -1,12 +1,11 @@
-"""LLM-based, togglable pre-retrieval query rewriting (D48).
+"""LLM-based, togglable pre-retrieval query rewriting.
 
 ``QueryRewriter`` is the single orchestration point for "hash the query -> check the
 SQLite rewrite cache -> call the LLM under a timeout -> cache the result -> log/record
 a metric". It is deliberately the only place this sequence is implemented: both the
 live pipeline (``rag/engine.py``'s ``RAGEngine``) and the evaluation harness
 (``evaluation/runner.py``'s ``BenchmarkRunner``) construct one instance and call
-``.rewrite()`` -- neither duplicates the cache-lookup or timeout logic. See
-DECISIONS.md D48.
+``.rewrite()`` -- neither duplicates the cache-lookup or timeout logic.
 
 Failure is always graceful: a timed-out or failed LLM call returns the original query
 unchanged rather than raising, so the pipeline never fails because rewriting failed.
@@ -41,7 +40,7 @@ _SYSTEM_PROMPT_PATH = (
 
 # Last-resort fallback, byte-identical to the prompt file's contents, used only if the
 # file is missing (e.g. an unusual working directory). Rewrites are retrieval-only (see
-# RAGEngine integration, DECISIONS.md D48): the LLM-facing prompt and the guard still see
+# RAGEngine integration): the LLM-facing prompt and the guard still see
 # the user's original text, so a rewrite that drifts from the original intent only ever
 # costs recall, never changes what the user is told or what security inspects.
 _DEFAULT_SYSTEM_PROMPT = """You are a query optimizer for a document retrieval system.
@@ -106,7 +105,7 @@ class QueryRewriter:
         return rewritten
 
     def _call_llm(self, query: str) -> tuple[str, bool]:
-        # LLMProvider.generate() has no per-call timeout (D33: temperature/timeout are
+        # LLMProvider.generate() has no per-call timeout (temperature/timeout are
         # constructor-only). signal.alarm isn't available on Windows, so a short-lived
         # single-worker executor is the portable way to bound this call.
         with ThreadPoolExecutor(max_workers=1) as executor:

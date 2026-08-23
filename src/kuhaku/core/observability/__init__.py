@@ -108,7 +108,7 @@ __all__ = [
     "new_trace_id",
     "log_step",
     "instrumented_step",
-    # OpenTelemetry tracing (D57)
+    # OpenTelemetry tracing
     "get_tracer",
     "get_meter",
     "start_span",
@@ -122,7 +122,7 @@ __all__ = [
     "API_REQUEST_DURATION",
     "record_redactions",
     "FEEDBACK_TOTAL",
-    # Prompt Injection Guard v2 (D39)
+    # Prompt Injection Guard v2
     "GUARD_STAGE1_ESCALATIONS",
     "GUARD_STAGE2_CLASSIFICATIONS",
     "GUARD_ZONE",
@@ -131,23 +131,23 @@ __all__ = [
     "record_guard_stage1_escalation",
     "record_guard_stage2_classification",
     "record_guard_degradation",
-    # Retry (D40)
+    # Retry
     "RETRY_ATTEMPTS",
     "RETRY_SUCCESSES",
     "RETRY_FAILURES",
     "record_retry_attempt",
     "record_retry_success",
     "record_retry_failure",
-    # Authentication & audit (D41)
+    # Authentication & audit
     "AUTH_LOGIN_TOTAL",
     "AUTH_REFRESH_TOTAL",
     "AUTH_LOGOUT_TOTAL",
     "AUDIT_RECORDS_TOTAL",
     "record_auth_login",
-    # Admin panel metrics summary (D44)
+    # Admin panel metrics summary
     "build_metrics_summary",
     "get_cached_metrics_summary",
-    # Evaluation metrics infrastructure (D47)
+    # Evaluation metrics infrastructure
     "EVALUATION_RUN_COUNT",
     "EVALUATION_RUN_DURATION",
     "record_evaluation_run",

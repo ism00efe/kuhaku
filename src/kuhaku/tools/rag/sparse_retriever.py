@@ -111,8 +111,8 @@ class BM25Retriever:
             if is_entitled(self._chunks[idx], auth_context)
         }
         ranked = sorted(entitled.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-        # FR4: same freshness filter as DenseRetriever, so RRF fusion cannot resurface
-        # an obsolete/out-of-window chunk via the sparse side (see DECISIONS.md D35).
+        # Same freshness filter as DenseRetriever, so RRF fusion cannot resurface
+        # an obsolete/out-of-window chunk via the sparse side.
         fresh = [
             RetrievedChunk(chunk=self._chunks[i], score=s)
             for i, s in ranked

@@ -7,7 +7,6 @@ required to run the local Ollama default.
 
 from __future__ import annotations
 
-import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
@@ -80,7 +79,7 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-4o-mini")
     openai_base_url: str = Field(default="https://api.openai.com/v1")
 
-    # Google Vertex AI (optional, requires the `vertex` extra -- see DECISIONS.md).
+    # Google Vertex AI (optional, requires the `vertex` extra).
     # Auth is via Application Default Credentials (gcloud/service account), not an API
     # key field here. Generic (cross-tool) platform settings -- also consumed by the RAG
     # tool's Vertex embedding provider via RAGSettings.vertex_project/vertex_location,
@@ -95,7 +94,7 @@ class Settings(BaseSettings):
     )
     vertex_model: str = Field(default="gemini-2.5-flash")
 
-    # --- Default behavior policy (see DECISIONS.md D53) ------------------------
+    # --- Default behavior policy ------------------------------------------------
     # Performance/helper components (BM25, cross-encoder reranker) configured as the
     # kuhaku default fall back to a simpler alternative and log a warning when they
     # fail to load, so the app still starts (kuhaku.core.policy.apply_fallback_policy).
@@ -103,24 +102,14 @@ class Settings(BaseSettings):
     # for operators who would rather fail loudly than silently run degraded.
     strict_performance_components: bool = Field(default=False)
 
-    # --- Logging ----------------------------------------------------------
-    log_level: str = Field(default="INFO")
-    log_format: str = Field(default="json")  # json | text
-
     # --- Metrics (Prometheus) ----------------------------------------------
-    # Metrics exposition is now handled by the JWT-protected GET /api/admin/metrics
-    # endpoint in admin_routes.py. The standalone metrics HTTP server is disabled.
+    # Metrics exposition is handled by the embedding application's own JWT-protected
+    # admin metrics endpoint, not by kuhaku. The standalone metrics HTTP server is
+    # disabled.
     metrics_enabled: bool = Field(default=False)
 
     # --- Security: prompt injection guard -----------------------------------
     input_guard_enabled: bool = Field(default=True)
-
-    # --- Category 2: query-answer cache (SQLite) --------------------------------
-    # Shared by the RAG query-answer cache (RAGSettings.cache_enabled/cache_ttl_seconds)
-    # and the feedback table (two independently-managed tables, one file) -- simpler ops
-    # than two SQLite files for two small, never-joined concerns. Stays a generic,
-    # cross-tool field since the feedback table has nothing to do with RAG.
-    sqlite_db_path: str = Field(default="")
 
     # --- Prompt Injection Guard v2 (normalize -> two-stage classify -> 3-zone) -------
     # Master kill switch for the whole v2 pipeline (normalizer, classifier, datamarked
@@ -130,26 +119,23 @@ class Settings(BaseSettings):
     # guard_stage2_onnx_path below), Stage-2 stays permanently degraded, which forces
     # every v2-guarded request into RESTRICTED regardless of Stage-1's score. The legacy
     # `input_guard_enabled` regex guard above is unaffected and keeps running either way.
-    # See DECISIONS.md D39.
     guard_enabled: bool = Field(default=False)
-    guard_low_threshold: float = Field(default=0.3)
     guard_high_threshold: float = Field(default=0.7)
     guard_stage1_model_path: str = Field(default="")
     guard_stage2_onnx_path: str = Field(default="")
     guard_stage2_tokenizer_path: str = Field(default="")
-    guard_sampling_rate: float = Field(default=0.05)
     guard_norm_drift_tolerance: int = Field(default=5)
     guard_citation_grounding_threshold: float = Field(default=0.1)
     guard_model_version: str = Field(default="1.0.0")
     guard_version: str = Field(default="2.0.0")
 
     # --- Audit log (security/audit.py) ----------------------------------------------
-    # Originally guard-v2-only (FR7/A12); D41 made audit logging unconditional -- every
+    # Originally guard-v2-only; audit logging was later made unconditional -- every
     # request now writes a record here regardless of guard_enabled -- so this setting
     # moved out of the guard section and dropped its `guard_` prefix. Same file both
     # kinds of call site write to.
     #
-    # audit_enabled (D53/D55): on by default -- a strong security default, explicit
+    # audit_enabled: on by default -- a strong security default, explicit
     # opt-out only. audit_log_path unset/None/"" means "use the kuhaku-managed
     # default" (./logs/kuhaku_audit.jsonl, see security/audit.py); it is not itself
     # an enable/disable switch, so a caller can set an explicit path while still
@@ -157,13 +143,13 @@ class Settings(BaseSettings):
     audit_enabled: bool = Field(default=True)
     audit_log_path: str | None = Field(default=None)
 
-    # --- Retry (D40): LLM, embedding, vector store, reranker call sites -------------
+    # --- Retry: LLM, embedding, vector store, reranker call sites -------------------
     # Master kill switch for all four retry sites. All three LLM providers (Ollama,
     # Anthropic, OpenAI) share one generic RETRY_LLM_* config -- they are structurally
     # identical (requests.post -> raise_for_status -> LLMError, no vendor SDK) and the
     # project's LLM abstraction principle requires that swapping LLM_PROVIDER never
     # silently drops behavior. Per-provider tuning was discussed and deliberately
-    # deferred -- see DECISIONS.md D40.
+    # deferred.
     # retry_enabled is the master kill switch shared by every subsystem's retry site,
     # RAG-owned ones included -- RAGSettings.retry_enabled mirrors this value (see
     # RAGSettings.from_settings()) so RAG components never need to read Settings
@@ -186,7 +172,7 @@ class Settings(BaseSettings):
     circuit_breaker_reset_timeout_seconds: float = Field(default=60.0)
     circuit_breaker_success_threshold: int = Field(default=1)
 
-    # --- Model versioning (D42) -------------------------------------------------------
+    # --- Model versioning --------------------------------------------------------------
     # Deployment-time label, set manually by whoever upgrades the LLM model -- not
     # auto-detected. Independent of the functional selector fields above
     # (ollama_model/anthropic_model/openai_model) by design: those choose which model
@@ -198,8 +184,8 @@ class Settings(BaseSettings):
 
     # --- RAG configuration -------------------------------------------------------------
     # All RAG-specific settings (corpus/chunking/retrieval/re-ranking/caching/
-    # contradiction-detection/query-rewriting, the vector store, RAG-owned retry sites,
-    # and RAG model/prompt versioning) live on RAGSettings, not here -- see
+    # contradiction-detection, the vector store, RAG-owned retry sites, and RAG
+    # model/prompt versioning) live on RAGSettings, not here -- see
     # kuhaku.tools.rag.config.RAGSettings. Supports nested env vars, which carry the
     # KUHAKU_ prefix like every other field: KUHAKU_RAG__TOP_K=8,
     # KUHAKU_RAG__RERANK_ENABLED=false,
@@ -207,13 +193,11 @@ class Settings(BaseSettings):
     rag: RAGSettings = Field(default_factory=_default_rag_settings)
 
 
-# D46: bootstrap-only fields -- must always come from .env/the environment, never from
-# app_config, since they're either needed to even locate app_config's own database
-# (the *_db_path fields) or are secrets that have no business being duplicated into a
+# Bootstrap-only fields -- must always come from .env/the environment, never from
+# app_config, since they are secrets that have no business being duplicated into a
 # second store.
 _BOOTSTRAP_KEYS = frozenset(
     {
-        "sqlite_db_path",
         "anthropic_api_key",
         "openai_api_key",
         "ollama_base_url",
@@ -232,8 +216,7 @@ def load_settings(
     then overlaid on top of ``base``'s own dump, and re-passed as explicit constructor
     kwargs -- pydantic-settings' documented precedence (init kwargs > env > dotenv >
     defaults) makes that overlay win over ``.env`` automatically, and pydantic's lax
-    coercion turns the DB's ``TEXT`` values back into ``bool``/``int``/``float``. See
-    DECISIONS.md D46 for why this, not manual coercion, is the whole mechanism.
+    coercion turns the DB's ``TEXT`` values back into ``bool``/``int``/``float``.
 
     ``app_config_loader`` is an optional callable (no arguments) that returns a
     ``dict[str, str]`` of persisted config key/value pairs, forming the third
@@ -271,11 +254,12 @@ def get_settings(
 ) -> Settings:
     """Return a cached ``Settings`` instance, refreshed via :func:`load_settings`.
 
-    Runtime config changes (``PUT /api/admin/config``) do not rely on this cache being
-    cleared to take effect -- ``AssistantService.reconfigure`` mutates the one shared
+    Runtime config changes made through the embedding application's admin config
+    endpoint do not rely on this cache being cleared to take effect -- its
+    reconfiguration path mutates the one shared
     ``Settings`` instance every route closure already holds a reference to, in place.
     ``cache_clear()`` is called defensively after a write anyway, for any future code
-    path that constructs ``Settings`` fresh. See DECISIONS.md D46.
+    path that constructs ``Settings`` fresh.
 
     ``app_config_loader``/``env_file`` are forwarded to :func:`load_settings`; see its
     docstring. Kuhaku-only callers that never need the DB layer or a dotenv file omit
@@ -283,40 +267,6 @@ def get_settings(
     """
 
     return load_settings(app_config_loader, env_file)
-
-
-def configure_logging(level: str | None = None, log_format: str | None = None) -> None:
-    """Configure root logging once.
-
-    ``log_format="json"`` (the default) emits structured, machine-parseable log lines
-    with a propagated ``trace_id`` — see ``observability.logging_context``.
-    ``log_format="text"`` keeps the original human-readable console format, useful for
-    interactive debugging.
-    """
-
-    settings = get_settings()
-    resolved_level = (level or settings.log_level).upper()
-    resolved_format = (log_format or settings.log_format).lower()
-
-    # Local import: keeps config.py free of the observability import at module load
-    # time (config is imported by nearly every module; observability is not).
-    from .observability.logging_context import JsonFormatter, TraceIdFilter
-
-    handler = logging.StreamHandler()
-    handler.addFilter(TraceIdFilter())
-    if resolved_format == "json":
-        handler.setFormatter(JsonFormatter())
-    else:
-        handler.setFormatter(
-            logging.Formatter(
-                fmt="%(asctime)s | %(levelname)-7s | %(name)s | [%(trace_id)s] | %(message)s",
-                datefmt="%H:%M:%S",
-            )
-        )
-
-    root = logging.getLogger()
-    root.setLevel(getattr(logging, resolved_level, logging.INFO))
-    root.handlers = [handler]
 
 
 # Resolve the forward-referenced `rag: "RAGSettings"` annotation now that Settings is

@@ -1,9 +1,9 @@
 """Exceptions raised by the default behavior policy (``kuhaku.core.policy``).
 
-See DECISIONS.md D53 for the three-tier policy these map to: security-critical
-components fail loudly (``SecurityComponentError``), performance/helper components fall
-back with a warning (``FallbackWarning``), and user-supplied custom components fail fast
-at injection time (``CustomComponentError``).
+The three-tier policy these map to: security-critical components fail loudly
+(``SecurityComponentError``), performance/helper components fall back with a warning
+(``FallbackWarning``), and user-supplied custom components fail fast at injection time
+(``CustomComponentError``).
 """
 
 from __future__ import annotations

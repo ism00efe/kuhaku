@@ -159,9 +159,7 @@ class DenseRetriever:
         except Exception as exc:
             raise VectorStoreError(f"Vector store query failed: {exc}") from exc
 
-        # FR4: filter obsolete/out-of-window chunks post-query, before fusion/reranking
-        # (see DECISIONS.md D35 for why this is applied here rather than as a native
-        # Chroma `where=` filter, and for the "may return fewer than top_k" tradeoff).
+        # Filter obsolete/out-of-window chunks post-query, before fusion/reranking.
         fresh = [item for item in candidates if item.chunk.is_fresh()]
         ACTIVE_DOCUMENTS.set(len(fresh))
 
@@ -296,7 +294,7 @@ def _apply_reranker(
             # final top_k.
             result = reranker.rerank(query, candidates, len(candidates))
         except Exception as exc:
-            # Reranking is optional: once its own retries are exhausted (D40), degrade to
+            # Reranking is optional: once its own retries are exhausted, degrade to
             # the un-reranked ranking rather than failing the whole request.
             logger.error(
                 "Reranking failed after retries exhausted; skipping rerank: %s", exc

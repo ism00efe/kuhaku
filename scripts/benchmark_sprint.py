@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 import re
 import sys
 import time
@@ -46,7 +47,7 @@ for _p in (str(_ROOT), str(_SRC)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from kuhaku.core.config import Settings, configure_logging, get_settings  # noqa: E402
+from kuhaku.core.config import Settings, get_settings  # noqa: E402
 from kuhaku.core.llm import build_llm_provider  # noqa: E402
 from kuhaku.tools.rag import (  # noqa: E402
     ChromaVectorStore,
@@ -117,6 +118,11 @@ class ConfigResult:
     notes: str = ""
 
 
+# Collection-name prefix for this benchmark's per-embedding-model collections. A local
+# constant, not a kuhaku setting: the framework does not name collections for you.
+_COLLECTION_BASE = "kuhaku_benchmark"
+
+
 def _slug(model_name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", model_name).lower()
 
@@ -154,10 +160,10 @@ def get_or_build_embedder_and_store(
 ) -> tuple[SentenceTransformerEmbeddings, ChromaVectorStore]:
     """Embedder + its dedicated Chroma collection, ingesting the corpus into it first if
     that collection doesn't exist yet (mirrors service.py's embedding-switch collection
-    naming: ``{collection_base}_{slug(model_name)}``, D46)."""
+    naming: ``{_COLLECTION_BASE}_{slug(model_name)}``)."""
 
     embedder = SentenceTransformerEmbeddings(model_name, device=rag_settings.embedding_device)
-    collection = f"{rag_settings.collection_base}_{_slug(model_name)}"
+    collection = f"{_COLLECTION_BASE}_{_slug(model_name)}"
     store = ChromaVectorStore(rag_settings.chroma_persist_dir, collection)
     if store.count() == 0:
         print(f"  [setup] Ingesting corpus for '{model_name}' -> collection '{collection}'...")
@@ -307,7 +313,9 @@ def render_markdown_table(results: dict[str, ConfigResult]) -> str:
 
 
 def main() -> None:
-    configure_logging(level="WARNING")
+    # A script is an application, so configuring the root logger here is correct --
+    # which is exactly why kuhaku itself no longer offers to do it.
+    logging.basicConfig(level="WARNING")
     settings = get_settings()
     rag_settings = RAGSettings.from_settings(settings)
     dataset = load_dataset(DATASET_PATH)

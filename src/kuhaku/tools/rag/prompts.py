@@ -11,10 +11,10 @@ explicit to reduce hallucination and to force citations.
 
 Prompt-version tracking for eval A/B comparison and for production reproducibility
 (cache/audit/response metadata) both moved to ``RAGSettings.eval_prompt_version`` /
-``RAGSettings.prod_prompt_version`` (D42) -- this module no longer defines its own
+``RAGSettings.prod_prompt_version`` -- this module no longer defines its own
 ``PROMPT_VERSION`` constant.
 
-FR1 (Category 2): the system prompt text itself lives in ``prompts/system_prompt.txt``
+Category 2: the system prompt text itself lives in ``prompts/system_prompt.txt``
 (this package's own data directory) rather than inline here, so it can be edited/versioned
 without a code change. Loaded once at import time via a path resolved relative to this
 module's file (``Path(__file__).parent``), not the process's CWD, so `kuhaku` works
@@ -22,7 +22,7 @@ the same whether run from source in this repo or `pip install`ed standalone into
 different project. A missing file fails loudly at startup instead of silently serving a
 broken prompt.
 
-FR3 (guard v2, D39): retrieved chunks are wrapped in ``[DOC]...[/DOC]`` markers, and the
+Guard v2 hardening: retrieved chunks are wrapped in ``[DOC]...[/DOC]`` markers, and the
 system prompt declares that marked text is data, never instructions, and that a canary
 token must never appear in the model's output. This hardening ships unconditionally
 (not gated by ``Settings.guard_enabled``) -- it costs nothing when the output-side canary
@@ -41,7 +41,7 @@ from .messages import DEFAULT_ENGINE_MESSAGES, EngineMessages, QUESTION_LABEL, S
 
 # Exported so nothing downstream (the UI's confidence badge, tests) carries a copied
 # literal that could silently drift from what the model is actually instructed to say —
-# same reasoning as `security.REFUSAL_MESSAGE` (see DECISIONS.md D22). Injectable via
+# same reasoning as `security.REFUSAL_MESSAGE`. Injectable via
 # `load_system_prompt`'s `abstention_phrase` parameter for callers that need a different
 # language/wording than this default.
 ABSTENTION_PHRASE = "I don't have enough information to answer this question."
@@ -74,8 +74,8 @@ DEFAULT_FORMAT_PREFERENCE = (
 # so the example's section labels match the real prompt layout by default. This sync
 # only covers the *defaults* -- a caller who overrides EngineMessages.question_label/
 # sources_label without also overriding this `example` layer will get an example whose
-# labels no longer match the live prompt (see DECISIONS.md / final report: the two
-# injection points are intentionally independent, not mechanically coupled).
+# labels no longer match the live prompt (the two injection points are intentionally
+# independent, not mechanically coupled).
 DEFAULT_EXAMPLE = (
     "## Example\n"
     f"{QUESTION_LABEL}\n"
@@ -102,7 +102,7 @@ DEFAULT_EXAMPLE = (
 # mean..." behind -- see the empty-layer handling in `load_system_prompt`.
 DEFAULT_MASKED_PLACEHOLDERS = " such as [EMAIL], [TOKEN], [IP], [CARD], [NATIONAL_ID], [PHONE]"
 
-# Public alias (D46): AssistantService.reconfigure() writes an admin-edited prompt back
+# Public alias: AssistantService.reconfigure() writes an admin-edited prompt back
 # to this exact path, so it must be importable rather than re-hardcoded elsewhere.
 SYSTEM_PROMPT_PATH = _SYSTEM_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / "system_prompt.txt"
@@ -199,7 +199,7 @@ def build_user_prompt(
     # The citation-format reminder must only name tags that actually exist in this
     # prompt's sources block. A hardcoded "[S1], [S2]" would put a dangling [S2] into
     # the prompt itself whenever only one chunk was retrieved -- harmless today (the
-    # engine's out-of-range guard drops it), but FR4 citation verification would flag it
+    # engine's out-of-range guard drops it), but citation verification would flag it
     # as an unverified citation the model never actually used.
     example_tags = ", ".join(f"[S{i}]" for i in range(1, len(retrieved) + 1)) or "[S1]"
     return (

@@ -9,7 +9,6 @@ override/jailbreak patterns, not general content moderation.
 Known limitation: patterns target the common English jailbreak phrasing ("ignore
 previous instructions", etc.). A determined attacker phrasing an injection in Turkish
 could evade them, the same inherent limit deterministic regex sanitization already has.
-See DECISIONS.md.
 """
 
 from __future__ import annotations
@@ -87,13 +86,13 @@ def inspect_query(query: str) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Prompt Injection Guard v2 (FR2/FR3) — layered on top of the legacy filter above, which
-# stays completely unchanged and keeps running first (see DECISIONS.md D39). Everything
+# Prompt Injection Guard v2 — layered on top of the legacy filter above, which
+# stays completely unchanged and keeps running first. Everything
 # below is dormant unless `Settings.guard_enabled` is True (default False).
 # ---------------------------------------------------------------------------
 
 # Process-wide singleton, generated once at import. Logged once so it's checkable
-# without reading source (FR3); the value itself is not sensitive (it exists
+# without reading source; the value itself is not sensitive (it exists
 # specifically to be logged and to appear, if ever, in a leaked LLM response), so it's
 # safe in a plain log message.
 CANARY_TOKEN: str = uuid.uuid4().hex
@@ -129,19 +128,19 @@ def _decide_zone(
     high: float,
     stage2_confidence_floor: float = 0.7,
 ) -> str:
-    """Three-zone decision (FR2).
+    """Three-zone decision.
 
     Precedence, most to least authoritative: a degraded Stage-2 forces RESTRICTED
     unconditionally — including over a high Stage-1 score. This is deliberate, not an
-    oversight: without a deployed Stage-2 model (this change ships none, see D39), Stage-2
+    oversight: without a deployed Stage-2 model (this change ships none), Stage-2
     is permanently degraded, so this is the accepted default posture of the whole v2
     pipeline until a real model exists — matching the `guard_enabled=False` rollout-gate
     decision. The legacy regex guard (`inspect_query`) still runs unconditionally before
     this and blocks the most blatant patterns outright, so a degraded Stage-2 does not
     mean *no* protection, only that v2's own REJECT zone is inert until Stage-2 exists.
 
-    `stage2_confidence_floor` is hardcoded (DECISIONS.md non-critical assumption A10):
-    no Settings field for it, since this branch is inert without a real Stage-2 model.
+    `stage2_confidence_floor` is hardcoded: no Settings field for it, since this branch
+    is inert without a real Stage-2 model.
     """
 
     if stage2.degraded:
@@ -241,7 +240,7 @@ class GuardPipeline:
         ``True`` on success, raises the underlying exception otherwise.
 
         Deliberately not a check for "Stage-2 model present": Stage-1/Stage-2 already
-        fail open by design (FR6 -- a missing model degrades rather than crashes, see
+        fail open by design (a missing model degrades rather than crashes, see
         ``TwoStageClassifier``/``Stage2Classifier``), so this only guards against
         ``GuardPipeline`` itself being unable to run at all.
         """

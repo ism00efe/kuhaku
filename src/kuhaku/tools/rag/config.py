@@ -1,9 +1,9 @@
 """RAG-specific configuration.
 
 ``RAGSettings`` owns every knob the RAG tool cares about (corpus/chunking/retrieval/
-re-ranking/caching/contradiction-detection/query-rewriting, the vector store, and the
-RAG-scoped retry sites) -- excluding generic, cross-tool concerns (LLM provider, auth,
-the HTTP API, logging, ...) that stay on :class:`~kuhaku.core.config.Settings`.
+re-ranking/caching/contradiction-detection, the vector store, and the RAG-scoped retry
+sites) -- excluding generic, cross-tool concerns (LLM provider, auth, the HTTP API,
+logging, ...) that stay on :class:`~kuhaku.core.config.Settings`.
 
 Every field has a sensible default, so ``RAGSettings()`` is usable standalone -- no
 ``Settings`` instance required. ``Settings.rag`` (a nested field, see ``core/config.py``)
@@ -50,7 +50,6 @@ class RAGSettings:
     # --- Vector store ------------------------------------------------------------
     chroma_persist_dir: str = ""
     chroma_collection: str = "default_kb"
-    collection_base: str = "corpus"
 
     # --- Embeddings ----------------------------------------------------------------
     embedding_provider: str = "sentence-transformer"  # sentence-transformer | vertex
@@ -87,13 +86,8 @@ class RAGSettings:
     reranker_model: str = "BAAI/bge-reranker-base"
     rerank_candidates: int = 20
 
-    # --- Query rewriting (D48) ------------------------------------------------------
-    query_rewrite_enabled: bool = False
-    query_rewrite_cache_ttl_seconds: int = 3600
-
-    # --- Contradiction detection (D50) -----------------------------------------------
+    # --- Contradiction detection ------------------------------------------------------
     contradiction_detection_enabled: bool = True
-    contradiction_similarity_threshold: float = 0.75
 
     # --- Query-answer cache (SQLite) --------------------------------------------------
     cache_enabled: bool = True
@@ -104,13 +98,13 @@ class RAGSettings:
     # that's what cache_enabled is for.
     cache_db_path: str = ""
 
-    # --- Model and prompt versioning (D42) --------------------------------------------
+    # --- Model and prompt versioning ---------------------------------------------------
     prod_prompt_version: str = "v2"
     eval_prompt_version: str = "v2"
 
-    # --- Retry (D40): master switch + the RAG-owned retry sites (embedding,
-    # vector store, reranker). The LLM retry site (retry_llm_*) is a generic,
-    # cross-tool concern and stays on Settings. ---------------------------------------
+    # --- Retry: master switch + the RAG-owned retry sites (embedding, vector store,
+    # reranker). The LLM retry site (retry_llm_*) is a generic, cross-tool concern and
+    # stays on Settings. ------------------------------------------------------------
     retry_enabled: bool = True
     retry_embedding_max_attempts: int = 2
     retry_embedding_backoff_base_seconds: float = 0.5

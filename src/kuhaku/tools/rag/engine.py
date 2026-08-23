@@ -3,7 +3,7 @@
 Orchestrates the online query path:
     sanitize -> (optional) context summary -> guard -> guard v2 (opt-in) -> retrieve ->
     cache check -> prompt -> generate -> map citations -> flag unverified citations ->
-    output guard v2 (opt-in) -> audit record (unconditional, D41).
+    output guard v2 (opt-in) -> audit record (unconditional).
 
 Depends only on the small interfaces (``EmbeddingProvider``, ``VectorStore``,
 ``LLMProvider``), never on concrete SDKs — so any of them can be swapped independently.
@@ -125,45 +125,45 @@ class RAGEngine:
         self._input_guard_enabled = input_guard_enabled
         self._chunker = chunker or ParagraphChunker()
         self._confidence_threshold = confidence_threshold
-        # FR2: optional query-answer cache. None (the default) disables caching
+        # Optional query-answer cache. None (the default) disables caching
         # entirely -- every existing call site of RAGEngine(...) is unaffected.
         self._cache = cache
-        # Prompt Injection Guard v2 (D39): optional, dormant unless configured (mirrors
+        # Prompt Injection Guard v2: optional, dormant unless configured (mirrors
         # `cache` above). None (the default) leaves every existing call site and every
         # existing behavior byte-identical -- the legacy `input_guard_enabled` path above
         # is completely independent of this.
         self._guard = guard
         self._audit_log_path = audit_log_path
-        # D53/D55: mirrors Settings.audit_enabled -- threaded through to every
+        # Mirrors Settings.audit_enabled -- threaded through to every
         # record_audit() call site below so a disabled audit log is an immediate,
         # filesystem-untouched no-op regardless of which call site would have written.
         self._audit_enabled = audit_enabled
-        # D42: deployed versions from Settings, threaded in by service.build_service().
+        # Deployed versions from Settings, threaded in by service.build_service().
         # Default "" (not required) so direct construction -- every test in this suite,
         # eval scripts -- keeps working unchanged, mirroring `auth_context`'s own
         # default-None precedent for the same reason.
         self._llm_version = llm_version
         self._embedding_version = embedding_version
         self._system_prompt_version = system_prompt_version
-        # D46: instance-scoped prompt text, defaulting to the module-level constant so
+        # Instance-scoped prompt text, defaulting to the module-level constant so
         # every existing call site (which never passes this) is byte-identical to before.
         # AssistantService.reconfigure() mutates this attribute directly to hot-reload an
         # edited prompt without rebuilding the engine.
         self._system_prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
-        # D48: optional pre-retrieval query rewriter. None (the default) disables
+        # Optional pre-retrieval query rewriter. None (the default) disables
         # rewriting entirely -- retrieval uses `retrieval_query` unchanged, exactly as
         # before this feature existed. When set, only the retriever call sees the
         # rewritten text; the guard, the QA-cache key, and the generation prompt all
-        # keep using the original `retrieval_query` (see DECISIONS.md D48).
+        # keep using the original `retrieval_query`.
         self._query_rewriter = query_rewriter
-        # D50: optional post-retrieval contradiction check. None (the default) disables
+        # Optional post-retrieval contradiction check. None (the default) disables
         # detection entirely -- every existing call site of RAGEngine(...) is unaffected.
         # `contradiction_db_path` is where confirmed contradictions get logged
         # (evaluation/contradiction_storage.py); it is independent of `audit_log_path`
         # since the JSONL audit log and the SQLite evaluation DB are separate stores.
         self._contradiction_detector = contradiction_detector
         self._contradiction_db_path = contradiction_db_path
-        # D50: optional contradiction storage hook. When set (by the application layer),
+        # Optional contradiction storage hook. When set (by the application layer),
         # this callable receives the same args as the old inline
         # ``contradiction_storage.log_contradiction(...)`` call and persists the pairs to
         # the evaluation DB. ``None`` (the default) disables persistence entirely so the
@@ -230,22 +230,21 @@ class RAGEngine:
         self._chunker = chunker
 
     def update_query_rewriter(self, rewriter: QueryRewriter | None) -> None:
-        """Replace the pre-retrieval query rewriter, or ``None`` to disable it (D48)."""
+        """Replace the pre-retrieval query rewriter, or ``None`` to disable it."""
 
         if rewriter is not None:
             self._require_methods(rewriter, ("rewrite",), "rewriter")
         self._query_rewriter = rewriter
 
     def update_contradiction_detector(self, detector: ContradictionDetector | None) -> None:
-        """Replace the post-retrieval contradiction detector, or ``None`` to disable it
-        (D50)."""
+        """Replace the post-retrieval contradiction detector, or ``None`` to disable it."""
 
         if detector is not None:
             self._require_methods(detector, ("detect",), "detector")
         self._contradiction_detector = detector
 
     def update_system_prompt(self, prompt_text: str) -> None:
-        """Hot-reload the system prompt text used for generation (D46)."""
+        """Hot-reload the system prompt text used for generation."""
 
         if not isinstance(prompt_text, str):
             raise TypeError(f"prompt_text must be a str; got {type(prompt_text).__name__}")
@@ -278,21 +277,21 @@ class RAGEngine:
         self._confidence_threshold = float(threshold)
 
     def update_cache(self, cache: QueryAnswerCache | None) -> None:
-        """Replace the query-answer cache, or ``None`` to disable caching (FR2)."""
+        """Replace the query-answer cache, or ``None`` to disable caching."""
 
         if cache is not None:
             self._require_methods(cache, ("get", "put"), "cache")
         self._cache = cache
 
     def update_guard(self, guard: GuardPipeline | None) -> None:
-        """Replace the Guard v2 pipeline, or ``None`` to disable it (D39)."""
+        """Replace the Guard v2 pipeline, or ``None`` to disable it."""
 
         if guard is not None:
             self._require_methods(guard, ("evaluate",), "guard")
         self._guard = guard
 
     def get_system_prompt(self) -> str:
-        """The current system prompt text (D46 hot-reload target)."""
+        """The current system prompt text (the hot-reload target)."""
 
         return self._system_prompt
 
@@ -327,23 +326,22 @@ class RAGEngine:
         return self._chunker
 
     def get_query_rewriter(self) -> QueryRewriter | None:
-        """The active pre-retrieval query rewriter, or ``None`` if disabled (D48)."""
+        """The active pre-retrieval query rewriter, or ``None`` if disabled."""
 
         return self._query_rewriter
 
     def get_contradiction_detector(self) -> ContradictionDetector | None:
-        """The active post-retrieval contradiction detector, or ``None`` if disabled
-        (D50)."""
+        """The active post-retrieval contradiction detector, or ``None`` if disabled."""
 
         return self._contradiction_detector
 
     def get_cache(self) -> QueryAnswerCache | None:
-        """The active query-answer cache, or ``None`` if disabled (FR2)."""
+        """The active query-answer cache, or ``None`` if disabled."""
 
         return self._cache
 
     def get_guard(self) -> GuardPipeline | None:
-        """The active Guard v2 pipeline, or ``None`` if disabled (D39)."""
+        """The active Guard v2 pipeline, or ``None`` if disabled."""
 
         return self._guard
 
@@ -358,13 +356,12 @@ class RAGEngine:
         return self._confidence_threshold
 
     def get_llm_version(self) -> str:
-        """The deployed LLM version label recorded on every ``Answer`` (D42)."""
+        """The deployed LLM version label recorded on every ``Answer``."""
 
         return self._llm_version
 
     def get_embedding_version(self) -> str:
-        """The deployed embedding model version label recorded on every ``Answer``
-        (D42)."""
+        """The deployed embedding model version label recorded on every ``Answer``."""
 
         return self._embedding_version
 
@@ -511,8 +508,8 @@ class RAGEngine:
         thresholds: tuple[float, float] | None = None,
         output_checks: dict[str, object] | None = None,
     ) -> None:
-        """One audit record for one request outcome (D41/FR8 extended to every exit of
-        ``_answer``, not just the two D41 originally covered).
+        """One audit record for one request outcome (extended to every exit of
+        ``_answer``, not just the two call sites originally covered).
 
         ``event_type`` names the outcome (mirrors the ``REQUEST_COUNT`` status label at
         the same exit, e.g. ``"empty_kb"``, ``"ok"``) so the audit trail can answer "what
@@ -520,7 +517,7 @@ class RAGEngine:
         chunk text or access tags -- same restriction the pre-existing successful-path
         call already observed.
 
-        ``record_audit`` deliberately raises ``AuditWriteError`` while enabled (D53) so
+        ``record_audit`` deliberately raises ``AuditWriteError`` while enabled so
         an operator notices a broken audit sink -- but the record is written *for* the
         operator, never read by the caller, so a broken sink must not turn an otherwise-
         successful answer into a failed request. The write failure is still visible: the
@@ -706,9 +703,9 @@ class RAGEngine:
                 trace_id=trace_id,
             )
 
-        # D48: rewrite the query for the retriever ONLY -- `retrieval_query` itself
+        # Rewrite the query for the retriever ONLY -- `retrieval_query` itself
         # (already used above by the guard, and used below for the QA-cache key and
-        # the generation prompt) is never replaced. See DECISIONS.md D48.
+        # the generation prompt) is never replaced.
         search_query = retrieval_query
         if self._query_rewriter is not None:
             with instrumented_step("query_rewrite") as rec:
@@ -721,7 +718,7 @@ class RAGEngine:
             rec.set(chunk_count=len(retrieved), strategy=strategy)
         RETRIEVER_STRATEGY.add(1, {"strategy": strategy})
 
-        # FR1: retrieval ran but found nothing relevant -- abstain rather than let the
+        # Retrieval ran but found nothing relevant -- abstain rather than let the
         # LLM improvise an ungrounded answer from an empty prompt.
         if not retrieved:
             # SECURITY: an empty result is reported identically whether entitlement
@@ -782,7 +779,7 @@ class RAGEngine:
 
         retrieved = [c for c in retrieved if c.score >= self._confidence_threshold]
 
-        # 4.5) D50: contradiction detection -- best-effort, never blocks the response.
+        # 4.5) Contradiction detection -- best-effort, never blocks the response.
         # Runs only on the current query's retrieved chunk set (Constraint 1), before
         # generation, so its [S#] references match the citation numbering the model's
         # response will use. Dormant unless a detector was configured
@@ -842,12 +839,12 @@ class RAGEngine:
                     extra={"trace_id": trace_id, "error": str(exc)},
                 )
 
-        # 5) FR2: cache check. Only the LLM call is skippable -- the key depends on the
+        # 5) Cache check. Only the LLM call is skippable -- the key depends on the
         # retrieved chunk ids (in retrieval order, never sorted -- see rag/cache.py), so
         # retrieval must already have run, and it always runs regardless of cache state.
         cache_key: str | None = None
         text: str | None = None
-        # D49: only built below on a cache miss -- stays None on a cache hit (the
+        # Only built below on a cache miss -- stays None on a cache hit (the
         # replay snapshot then just has no verbatim prompt text for that request, which
         # is fine, since replay reconstructs the prompt fresh via service.ask() anyway).
         user_prompt: str | None = None
@@ -882,7 +879,7 @@ class RAGEngine:
                 self._cache.put(cache_key, text)
 
         # 7) Map the [S#] tags the model actually used back to their sources, and flag
-        # any that don't match a real retrieved source (FR4). Runs unconditionally
+        # any that don't match a real retrieved source. Runs unconditionally
         # (hit or miss) against the *current* retrieved list, never a cached one.
         with instrumented_step("cite") as rec:
             citations, invalid_indices = self._extract_citations(text, retrieved)
@@ -941,7 +938,7 @@ class RAGEngine:
                 accessed_chunks=[c.chunk.id for c in retrieved],
             )
         elif self._guard is None:
-            # D41/FR8: unconditional per-request audit record when guard v2 is disabled
+            # Unconditional per-request audit record when guard v2 is disabled
             # -- the branch above already wrote one when guard ran, so this is the only
             # remaining path that reaches "the end" of _answer() with none written yet.
             self._write_audit(
@@ -961,19 +958,18 @@ class RAGEngine:
             redactions=redaction_labels,
             trace_id=trace_id,
             abstained=abstained,
-            # D42: populated only on this, the one exit point that reaches "the end" of
+            # Populated only on this, the one exit point that reaches "the end" of
             # _answer() -- the earlier early-return Answers (empty question, legacy-guard
             # block, empty KB, no chunks, low confidence, guard v2 reject) stay None,
-            # mirroring D41's own "one exit point" scope boundary for audit records. See
-            # D42 for the full rationale.
+            # mirroring the audit records' own "one exit point" scope boundary.
             llm_version=self._llm_version,
             embedding_version=self._embedding_version,
             system_prompt_version=self._system_prompt_version,
-            # D49: for the replay snapshot -- same "one exit point" scope as the three
+            # For the replay snapshot -- same "one exit point" scope as the three
             # fields above.
             retrieval_query=retrieval_query,
             user_prompt=user_prompt,
-            # D50: set above (Step 4.5), before generation even runs -- None whenever
+            # Set above (Step 4.5), before generation even runs -- None whenever
             # detection is disabled, found nothing, or degraded silently on failure.
             contradiction_warning=contradiction_warning,
         )
@@ -985,7 +981,7 @@ class RAGEngine:
         """Map ``[S#]`` tags the model used back to their sources.
 
         Returns ``(citations, invalid_indices)``: ``invalid_indices`` are the tag numbers
-        that do not correspond to any retrieved source (FR4) -- previously these were
+        that do not correspond to any retrieved source -- previously these were
         silently dropped with no signal to the caller; now the caller decides what to do
         with them (see ``_flag_unverified_citations``).
         """
@@ -1014,7 +1010,7 @@ class RAGEngine:
     def _flag_unverified_citations(self, text: str, invalid_indices: list[int]) -> str:
         """Append a warning for ``[S#]`` tags that cite no real retrieved source.
 
-        FR4: verification must never block the response, so this is wrapped in its own
+        Verification must never block the response, so this is wrapped in its own
         try/except -- a logging or metrics failure here must not turn an otherwise
         successful answer into a failed request (same idiom as
         ``llm/token_tracking.py``'s ``_record_usage``).

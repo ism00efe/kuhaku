@@ -1,12 +1,12 @@
-"""SQLite-backed query-answer cache (FR2, Category 2).
+"""SQLite-backed query-answer cache (Category 2).
 
 Caches only the raw generated ``text: str`` for a given (query, retrieved chunk set,
-prompt/LLM/embedding version triple -- D42) -- not the full ``Answer`` object.
+prompt/LLM/embedding version triple) -- not the full ``Answer`` object.
 ``citations``/``retrieved`` are always freshly available in the current request
 regardless of hit/miss, and re-running the existing, cheap, deterministic
 ``RAGEngine._extract_citations`` against the *current* ``retrieved`` avoids ever
 replaying stale chunk/citation metadata and needs no new (de)serialization code for the
-``Chunk``/``Citation``/``RetrievedChunk`` dataclass trees. See DECISIONS.md D38, D42.
+``Chunk``/``Citation``/``RetrievedChunk`` dataclass trees.
 
 ``get``/``put`` are best-effort, mirroring ``llm/token_tracking.py``'s "never break the
 caller" idiom: any ``sqlite3.Error`` is caught, logged at WARNING, and treated as a
@@ -58,7 +58,7 @@ def compute_cache_key(
     different cache key -- otherwise a cached answer's ``[S#]`` tags could be replayed
     against a reordered context and point at the wrong sources.
 
-    ``prompt_version``/``llm_version``/``embedding_version`` (D42) are the deployed
+    ``prompt_version``/``llm_version``/``embedding_version`` are the deployed
     versions from ``Settings``/``RAGSettings`` -- changing any of them changes the hash,
     so upgrading a model or the system prompt automatically invalidates every previously
     cached answer rather than silently serving a response a different configuration

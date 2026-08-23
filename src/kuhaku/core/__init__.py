@@ -7,7 +7,8 @@ depend on, never the other way around.
 Submodules:
 
 - ``config``: typed, environment-driven ``Settings`` (:func:`get_settings`,
-  :func:`load_settings`) and ``configure_logging``.
+  :func:`load_settings`). Logging configuration belongs to the application, not
+  here -- a library must never touch the root logger.
 - ``llm``: the ``LLMProvider`` interface and its Ollama/Anthropic/OpenAI/Vertex
   implementations, selected via :func:`~kuhaku.core.llm.build_llm_provider`.
 - ``auth``: authentication context and authorization policy primitives.

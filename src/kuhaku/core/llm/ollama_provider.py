@@ -56,7 +56,7 @@ class OllamaProvider:
             if circuit_breaker_enabled
             else None
         )
-        # Set by generate() when Ollama reports usage; read by TokenTrackingLLM (D33).
+        # Set by generate() when Ollama reports usage; read by TokenTrackingLLM.
         self.last_usage: TokenUsage | None = None
 
     @property

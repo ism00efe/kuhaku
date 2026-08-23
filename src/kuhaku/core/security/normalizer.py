@@ -1,4 +1,4 @@
-"""Input normalization — the first layer of the v2 guard pipeline (FR1).
+"""Input normalization — the first layer of the v2 guard pipeline.
 
 Unicode NFKC normalization, zero-width character removal, homoglyph folding, known
 injection-delimiter stripping, and repeated-punctuation collapse. The normalized text is
@@ -106,7 +106,7 @@ class NormalizationResult:
 
 
 def normalize(raw: str) -> NormalizationResult:
-    """Apply the full FR1 normalization pipeline to ``raw``.
+    """Apply the full normalization pipeline to ``raw``.
 
     Order: NFKC -> strip zero-width chars -> fold homoglyphs -> strip known delimiters ->
     collapse repeated punctuation. Each step operates on the previous step's output.

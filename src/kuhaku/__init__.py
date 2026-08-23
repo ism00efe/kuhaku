@@ -154,7 +154,7 @@ class RAG:
             audit_log_path: where audit records are written; ``None`` uses
                 ``Settings.audit_log_path`` if set, otherwise the kuhaku-managed
                 default (``./logs/kuhaku_audit.jsonl``).
-            cache: the query-answer cache (FR2). ``None`` (default) defers to
+            cache: the query-answer cache. ``None`` (default) defers to
                 ``RAGSettings.cache_enabled`` (``True`` by default) and
                 ``RAGSettings.cache_db_path`` -- a caller who configures nothing gets
                 caching, at the kuhaku-managed default location
@@ -258,7 +258,13 @@ class RAG:
         rs = self._rag_settings
         self._chunker = build_chunker(rs)
         self._embedder = build_embedding_provider(rs)
-        self._store = ChromaVectorStore(rs.chroma_persist_dir, rs.chroma_collection)
+        self._store = ChromaVectorStore(
+            rs.chroma_persist_dir,
+            rs.chroma_collection,
+            retry_enabled=rs.retry_enabled,
+            retry_max_attempts=rs.retry_vectorstore_max_attempts,
+            retry_backoff_seconds=rs.retry_vectorstore_backoff_seconds,
+        )
         llm = build_llm_provider(s)
         if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
             llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
@@ -320,7 +326,13 @@ class RAG:
             model_name = (
                 effective_reranker if isinstance(effective_reranker, str) else rs.reranker_model
             )
-            reranker_instance = CrossEncoderReranker(model_name)
+            reranker_instance = CrossEncoderReranker(
+                model_name,
+                retry_enabled=rs.retry_enabled,
+                retry_max_attempts=rs.retry_reranker_max_attempts,
+                retry_backoff_base_seconds=rs.retry_reranker_backoff_base_seconds,
+                retry_backoff_max_seconds=rs.retry_reranker_backoff_max_seconds,
+            )
 
         if retrieval == "dense" and reranker_instance is None:
             return dense
@@ -348,7 +360,7 @@ class RAG:
         )
 
     def _build_cache(self, cache: bool | str | None) -> QueryAnswerCache | None:
-        """The one construction site for the query-answer cache (FR2).
+        """The one construction site for the query-answer cache.
 
         Three-state (``bool | str | None``), same convention :meth:`_build_retriever`'s
         ``reranker`` uses for ``RAGSettings.rerank_enabled``: ``None`` means "the caller

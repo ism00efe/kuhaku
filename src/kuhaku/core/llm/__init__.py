@@ -19,8 +19,8 @@ def build_llm_provider(settings: Settings) -> LLMProvider:
 
     provider = settings.llm_provider.strip().lower()
 
-    # Retry/timeout/circuit-breaker kwargs are identical across all four providers (D40,
-    # extended to circuit breakers): they are structurally symmetric dependencies (an
+    # Retry/timeout/circuit-breaker kwargs are identical across all four providers
+    # (extended to circuit breakers): they are structurally symmetric dependencies (an
     # external LLM API reachable over HTTP), so resilience applies symmetrically --
     # swapping LLM_PROVIDER must never silently drop retry, timeout, or circuit-breaker
     # protection.

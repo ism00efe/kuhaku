@@ -136,7 +136,7 @@ class _FakeCrossEncoderReranker:
 
     instances: list[str] = []
 
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, **kwargs) -> None:
         _FakeCrossEncoderReranker.instances.append(model_name)
         self.model_name = model_name
 

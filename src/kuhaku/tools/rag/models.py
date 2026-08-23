@@ -39,7 +39,7 @@ class Document:
     text: str
     source_path: str
     metadata: dict[str, str] = field(default_factory=dict)
-    # FR4 freshness metadata, parsed from the document's prose Metadata line by
+    # Freshness metadata, parsed from the document's prose Metadata line by
     # rag/ingestion.py. "" means "no bound" on that side -- the overwhelming majority
     # of documents author none of this and are always fresh, unchanged from before.
     effective_date: str = ""
@@ -64,9 +64,9 @@ class Chunk:
     chunk_index: int
     source_path: str
     content_type: str = "text"  # "text" | "table" | "glossary" -- see rag/chunking.py
-    # FR4 freshness metadata, inherited from the parent Document at chunk time. Kept as
+    # Freshness metadata, inherited from the parent Document at chunk time. Kept as
     # plain str/bool (never None) because ChromaDB metadata values must be str/int/
-    # float/bool -- see DECISIONS.md D35.
+    # float/bool.
     effective_date: str = ""
     obsolete: bool = False
     expiry_date: str = ""
@@ -93,7 +93,7 @@ class Chunk:
         }
 
     def is_fresh(self, *, as_of: date | None = None) -> bool:
-        """Whether this chunk should be retrievable right now (FR4).
+        """Whether this chunk should be retrievable right now.
 
         Excludes permanently-retired chunks (``obsolete``) and any outside its
         ``[effective_date, expiry_date]`` validity window. An empty date string means
@@ -141,34 +141,33 @@ class Answer:
     retrieved: list[RetrievedChunk]
     redactions: list[str] = field(default_factory=list)
     trace_id: str = ""
-    # True only for the FR1 zero-chunk case: retrieval ran and found nothing, so the LLM
+    # True only for the zero-chunk case: retrieval ran and found nothing, so the LLM
     # was never called. Other "no real answer" paths (empty query, guard block, empty KB)
-    # are distinct, pre-existing conditions and stay False -- see DECISIONS.md D32.
+    # are distinct, pre-existing conditions and stay False.
     abstained: bool = False
-    # D42: deployed LLM/embedding/system-prompt versions that produced this answer, from
+    # Deployed LLM/embedding/system-prompt versions that produced this answer, from
     # Settings.llm_model_version and RAGSettings.embedding_model_version/
     # prod_prompt_version. None only on the early-return paths in RAGEngine._answer()
-    # that exit before the LLM (or, for embedding_version, retrieval) ever ran -- see
-    # D42 for the exact scope boundary, mirroring D41's "one exit point" precedent for
-    # audit records.
+    # that exit before the LLM (or, for embedding_version, retrieval) ever ran -- mirrors
+    # the audit records' own "one exit point" scope boundary.
     llm_version: str | None = None
     embedding_version: str | None = None
     system_prompt_version: str | None = None
-    # D49: the sanitized text that actually drove retrieval, and the exact prompt sent
+    # The sanitized text that actually drove retrieval, and the exact prompt sent
     # to the LLM -- both local-only inside RAGEngine._answer() before this, discarded
-    # after use. Populated only at the same one exit point as the three D42 fields above
-    # (None on every early return, and on a QA-cache hit for user_prompt specifically --
-    # see rag/engine.py). Never surfaced on AnalyzeResponse (api/schemas.py's
-    # from_answer() is an explicit field-by-field mapping); used only by the D49 replay
-    # snapshot (evaluation/replay_storage.py) for root-cause debugging.
+    # after use. Populated only at the same one exit point as the three version fields
+    # above (None on every early return, and on a QA-cache hit for user_prompt
+    # specifically -- see rag/engine.py). Never surfaced on the embedding application's
+    # own response schema (its own field-by-field mapping from Answer); used only by an
+    # application-level replay snapshot for root-cause debugging.
     retrieval_query: str | None = None
     user_prompt: str | None = None
-    # D50: a Turkish warning string when the retrieved chunk set itself contains
+    # A Turkish warning string when the retrieved chunk set itself contains
     # conflicting information on the same topic (e.g. an old vs. a new regulation) --
-    # distinct from Faithfulness (D47), which only checks whether the *answer* is
+    # distinct from Faithfulness, which only checks whether the *answer* is
     # faithful to *some* retrieved chunk, not whether the chunks agree with each other.
     # None whenever detection is disabled, found nothing, or degraded silently on
-    # failure (see RAGEngine._answer() and DECISIONS.md D50).
+    # failure (see RAGEngine._answer()).
     contradiction_warning: str | None = None
 
     @property

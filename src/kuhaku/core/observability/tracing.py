@@ -1,4 +1,4 @@
-"""Span helper + GenAI semantic-convention attribute keys (D57).
+"""Span helper + GenAI semantic-convention attribute keys.
 
 ``start_span`` is the one seam ``instrumented_step`` (``core/observability/__init__.py``)
 uses to open an OTel span for every existing pipeline stage. It relies on the SDK's own
@@ -90,7 +90,7 @@ def set_current_span_attributes(**attributes: object) -> None:
     """Best-effort: set attributes on whatever span is currently open.
 
     Used by ``TokenTrackingLLM`` to attach GenAI token-usage attributes onto the ambient
-    "generate" span ``RAGEngine`` already has open (see DECISIONS.md D57), without
+    "generate" span ``RAGEngine`` already has open, without
     ``TokenTrackingLLM`` needing to know anything about span management itself -- same
     loosely-coupled "observer, not a protocol change" stance that class's module docstring
     already documents for metrics. A no-op when no span is current: this must never turn a

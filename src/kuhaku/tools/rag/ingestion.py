@@ -129,9 +129,9 @@ def extract_text(
     return text
 
 
-# FR4: the document's optional "**Metadata:** key: value · key: value · ..." line
-# (see D20/D30 for why this stays prose, not YAML frontmatter). Matches the whole line
-# so any key/value set can be parsed once and reused by whichever fields a caller wants.
+# The document's optional "**Metadata:** key: value · key: value · ..." line. Matches
+# the whole line so any key/value set can be parsed once and reused by whichever fields
+# a caller wants.
 _METADATA_LINE_RE = re.compile(r"^\*\*Metadata:\*\*\s*(.+)$", re.MULTILINE)
 
 
@@ -156,7 +156,7 @@ class _FreshnessFields(TypedDict):
 
 
 def _freshness_fields(text: str) -> _FreshnessFields:
-    """Pull FR4's optional freshness fields out of the Metadata line.
+    """Pull the optional freshness fields out of the Metadata line.
 
     Absent for essentially every document today (no existing corpus doc authors these
     keys) -- the empty-string / False defaults below mean such a document is always

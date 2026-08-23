@@ -1,5 +1,5 @@
 """Default behavior policy: how kuhaku reacts when a configured component fails
-to load, per DECISIONS.md D53. Three tiers:
+to load. Three tiers:
 
   - **Security-critical** (guard, audit log): configured as the kuhaku default but
     broken -> fail startup loudly (``SecurityComponentError``). Skipped entirely when the
@@ -109,15 +109,15 @@ def enforce_security_policy(settings: Settings, components: dict[str, object]) -
 
 
 def _validate_audit_log_path(settings: Settings) -> None:
-    """Audit logging (D41) is independent of ``guard_enabled`` -- when
+    """Audit logging is independent of ``guard_enabled`` -- when
     ``settings.audit_enabled`` (default ``True``), every request writes here regardless
     of the guard. There is no dedicated class to construct/validate, only a path every
     request must be able to write to, so this is a writability probe rather than a
     component self-check.
 
-    Skipped entirely when ``audit_enabled`` is ``False`` (D53's "explicitly disabled ->
-    no validation" tier) -- the operator opted out knowingly, so there is no path to
-    validate.
+    Skipped entirely when ``audit_enabled`` is ``False`` (the "explicitly disabled ->
+    no validation" tier of the policy above) -- the operator opted out knowingly, so
+    there is no path to validate.
     """
 
     if not settings.audit_enabled:

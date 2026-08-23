@@ -1,4 +1,4 @@
-"""OpenTelemetry metrics, exported through the OTel Prometheus exporter (D57).
+"""OpenTelemetry metrics, exported through the OTel Prometheus exporter.
 
 Collection always happens -- incrementing an in-memory instrument costs microseconds --
 so this module has no on/off switch of its own; the Prometheus exposition endpoint that
@@ -99,7 +99,7 @@ _VALID_GUARD_COMPONENTS = {"stage1", "stage2", "tokenizer", "audit", "output_gua
 
 
 def record_guard_zone(zone: str) -> None:
-    """Increment the guard-v2 zone counter (D39). Clamped: `zone` is always one of the
+    """Increment the guard-v2 zone counter. Clamped: `zone` is always one of the
     3 fixed values the guard pipeline itself produces, but the clamp is kept as a
     defensive floor against a future bug upstream, not an expected path."""
 
@@ -108,27 +108,27 @@ def record_guard_zone(zone: str) -> None:
 
 
 def record_guard_stage1_escalation(reason: str) -> None:
-    """Increment the Stage-1 -> Stage-2 escalation counter, by reason (D39)."""
+    """Increment the Stage-1 -> Stage-2 escalation counter, by reason."""
 
     label = reason if reason in _VALID_ESCALATION_REASONS else "unknown"
     GUARD_STAGE1_ESCALATIONS.add(1, {"reason": label})
 
 
 def record_guard_stage2_classification(result: str) -> None:
-    """Increment the Stage-2 classification-outcome counter, by result (D39)."""
+    """Increment the Stage-2 classification-outcome counter, by result."""
 
     label = result if result in _VALID_STAGE2_RESULTS else "unknown"
     GUARD_STAGE2_CLASSIFICATIONS.add(1, {"result": label})
 
 
 def record_guard_degradation(component: str) -> None:
-    """Increment the guard-v2 degradation counter, by component (FR6/D39)."""
+    """Increment the guard-v2 degradation counter, by component."""
 
     label = component if component in _VALID_GUARD_COMPONENTS else "unknown"
     GUARD_DEGRADATION.add(1, {"component": label})
 
 
-# --- Retry (D40): LLM, embedding, vector store, reranker call sites ------------------
+# --- Retry: LLM, embedding, vector store, reranker call sites ------------------------
 RETRY_ATTEMPTS = _meter.create_counter(
     "kuhaku_retry_attempts_total", unit="1", description="Retry attempts by service"
 )
@@ -145,14 +145,14 @@ _VALID_RETRY_SERVICES = {"llm", "embedding", "vectorstore", "reranker"}
 
 
 def record_retry_attempt(service: str) -> None:
-    """Increment the retry-attempts counter, by service (D40)."""
+    """Increment the retry-attempts counter, by service."""
 
     label = service if service in _VALID_RETRY_SERVICES else "unknown"
     RETRY_ATTEMPTS.add(1, {"service": label})
 
 
 def record_retry_success(service: str) -> None:
-    """Increment the retry-successes counter, by service (D40).
+    """Increment the retry-successes counter, by service.
 
     Only called when a call succeeded after at least one retry -- a first-try success
     is not a "retry success" and does not touch this counter.
@@ -163,20 +163,20 @@ def record_retry_success(service: str) -> None:
 
 
 def record_retry_failure(service: str) -> None:
-    """Increment the retry-failures counter, by service (D40): all attempts exhausted."""
+    """Increment the retry-failures counter, by service: all attempts exhausted."""
 
     label = service if service in _VALID_RETRY_SERVICES else "unknown"
     RETRY_FAILURES.add(1, {"service": label})
 
 
-# --- Authentication & audit (D41) --------------------------------------------------
+# --- Authentication & audit ----------------------------------------------------------
 AUTH_LOGIN_TOTAL = _meter.create_counter(
     "kuhaku_auth_login_total", unit="1", description="Login attempts, by outcome"
 )
 AUTH_REFRESH_TOTAL = _meter.create_counter(
     "kuhaku_auth_refresh_total",
     unit="1",
-    description="Refresh-token rotations (successful POST /api/auth/refresh)",
+    description="Refresh-token rotations (successful token-refresh calls)",
 )
 AUTH_LOGOUT_TOTAL = _meter.create_counter(
     "kuhaku_auth_logout_total", unit="1", description="Logout calls (refresh-token revocations)"
@@ -191,14 +191,14 @@ _VALID_AUTH_LOGIN_STATUSES = {"success", "failure"}
 
 
 def record_auth_login(status: str) -> None:
-    """Increment the login-attempts counter, by outcome (D41)."""
+    """Increment the login-attempts counter, by outcome."""
 
     label = status if status in _VALID_AUTH_LOGIN_STATUSES else "unknown"
     AUTH_LOGIN_TOTAL.add(1, {"status": label})
 
 
-# --- Evaluation metrics infrastructure (D47) -----------------------------------------
-# EVALUATION_RUN_COUNT/DURATION renamed rag_* -> framework_* (D57, later kuhaku_* when
+# --- Evaluation metrics infrastructure ------------------------------------------------
+# EVALUATION_RUN_COUNT/DURATION renamed rag_* -> framework_* (later kuhaku_* when
 # the package itself was renamed): the benchmark harness
 # (kuhaku/evaluation/) is generic -- it runs over any `EvaluationTarget`, not just RAG
 # (see kuhaku/__init__.py's module docstring) -- and "a benchmark run completed"/"run
@@ -219,14 +219,14 @@ _VALID_EVALUATION_RUN_STATUSES = {"completed", "failed"}
 
 
 def record_evaluation_run(status: str, duration_seconds: float) -> None:
-    """Increment the evaluation-run counter and observe its duration (D47)."""
+    """Increment the evaluation-run counter and observe its duration."""
 
     label = status if status in _VALID_EVALUATION_RUN_STATUSES else "unknown"
     EVALUATION_RUN_COUNT.add(1, {"status": label})
     EVALUATION_RUN_DURATION.record(duration_seconds)
 
 
-# --- LLM token usage, GenAI semantic conventions (D57/Feature 4) -----------------------
+# --- LLM token usage, GenAI semantic conventions (Feature 4) ---------------------------
 # Same Prometheus series name/shape as before this migration (one Counter, incremented
 # once per token type per generate() call) -- only the attribute keys/values changed, to
 # the GenAI convention: `gen_ai.system` (was `provider`), `gen_ai.request.model` (new),

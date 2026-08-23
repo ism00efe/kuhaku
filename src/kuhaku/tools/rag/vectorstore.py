@@ -24,7 +24,7 @@ class VectorStoreError(RuntimeError):
 
     Raised by :class:`~kuhaku.tools.rag.retriever.DenseRetriever` and
     :class:`~kuhaku.tools.rag.engine.RAGEngine` when the injected
-    :class:`VectorStore` raises — see DECISIONS.md D33.
+    :class:`VectorStore` raises.
     """
 
 
@@ -170,7 +170,7 @@ class ChromaVectorStore:
         where: Mapping[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
         # Constant backoff (not exponential): disk I/O contention recovers fast, so
-        # exponential growth is overkill here (D40). Only .query() is retried -- .add()
+        # exponential growth is overkill here. Only .query() is retried -- .add()
         # (ingestion), .count(), .reset() are unaffected.
         try:
             result = call_with_retry(
@@ -221,7 +221,7 @@ class ChromaVectorStore:
         """Every chunk belonging to ``document_id``, in no particular order.
 
         Unlike :meth:`query`, this is an exact metadata filter, not a similarity search --
-        used by the evaluation harness's golden-chunk labeling step (D47), which needs the
+        used by the evaluation harness's golden-chunk labeling step, which needs the
         *complete* set of chunks for a known-relevant document, not just the top-k nearest
         neighbours of some query.
         """
@@ -248,9 +248,9 @@ class ChromaVectorStore:
         ]
 
     def get_by_ids(self, chunk_ids: list[str]) -> list[Chunk]:
-        """Every chunk whose id is in ``chunk_ids``, missing ids silently omitted (D49).
+        """Every chunk whose id is in ``chunk_ids``, missing ids silently omitted.
 
-        A debugging utility -- e.g. verifying a D49 replay snapshot's chunks are still
+        A debugging utility -- e.g. verifying a replay snapshot's chunks are still
         present in a possibly-rebuilt collection -- not a pipeline dependency (replay
         itself is self-contained via the snapshot's own stored chunk text, never this
         method). Chroma's ``.get(ids=...)`` doesn't guarantee input order or that every
@@ -331,7 +331,7 @@ class ChromaVectorStore:
             # such key in stored Chroma metadata -- default keeps old and new
             # chunks coexisting safely in one collection.
             content_type=str(meta.get("content_type", "text")),
-            # Same backward-compat rationale for the FR4 freshness fields: rows
+            # Same backward-compat rationale for the freshness fields: rows
             # written before they existed have no such keys.
             effective_date=str(meta.get("effective_date", "")),
             obsolete=bool(meta.get("obsolete", False)),

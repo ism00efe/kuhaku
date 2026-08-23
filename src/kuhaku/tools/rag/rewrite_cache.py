@@ -1,12 +1,13 @@
-"""SQLite-backed cache for LLM query rewrites (D48).
+"""SQLite-backed cache for LLM query rewrites.
 
-Mirrors ``app_config.py``/``evaluation/storage.py``'s connection idiom: a short-lived
-per-call connection (never held open), ``PRAGMA journal_mode=WAL``, idempotent
-``CREATE TABLE IF NOT EXISTS``. Lives in the same ``settings.sqlite_db_path`` file as
-``qa_cache``/``feedback``/``app_config``/the D47 evaluation tables.
+Mirrors the embedding application's own config-table storage and
+``evaluation/store.py``'s connection idiom: a short-lived per-call connection (never
+held open), ``PRAGMA journal_mode=WAL``, idempotent ``CREATE TABLE IF NOT EXISTS``.
+The caller supplies the database path explicitly (see ``db_path`` below) rather than
+this module reading it from settings itself.
 
 ``get_rewrite``/``save_rewrite`` are best-effort (mirrors ``rag/cache.py``'s QA-cache
-idiom, not ``evaluation/storage.py``'s "let it raise" one): a rewrite-cache failure must
+idiom, not ``evaluation/store.py``'s "let it raise" one): a rewrite-cache failure must
 degrade to "call the LLM again" or "skip caching", never turn a working answer into a
 failed request.
 """
