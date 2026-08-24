@@ -252,7 +252,7 @@ second tool is a new package under `tools/`, never a new field on core.
 ## Contributing
 
 Issues and pull requests are welcome. The one hard requirement is architectural: `core`
-stays tool-agnostic. See [CONTRIBUTING.md](CONTRIBUTING.md).
+stays tool-agnostic. See [CONTRIBUTING.md](https://github.com/ism00efe/kuhaku/blob/main/CONTRIBUTING.md).
 
 ```bash
 git clone https://github.com/ism00efe/kuhaku
@@ -263,4 +263,4 @@ pytest
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0 — see [LICENSE](https://github.com/ism00efe/kuhaku/blob/main/LICENSE) and [NOTICE](https://github.com/ism00efe/kuhaku/blob/main/NOTICE).
