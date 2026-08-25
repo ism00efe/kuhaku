@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[docs]"
+      - run: mkdocs build --strict
+
+# Deliberately not run here yet: `ruff check .` and `mypy src`.
+#
+# Neither tool has a configuration file committed to this repository, so both run
+# against their own defaults rather than the rule set this code was written against.
+# Measured on 6e75d80: ruff reports 173 findings (48 of them unused-noqa, which is
+# itself the evidence that a narrower config once existed) and mypy reports 57 errors
+# across 22 files. Adding either step today would make CI red on every push for
+# reasons unrelated to the change being tested.
+#
+# Committing a [tool.ruff] and [tool.mypy] configuration, and then getting to zero,
+# is its own piece of work. Add the steps back in the same change that finishes it.

@@ -24,6 +24,9 @@ data/
 *.onnx
 models/
 
+# Documentation site build output (mkdocs build)
+site/
+
 # Tooling
 .pytest_cache/
 .mypy_cache/
