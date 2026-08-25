@@ -61,6 +61,9 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "build>=1.2"
 # Google Vertex AI (LLM + embeddings), for users with Google Cloud credits. Optional --
 # both providers import it lazily, so it never blocks the local (Ollama) default.
 vertex = ["google-genai>=1.0.0"]
+# Building the documentation site (mkdocs build). Separate from `dev` -- most
+# contributors never need to build the site locally.
+docs = ["mkdocs-material>=9.5"]
 
 # src layout: the importable package lives at src/kuhaku/. Nothing outside src/ is
 # packaged, so tests/ and scripts/ stay in the repository but never reach the wheel.

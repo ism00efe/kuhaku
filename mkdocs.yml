@@ -1,0 +1,53 @@
+site_name: kuhaku
+site_description: An AI orchestration framework for Python.
+site_url: https://ism00efe.github.io/kuhaku/
+repo_url: https://github.com/ism00efe/kuhaku
+repo_name: ism00efe/kuhaku
+edit_uri: edit/main/docs/
+
+# Fail the build on a broken internal link rather than publishing one.
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Configuration: configuration.md
+  - Access control: access-control.md
+  - Security: security.md
+  - Providers: providers.md
+  - Observability: observability.md
+  - Extending: extending.md
+  - Evaluation: evaluation.md
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - tables
+
+plugins:
+  - search
