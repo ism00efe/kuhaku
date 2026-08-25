@@ -38,12 +38,16 @@ export OPENAI_API_KEY=sk-...
 ```python
 from kuhaku import RAG
 
-rag = RAG()
+rag = RAG(vector_store="./kuhaku-data")
 rag.ingest(open("handbook.md").read(), filename="handbook.md")
 
 answer = rag.ask("How do I reset my password?")
 print(answer.text)
 ```
+
+`vector_store` names the directory the index lives in. Pass it: without one, kuhaku
+creates a fresh temporary directory per `RAG()` instance, so anything you ingest is gone
+the next time your program starts.
 
 The answer text carries its citations inline as `[S1]`-style tags. `answer.citations`
 maps each tag back to its document; `answer.retrieved`, `answer.redactions` (what PII
@@ -76,7 +80,7 @@ on a small disk.
 - **Caching** — query-answer cache keyed by the entitled chunk set, so two entitlements
   never share an entry
 
-1023 tests, all passing, entirely offline — in-memory fakes for the embedder, vector
+1065 tests, no failures, entirely offline — in-memory fakes for the embedder, vector
 store and LLM. No network, no model download, no running LLM server needed to run them.
 
 ---
@@ -224,8 +228,8 @@ kuhaku/
 ├── core/          tool-agnostic runtime infrastructure
 │   ├── config          typed, environment-driven Settings
 │   ├── llm             LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI
-│   ├── auth            AuthContext, AuthorizationPolicy, API-key and JWT providers
-│   ├── security        prompt-injection guard, output checks, PII sanitization, audit
+│   ├── auth            AuthContext and identity primitives
+│   ├── security        prompt-injection input guard, PII sanitization, audit
 │   ├── observability   structured logging, OpenTelemetry tracing and metrics
 │   └── retry           retry with backoff, circuit breakers
 ├── evaluation/    tool-agnostic evaluation harness
