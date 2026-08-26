@@ -1,0 +1,269 @@
+name: review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write      # yorum yazmak için
+  id-token: write           # WIF için
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # diff için tam geçmiş gerekli
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/328234140484/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-ci@finops-agent-497422.iam.gserviceaccount.com
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install google-genai
+
+      - name: Gemini dört eksenli inceleme
+        env:
+          GOOGLE_CLOUD_PROJECT: finops-agent-497422
+          GOOGLE_CLOUD_LOCATION: global
+          GOOGLE_GENAI_USE_VERTEXAI: "true"
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import pathlib
+          import subprocess
+          import concurrent.futures
+          from google import genai
+
+          base_ref = os.environ.get("BASE_REF", "main")
+          pr_title = os.environ.get("PR_TITLE", "")
+          pr_body = os.environ.get("PR_BODY", "")
+
+          # 1. Girdileri hazırla
+          DIFF_LIMIT = 100000
+          diff_truncated = False
+
+          def get_diff(unified):
+              return subprocess.check_output(
+                  ["git", "diff", f"--unified={unified}", f"origin/{base_ref}...HEAD"],
+                  text=True, stderr=subprocess.DEVNULL
+              )
+
+          try:
+              diff_full = get_diff(20)
+              if len(diff_full) > DIFF_LIMIT:
+                  # kuhaku'nun PR'ları daha büyük olabilir: önce daha dar bağlamla yeniden dene
+                  diff_full = get_diff(5)
+              if len(diff_full) > DIFF_LIMIT:
+                  diff_full = diff_full[:DIFF_LIMIT]
+                  diff_truncated = True
+          except Exception:
+              diff_full = ""
+
+          try:
+              name_status = subprocess.check_output(
+                  ["git", "diff", "--name-status", f"origin/{base_ref}...HEAD"],
+                  text=True, stderr=subprocess.DEVNULL
+              )[:20000]
+          except Exception:
+              name_status = ""
+
+          try:
+              dep_diff = subprocess.check_output(
+                  ["git", "diff", "--unified=20", f"origin/{base_ref}...HEAD", "--",
+                   "*pyproject.toml*", "*requirements*.txt", "*uv.lock*", "*Pipfile*",
+                   "*poetry.lock*", "*package.json*", "*pnpm-lock.yaml*", "*yarn.lock*",
+                   "*Dockerfile*"],
+                  text=True, stderr=subprocess.DEVNULL
+              )[:50000]
+          except Exception:
+              dep_diff = ""
+
+          def make_suffix(axis_name):
+              return f"""Yalnızca JSON döndür, başka hiçbir metin yazma, markdown kod bloğu kullanma.
+          Şema:
+          {{"axis":"{axis_name}","findings":[{{"severity":"blocker|warning|note",
+          "location":"dosya:satır veya '-'","title":"tek cümle","detail":"en fazla iki cümle"}}]}}
+          Söyleyecek bir şeyin yoksa findings listesini BOŞ bırak. Boş liste geçerli
+          ve beklenen bir cevaptır. Bulgu uydurma, doldurma yapma, genel tavsiye yazma.
+          Sadece bu girdide GÖRÜNEN somut şeyleri raporla. Türkçe yaz."""
+
+          # Eksen promptları
+          prompt_correctness = f"""Sen bir kod inceleyicisisin. Aşağıdaki diff'i DOĞRULUK
+          açısından incele: hatalar, kaçırılmış edge case'ler, eksik hata
+          yönetimi, kaynak sızıntıları.
+
+          DIFF:
+          {diff_full}
+
+          {make_suffix("correctness")}"""
+
+          prompt_method = f"""Sen bir kod inceleyicisisin. Aşağıdaki diff'i YÖNTEM
+          açısından incele: değişikliğin HANGİ YÖNTEMLE yapıldığı,
+          alternatif yaklaşımlar, kabul edilen tradeoff'lar.
+
+          DIFF:
+          {diff_full}
+
+          {make_suffix("method")}"""
+
+          prompt_scope = f"""Sen bir kod inceleyicisisin. Aşağıdaki değişen dosyaların listesini
+          ve PR başlığı ile PR gövdesini KAPSAM açısından incele: Yapılan iş, PR'ın iddia ettiği işle uyuşuyor mu.
+
+          PR BAŞLIĞI:
+          {pr_title}
+
+          PR GÖVDESİ:
+          {pr_body}
+
+          DEĞİŞEN DOSYALAR (git diff --name-status):
+          {name_status}
+
+          {make_suffix("scope")}"""
+
+          prompt_structure = f"""Sen bir kod inceleyicisisin. Aşağıdaki değişen dosyaların listesini
+          ve bağımlılık dosyalarının diff'ini YAPI açısından incele: Yeni üst düzey klasör, yeni dış bağımlılık,
+          katmanlar arası bağımlılık yönünde değişiklik. Hem aşırı parçalanma hem aşırı yığılma açısından bak.
+
+          DEĞİŞEN DOSYALAR (git diff --name-status):
+          {name_status}
+
+          BAĞIMLILIK DOSYALARI DIFF'İ:
+          {dep_diff if dep_diff.strip() else "(Bağımlılık dosyasında değişiklik yok)"}
+
+          {make_suffix("structure")}"""
+
+          client = genai.Client()
+
+          def review_axis(axis_name, prompt):
+              raw_text = ""
+              try:
+                  r = client.models.generate_content(
+                      model="gemini-2.5-flash", contents=prompt
+                  )
+                  raw_text = r.text or ""
+                  cleaned = raw_text.strip()
+                  if cleaned.startswith("```"):
+                      lines = cleaned.splitlines()
+                      if lines and lines[0].startswith("```"):
+                          lines = lines[1:]
+                      if lines and lines[-1].startswith("```"):
+                          lines = lines[:-1]
+                      cleaned = "\n".join(lines).strip()
+                  data = json.loads(cleaned)
+                  return axis_name, data, raw_text, None
+              except Exception as e:
+                  return axis_name, None, raw_text, str(e)
+
+          axes_tasks = [
+              ("correctness", prompt_correctness),
+              ("method", prompt_method),
+              ("scope", prompt_scope),
+              ("structure", prompt_structure),
+          ]
+
+          results = {}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+              futures = {
+                  executor.submit(review_axis, axis_name, prompt): axis_name
+                  for axis_name, prompt in axes_tasks
+              }
+              for future in concurrent.futures.as_completed(futures):
+                  axis_name, data, raw_text, err = future.result()
+                  results[axis_name] = {"data": data, "raw": raw_text, "error": err}
+
+          # Sıralama ve birleştirme
+          severity_order = {"blocker": 0, "warning": 1, "note": 2}
+          all_findings = []
+          for axis_name in ["correctness", "method", "scope", "structure"]:
+              res = results.get(axis_name, {})
+              data = res.get("data")
+              if data and isinstance(data, dict) and "findings" in data and isinstance(data["findings"], list):
+                  for f in data["findings"]:
+                      if isinstance(f, dict):
+                          f_copy = dict(f)
+                          f_copy["axis"] = axis_name
+                          all_findings.append(f_copy)
+
+          all_findings.sort(key=lambda x: severity_order.get(str(x.get("severity", "")).lower(), 3))
+          high_priority = [f for f in all_findings if str(f.get("severity", "")).lower() in ["blocker", "warning"]][:5]
+
+          lines = ["## 🤖 Gemini PR İncelemesi (4 Eksenli)\n"]
+          if diff_truncated:
+              lines.append("> ⚠️ **UYARI: diff kırpıldı, inceleme eksik olabilir**\n")
+          lines.append("### 🚨 Önemli Bulgular (Blocker & Warning)")
+          if high_priority:
+              for f in high_priority:
+                  sev = str(f.get("severity", "warning")).upper()
+                  loc = f.get("location", "-")
+                  title = f.get("title", "")
+                  detail = f.get("detail", "")
+                  lines.append(f"- **[{sev}]** `{loc}` {title} — {detail}")
+          else:
+              lines.append("- Blocker veya warning seviyesinde bulgu tespit edilmedi.")
+
+          lines.append("\n---\n")
+
+          axis_display_names = {
+              "correctness": "Doğruluk (Correctness)",
+              "method": "Yöntem (Method)",
+              "scope": "Kapsam (Scope)",
+              "structure": "Yapı (Structure)",
+          }
+
+          for axis_name in ["correctness", "method", "scope", "structure"]:
+              res = results.get(axis_name, {})
+              disp_name = axis_display_names.get(axis_name, axis_name)
+              err = res.get("error")
+              if err:
+                  lines.append(f"<details>\n<summary><b>{disp_name} — PARSE HATASI</b></summary>\n\nParse hatası: `{err}`\n\n```\n{res.get('raw', '')}\n```\n</details>\n")
+              else:
+                  data = res.get("data") or {}
+                  findings = data.get("findings", []) if isinstance(data, dict) and isinstance(data.get("findings"), list) else []
+                  count = len(findings)
+                  lines.append(f"<details>\n<summary><b>{disp_name} ({count} bulgu)</b></summary>\n")
+                  if count == 0:
+                      lines.append("\nBulgu yok.\n")
+                  else:
+                      lines.append("")
+                      for f in findings:
+                          if isinstance(f, dict):
+                              sev = str(f.get("severity", "note")).upper()
+                              loc = f.get("location", "-")
+                              title = f.get("title", "")
+                              detail = f.get("detail", "")
+                              lines.append(f"- **[{sev}]** `{loc}` **{title}**: {detail}")
+                      lines.append("")
+                  lines.append("</details>\n")
+
+          lines.append("<details>\n<summary><b>🔍 Ham JSON Çıktıları</b></summary>\n")
+          lines.append(f"\ndiff kırpıldı mı: {'evet' if diff_truncated else 'hayır'}\n")
+          lines.append("```json")
+          raw_output = {}
+          for k in ["correctness", "method", "scope", "structure"]:
+              res = results.get(k, {})
+              if res.get("data") is not None:
+                  raw_output[k] = res["data"]
+              else:
+                  raw_output[k] = {"raw": res.get("raw"), "error": res.get("error")}
+          lines.append(json.dumps(raw_output, indent=2, ensure_ascii=False))
+          lines.append("```\n</details>\n")
+
+          output_md = "\n".join(lines)
+          pathlib.Path("/tmp/review.md").write_text(output_md, encoding="utf-8")
+          PY
+
+      - name: PR'a yorum yaz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/review.md
