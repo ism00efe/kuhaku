@@ -9,6 +9,12 @@ import builtins
 
 import pytest
 
+pytest.importorskip(
+    "google.genai",
+    reason="Vertex AI embeddings tests need the optional 'vertex' extra "
+    "(pip install 'kuhaku[vertex]'); CI's default install does not include it.",
+)
+
 from kuhaku.tools.rag.config import RAGSettings
 from kuhaku.tools.rag.embeddings import EmbeddingServiceError, build_embedding_provider
 

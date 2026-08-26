@@ -9,6 +9,12 @@ import builtins
 
 import pytest
 
+pytest.importorskip(
+    "google.genai",
+    reason="Vertex AI provider tests need the optional 'vertex' extra "
+    "(pip install 'kuhaku[vertex]'); CI's default install does not include it.",
+)
+
 from kuhaku.core.config import Settings
 from kuhaku.core.llm import build_llm_provider
 from kuhaku.core.llm.base import LLMError
