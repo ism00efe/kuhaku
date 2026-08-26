@@ -355,9 +355,10 @@ class Stage2Classifier:
 # ---------------------------------------------------------------------------
 class TwoStageClassifier:
     """Composes the Stage-1 backend (LR model if present and loadable, else rule-based)
-    and the Stage-2 classifier. Constructed once (in ``service.build_service``), not
-    per-request — mirrors how ``CrossEncoderReranker``/``QueryAnswerCache`` are built once
-    and injected as collaborators.
+    and the Stage-2 classifier. Meant to be constructed once, by the caller's own
+    composition root (kuhaku ships none itself), not per-request — mirrors how
+    ``CrossEncoderReranker``/``QueryAnswerCache`` are built once and injected as
+    collaborators.
     """
 
     def __init__(

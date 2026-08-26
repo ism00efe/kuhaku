@@ -5,9 +5,12 @@ self-documenting "no restrictions" policy) and ``ConfigAuthorizationPolicy`` (ro
 permission rules, defined by the application via a file or programmatically at runtime --
 never a hierarchy kuhaku itself imposes).
 
-Neither is wired into ``RAGEngine`` by default -- its ``authorization_policy`` constructor
-parameter is ``None`` unless a caller configures one, which is this package's
-zero-configuration default-allow contract.
+Neither is wired into ``RAGEngine`` at all -- it has no ``authorization_policy``
+constructor parameter or call site of any kind. The only access control kuhaku enforces
+itself is document-level tag filtering (``access_tags``/``AuthContext.roles``, see
+``kuhaku.tools.rag.retriever.is_entitled``); resource/action-level checks via
+``AuthorizationPolicy.check()`` are a caller's responsibility to call directly (e.g.
+before invoking ``RAG.ask()``), not something this package calls for you today.
 """
 
 from __future__ import annotations

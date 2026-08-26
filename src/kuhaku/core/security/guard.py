@@ -163,8 +163,10 @@ def _decide_zone(
 class GuardPipeline:
     """Orchestrates normalize -> classify (Stage1, optionally Stage2) -> 3-zone decide.
 
-    One instance is built in `service.build_service()` (only when `guard_enabled`) and
-    injected into `RAGEngine`, the same way `cache`/`retriever` already are.
+    kuhaku ships no composition root that builds this for you (see `Settings.guard_enabled`'s
+    docstring): the caller constructs one -- when `guard_enabled` -- and injects it into
+    `RAGEngine`, the same way `cache`/`retriever` already are (constructor kwarg, or
+    `RAGEngine.update_guard()` after the fact).
     """
 
     def __init__(
