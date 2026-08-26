@@ -5,8 +5,8 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write      # yorum yazmak için
-  id-token: write           # WIF için
+  pull-requests: write      # to write the comment
+  id-token: write           # for WIF
 
 jobs:
   review:
@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0    # diff için tam geçmiş gerekli
+          fetch-depth: 0    # full history needed for diff
 
       - id: auth
         uses: google-github-actions/auth@v3
@@ -28,7 +28,7 @@ jobs:
 
       - run: pip install google-genai
 
-      - name: Gemini dört eksenli inceleme
+      - name: Gemini four-axis review
         env:
           GOOGLE_CLOUD_PROJECT: finops-agent-497422
           GOOGLE_CLOUD_LOCATION: global
@@ -49,7 +49,7 @@ jobs:
           pr_title = os.environ.get("PR_TITLE", "")
           pr_body = os.environ.get("PR_BODY", "")
 
-          # 1. Girdileri hazırla
+          # 1. Prepare inputs
           DIFF_LIMIT = 100000
           diff_truncated = False
 
@@ -62,7 +62,7 @@ jobs:
           try:
               diff_full = get_diff(20)
               if len(diff_full) > DIFF_LIMIT:
-                  # kuhaku'nun PR'ları daha büyük olabilir: önce daha dar bağlamla yeniden dene
+                  # kuhaku's PRs can be larger: retry with narrower context first
                   diff_full = get_diff(5)
               if len(diff_full) > DIFF_LIMIT:
                   diff_full = diff_full[:DIFF_LIMIT]
@@ -89,57 +89,68 @@ jobs:
           except Exception:
               dep_diff = ""
 
-          def make_suffix(axis_name):
-              return f"""Yalnızca JSON döndür, başka hiçbir metin yazma, markdown kod bloğu kullanma.
-          Şema:
-          {{"axis":"{axis_name}","findings":[{{"severity":"blocker|warning|note",
-          "location":"dosya:satır veya '-'","title":"tek cümle","detail":"en fazla iki cümle"}}]}}
-          Söyleyecek bir şeyin yoksa findings listesini BOŞ bırak. Boş liste geçerli
-          ve beklenen bir cevaptır. Bulgu uydurma, doldurma yapma, genel tavsiye yazma.
-          Sadece bu girdide GÖRÜNEN somut şeyleri raporla. Türkçe yaz."""
+          REPORT_ONLY_PROBLEMS = """Report only problems: something missing, incorrect, risky, or unclear.
+          Do NOT report that a change is good, well-designed, or an improvement.
+          Praise is not a finding. Do NOT describe or summarize what the diff does --
+          that is not a finding either. If you cannot name a concrete problem,
+          return an empty findings list."""
 
-          # Eksen promptları
-          prompt_correctness = f"""Sen bir kod inceleyicisisin. Aşağıdaki diff'i DOĞRULUK
-          açısından incele: hatalar, kaçırılmış edge case'ler, eksik hata
-          yönetimi, kaynak sızıntıları.
+          def make_suffix(axis_name):
+              return f"""{REPORT_ONLY_PROBLEMS}
+
+          Return ONLY JSON, no other text, no markdown code block.
+          Schema:
+          {{"axis":"{axis_name}","findings":[{{"severity":"blocker|warning",
+          "location":"file:line or '-'","title":"one sentence","detail":"at most two sentences"}}]}}
+          If you have nothing to say, leave the findings list EMPTY. An empty list is a
+          valid and expected answer. Do not invent or pad findings, do not write generic
+          advice. Report only concrete things VISIBLE in this input. If you cannot justify
+          warning severity or above, return no finding. Write in English."""
+
+          # Axis prompts
+          prompt_correctness = f"""You are a code reviewer. Examine the diff below for
+          CORRECTNESS: bugs, missed edge cases, missing error handling, resource leaks.
 
           DIFF:
           {diff_full}
 
           {make_suffix("correctness")}"""
 
-          prompt_method = f"""Sen bir kod inceleyicisisin. Aşağıdaki diff'i YÖNTEM
-          açısından incele: değişikliğin HANGİ YÖNTEMLE yapıldığı,
-          alternatif yaklaşımlar, kabul edilen tradeoff'lar.
+          prompt_method = f"""You are a code reviewer. Examine the approach taken in the
+          diff below. Report only where the chosen approach has a gap, an unhandled case,
+          an unstated tradeoff that will cause trouble later, or where a materially better
+          alternative was available. Do not restate what was done.
 
           DIFF:
           {diff_full}
 
           {make_suffix("method")}"""
 
-          prompt_scope = f"""Sen bir kod inceleyicisisin. Aşağıdaki değişen dosyaların listesini
-          ve PR başlığı ile PR gövdesini KAPSAM açısından incele: Yapılan iş, PR'ın iddia ettiği işle uyuşuyor mu.
+          prompt_scope = f"""You are a code reviewer. Examine the list of changed files below,
+          along with the PR title and PR body, for SCOPE: does the work done match what the
+          PR claims to do.
 
-          PR BAŞLIĞI:
+          PR TITLE:
           {pr_title}
 
-          PR GÖVDESİ:
+          PR BODY:
           {pr_body}
 
-          DEĞİŞEN DOSYALAR (git diff --name-status):
+          CHANGED FILES (git diff --name-status):
           {name_status}
 
           {make_suffix("scope")}"""
 
-          prompt_structure = f"""Sen bir kod inceleyicisisin. Aşağıdaki değişen dosyaların listesini
-          ve bağımlılık dosyalarının diff'ini YAPI açısından incele: Yeni üst düzey klasör, yeni dış bağımlılık,
-          katmanlar arası bağımlılık yönünde değişiklik. Hem aşırı parçalanma hem aşırı yığılma açısından bak.
+          prompt_structure = f"""You are a code reviewer. Examine the list of changed files
+          below and the diff of dependency files for STRUCTURE: new top-level folders, new
+          external dependencies, changes in the direction of dependency between layers. Look
+          for both excessive fragmentation and excessive accumulation.
 
-          DEĞİŞEN DOSYALAR (git diff --name-status):
+          CHANGED FILES (git diff --name-status):
           {name_status}
 
-          BAĞIMLILIK DOSYALARI DIFF'İ:
-          {dep_diff if dep_diff.strip() else "(Bağımlılık dosyasında değişiklik yok)"}
+          DEPENDENCY FILES DIFF:
+          {dep_diff if dep_diff.strip() else "(No changes in dependency files)"}
 
           {make_suffix("structure")}"""
 
@@ -182,8 +193,8 @@ jobs:
                   axis_name, data, raw_text, err = future.result()
                   results[axis_name] = {"data": data, "raw": raw_text, "error": err}
 
-          # Sıralama ve birleştirme
-          severity_order = {"blocker": 0, "warning": 1, "note": 2}
+          # Sort and merge
+          severity_order = {"blocker": 0, "warning": 1}
           all_findings = []
           for axis_name in ["correctness", "method", "scope", "structure"]:
               res = results.get(axis_name, {})
@@ -195,13 +206,13 @@ jobs:
                           f_copy["axis"] = axis_name
                           all_findings.append(f_copy)
 
-          all_findings.sort(key=lambda x: severity_order.get(str(x.get("severity", "")).lower(), 3))
+          all_findings.sort(key=lambda x: severity_order.get(str(x.get("severity", "")).lower(), 2))
           high_priority = [f for f in all_findings if str(f.get("severity", "")).lower() in ["blocker", "warning"]][:5]
 
-          lines = ["## 🤖 Gemini PR İncelemesi (4 Eksenli)\n"]
+          lines = ["## Gemini PR Review (4 Axes)\n"]
           if diff_truncated:
-              lines.append("> ⚠️ **UYARI: diff kırpıldı, inceleme eksik olabilir**\n")
-          lines.append("### 🚨 Önemli Bulgular (Blocker & Warning)")
+              lines.append("> WARNING: diff was truncated, review may be incomplete\n")
+          lines.append("### Key Findings (Blocker & Warning)")
           if high_priority:
               for f in high_priority:
                   sev = str(f.get("severity", "warning")).upper()
@@ -210,15 +221,15 @@ jobs:
                   detail = f.get("detail", "")
                   lines.append(f"- **[{sev}]** `{loc}` {title} — {detail}")
           else:
-              lines.append("- Blocker veya warning seviyesinde bulgu tespit edilmedi.")
+              lines.append("- No blocker or warning level findings detected.")
 
           lines.append("\n---\n")
 
           axis_display_names = {
-              "correctness": "Doğruluk (Correctness)",
-              "method": "Yöntem (Method)",
-              "scope": "Kapsam (Scope)",
-              "structure": "Yapı (Structure)",
+              "correctness": "Correctness",
+              "method": "Method",
+              "scope": "Scope",
+              "structure": "Structure",
           }
 
           for axis_name in ["correctness", "method", "scope", "structure"]:
@@ -226,19 +237,19 @@ jobs:
               disp_name = axis_display_names.get(axis_name, axis_name)
               err = res.get("error")
               if err:
-                  lines.append(f"<details>\n<summary><b>{disp_name} — PARSE HATASI</b></summary>\n\nParse hatası: `{err}`\n\n```\n{res.get('raw', '')}\n```\n</details>\n")
+                  lines.append(f"<details>\n<summary><b>{disp_name} — PARSE ERROR</b></summary>\n\nParse error: `{err}`\n\n```\n{res.get('raw', '')}\n```\n</details>\n")
               else:
                   data = res.get("data") or {}
                   findings = data.get("findings", []) if isinstance(data, dict) and isinstance(data.get("findings"), list) else []
                   count = len(findings)
-                  lines.append(f"<details>\n<summary><b>{disp_name} ({count} bulgu)</b></summary>\n")
+                  lines.append(f"<details>\n<summary><b>{disp_name} ({count} findings)</b></summary>\n")
                   if count == 0:
-                      lines.append("\nBulgu yok.\n")
+                      lines.append("\nNo findings.\n")
                   else:
                       lines.append("")
                       for f in findings:
                           if isinstance(f, dict):
-                              sev = str(f.get("severity", "note")).upper()
+                              sev = str(f.get("severity", "warning")).upper()
                               loc = f.get("location", "-")
                               title = f.get("title", "")
                               detail = f.get("detail", "")
@@ -246,8 +257,8 @@ jobs:
                       lines.append("")
                   lines.append("</details>\n")
 
-          lines.append("<details>\n<summary><b>🔍 Ham JSON Çıktıları</b></summary>\n")
-          lines.append(f"\ndiff kırpıldı mı: {'evet' if diff_truncated else 'hayır'}\n")
+          lines.append("<details>\n<summary><b>Raw JSON Output</b></summary>\n")
+          lines.append(f"\ndiff truncated: {'yes' if diff_truncated else 'no'}\n")
           lines.append("```json")
           raw_output = {}
           for k in ["correctness", "method", "scope", "structure"]:
@@ -263,7 +274,7 @@ jobs:
           pathlib.Path("/tmp/review.md").write_text(output_md, encoding="utf-8")
           PY
 
-      - name: PR'a yorum yaz
+      - name: Comment on PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/review.md
