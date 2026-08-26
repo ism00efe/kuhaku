@@ -138,9 +138,10 @@ class RAGEngine:
         # record_audit() call site below so a disabled audit log is an immediate,
         # filesystem-untouched no-op regardless of which call site would have written.
         self._audit_enabled = audit_enabled
-        # Deployed versions from Settings, threaded in by service.build_service().
-        # Default "" (not required) so direct construction -- every test in this suite,
-        # eval scripts -- keeps working unchanged, mirroring `auth_context`'s own
+        # Deployed versions from Settings, threaded in by whichever composition root the
+        # caller uses to build this engine (kuhaku ships none itself -- see the module
+        # docstring). Default "" (not required) so direct construction -- every test in
+        # this suite, eval scripts -- keeps working unchanged, mirroring `auth_context`'s own
         # default-None precedent for the same reason.
         self._llm_version = llm_version
         self._embedding_version = embedding_version
@@ -559,10 +560,168 @@ class RAGEngine:
         *,
         auth_context: AuthContext | None,
     ) -> Answer:
+        """Orchestrates the pipeline described in the module docstring as a sequence of
+        named steps, each a private method below. Every step either returns the data the
+        next one needs, or -- for a step that can end the request early (guard blocks,
+        empty corpus, low confidence, ...) -- the ``Answer`` to return immediately."""
+
         if context_text and len(context_text) > _MAX_CONTEXT_CHARS:
             context_text = context_text[:_MAX_CONTEXT_CHARS]
 
-        # 1) SECURITY: sanitize every user-supplied input before it goes anywhere.
+        # 1-2) Sanitize the raw inputs and build the retrieval query from them.
+        retrieval_query, redaction_labels = self._sanitize_and_build_query(
+            question, context_text
+        )
+        if not retrieval_query:
+            return self._record_exit(
+                trace_id=trace_id,
+                question=question,
+                retrieval_query=retrieval_query,
+                redaction_labels=redaction_labels,
+                auth_context=auth_context,
+                status="empty",
+                event_type="empty",
+                message=self._messages.empty_query,
+            )
+
+        # 3) Legacy input guard: block prompt-injection attempts before retrieval or the
+        # LLM ever see the query.
+        if self._input_guard_enabled:
+            blocked = self._run_input_guard(
+                question, retrieval_query, trace_id, redaction_labels, auth_context
+            )
+            if blocked is not None:
+                return blocked
+
+        # 3b) Guard v2 (opt-in): normalize -> two-stage classify -> 3-zone decide.
+        guard_decision, rejected = self._run_guard_v2(
+            question, retrieval_query, trace_id, redaction_labels, auth_context
+        )
+        if rejected is not None:
+            return rejected
+
+        # 4) Retrieve, with the empty-corpus/no-chunks/low-confidence abstentions.
+        retrieved_or_exit = self._retrieve_or_abstain(
+            question, retrieval_query, trace_id, redaction_labels, auth_context
+        )
+        if isinstance(retrieved_or_exit, Answer):
+            return retrieved_or_exit
+        retrieved = retrieved_or_exit
+
+        # 4.5) Contradiction detection -- best-effort, never blocks the response.
+        contradiction_warning = self._detect_contradictions(
+            retrieved, question, retrieval_query, trace_id, auth_context
+        )
+
+        # 5-6) Cache check, then generate a grounded answer on a miss.
+        text, user_prompt = self._get_or_generate_answer(retrieval_query, retrieved)
+
+        # 7) Map the [S#] tags the model actually used back to their sources, and flag
+        # any that don't match a real retrieved source. Runs unconditionally
+        # (hit or miss) against the *current* retrieved list, never a cached one.
+        with instrumented_step("cite") as rec:
+            citations, invalid_indices = self._extract_citations(text, retrieved)
+            rec.set(citation_count=len(citations))
+        if invalid_indices:
+            text = self._flag_unverified_citations(text, invalid_indices)
+
+        # 8) Output guard v2 (opt-in) plus the unconditional final audit record.
+        text, citations, retrieved, abstained = self._apply_output_guard(
+            text,
+            citations,
+            retrieved,
+            invalid_indices,
+            guard_decision,
+            question,
+            retrieval_query,
+            trace_id,
+            auth_context,
+        )
+
+        REQUEST_COUNT.add(1, {"status": "ok"})
+        return Answer(
+            text=text,
+            citations=citations,
+            retrieved=retrieved,
+            redactions=redaction_labels,
+            trace_id=trace_id,
+            abstained=abstained,
+            # Populated only on this, the one exit point that reaches "the end" of
+            # _answer() -- the earlier early-return Answers (empty question, legacy-guard
+            # block, empty KB, no chunks, low confidence, guard v2 reject) stay None,
+            # mirroring the audit records' own "one exit point" scope boundary.
+            llm_version=self._llm_version,
+            embedding_version=self._embedding_version,
+            system_prompt_version=self._system_prompt_version,
+            # For the replay snapshot -- same "one exit point" scope as the three
+            # fields above.
+            retrieval_query=retrieval_query,
+            user_prompt=user_prompt,
+            # Set above (Step 4.5), before generation even runs -- None whenever
+            # detection is disabled, found nothing, or degraded silently on failure.
+            contradiction_warning=contradiction_warning,
+        )
+
+    def _record_exit(
+        self,
+        *,
+        trace_id: str,
+        question: str,
+        retrieval_query: str,
+        redaction_labels: list[str],
+        auth_context: AuthContext | None,
+        event_type: str,
+        message: str,
+        status: str | None = None,
+        count_request: bool = True,
+        accessed_chunks: Sequence[str] = (),
+        abstained: bool = False,
+        abstention_reason: str | None = None,
+        decision: GuardDecision | None = None,
+        guard_version: str | None = None,
+        model_version: str | None = None,
+        thresholds: tuple[float, float] | None = None,
+    ) -> Answer:
+        """Build the ``Answer`` for a non-success exit from ``_answer``: the request
+        status metric, an optional abstention reason, and the audit record, in that
+        order -- the three calls every early-return branch used to repeat inline.
+
+        ``count_request=False`` mirrors the pre-refactor ``low_confidence`` exit, which
+        never had a ``REQUEST_COUNT`` status label of its own.
+        """
+
+        if count_request:
+            REQUEST_COUNT.add(1, {"status": status})
+        if abstention_reason is not None:
+            ABSTENTION_COUNT.add(1, {"reason": abstention_reason})
+        self._write_audit(
+            trace_id=trace_id,
+            raw_question=question or "",
+            sanitized_retrieval_query=retrieval_query,
+            event_type=event_type,
+            decision=decision,
+            guard_version=guard_version,
+            model_version=model_version,
+            thresholds=thresholds,
+            auth_context=auth_context,
+            accessed_chunks=list(accessed_chunks),
+        )
+        return Answer(
+            text=message,
+            citations=[],
+            retrieved=[],
+            redactions=redaction_labels,
+            trace_id=trace_id,
+            abstained=abstained,
+        )
+
+    def _sanitize_and_build_query(
+        self, question: str, context_text: str | None
+    ) -> tuple[str, list[str]]:
+        """Steps 1-2: SECURITY -- sanitize every user-supplied input before it goes
+        anywhere, then build the retrieval query from the question plus any salient
+        context fields."""
+
         with instrumented_step("sanitize") as rec:
             clean_question, q_red = sanitize_text(question or "")
             redaction_labels = [f"{r.label}×{r.count}" for r in q_red]
@@ -580,7 +739,6 @@ class RAGEngine:
                 context_summary = summarize_context(clean_context)
             rec.set(redaction_count=len(redaction_labels))
 
-        # 2) Build the retrieval query (question + salient context fields).
         retrieval_query = clean_question.strip()
         if context_summary:
             label = self._messages.context_label
@@ -589,118 +747,121 @@ class RAGEngine:
                 if retrieval_query
                 else f"{label} {context_summary}"
             )
-        if not retrieval_query:
-            REQUEST_COUNT.add(1, {"status": "empty"})
-            self._write_audit(
-                trace_id=trace_id,
-                raw_question=question or "",
-                sanitized_retrieval_query=retrieval_query,
-                event_type="empty",
-                auth_context=auth_context,
-                accessed_chunks=[],
-            )
-            return Answer(
-                text=self._messages.empty_query,
-                citations=[],
-                retrieved=[],
-                redactions=redaction_labels,
-                trace_id=trace_id,
-            )
+        return retrieval_query, redaction_labels
 
-        # 3) SECURITY: block prompt-injection attempts before retrieval or the LLM ever
-        # see the query. Runs on the already-sanitized text, so nothing logged here can
-        # contain raw PII.
-        if self._input_guard_enabled:
-            with instrumented_step("input_guard") as rec:
-                safe, reason = inspect_query(retrieval_query)
-                rec.set(safe=safe)
-            if not safe:
-                logger.warning(
-                    "query blocked by input guard",
-                    extra={"reason": reason, "status": "blocked"},
-                )
-                REQUEST_COUNT.add(1, {"status": "blocked"})
-                self._write_audit(
-                    trace_id=trace_id,
-                    raw_question=question or "",
-                    sanitized_retrieval_query=retrieval_query,
-                    event_type="blocked",
-                    auth_context=auth_context,
-                    accessed_chunks=[],
-                )
-                return Answer(
-                    text=REFUSAL_MESSAGE,
-                    citations=[],
-                    retrieved=[],
-                    redactions=redaction_labels,
-                    trace_id=trace_id,
-                )
+    def _run_input_guard(
+        self,
+        question: str,
+        retrieval_query: str,
+        trace_id: str,
+        redaction_labels: list[str],
+        auth_context: AuthContext | None,
+    ) -> Answer | None:
+        """Step 3: SECURITY -- block prompt-injection attempts before retrieval or the
+        LLM ever see the query. Runs on the already-sanitized text, so nothing logged
+        here can contain raw PII. Returns the block ``Answer``, or ``None`` to
+        continue."""
 
-        # 3b) SECURITY (v2, opt-in): normalize -> two-stage classify -> 3-zone decide.
-        # Runs after the legacy guard above, which stays live and unconditional -- v2
-        # only ever sees what already got past it; pure defense-in-depth, never a
-        # replacement. Dormant unless `guard` was configured (Settings.guard_enabled).
-        guard_decision: GuardDecision | None = None
-        if self._guard is not None:
-            with instrumented_step("guard_v2") as rec:
-                guard_decision = self._guard.evaluate(retrieval_query)
-                rec.set(
-                    guard_zone=guard_decision.zone, stage1_score=guard_decision.stage1.score
-                )
-            record_guard_zone(guard_decision.zone)
-            if guard_decision.escalation_reason:
-                record_guard_stage1_escalation(guard_decision.escalation_reason)
-            if guard_decision.stage2.ran and guard_decision.stage2.label is not None:
-                record_guard_stage2_classification(guard_decision.stage2.label)
+        with instrumented_step("input_guard") as rec:
+            safe, reason = inspect_query(retrieval_query)
+            rec.set(safe=safe)
+        if safe:
+            return None
 
-            if guard_decision.zone == "reject":
-                logger.warning(
-                    "query rejected by guard v2",
-                    extra={"status": "guard_v2_reject", "guard_zone": "reject"},
-                )
-                REQUEST_COUNT.add(1, {"status": "guard_v2_reject"})
-                self._write_audit(
-                    trace_id=trace_id,
-                    raw_question=question or "",
-                    sanitized_retrieval_query=retrieval_query,
-                    event_type="guard_v2_reject",
-                    decision=guard_decision,
-                    guard_version=self._guard.guard_version,
-                    model_version=self._guard.model_version,
-                    thresholds=(self._guard.low_threshold, self._guard.high_threshold),
-                    auth_context=auth_context,
-                    accessed_chunks=[],  # retrieval never ran -- rejected before it
-                )
-                return Answer(
-                    text=GUARD_REJECT_MESSAGE,
-                    citations=[],
-                    retrieved=[],
-                    redactions=redaction_labels,
-                    trace_id=trace_id,
-                    abstained=True,
-                )
+        logger.warning(
+            "query blocked by input guard",
+            extra={"reason": reason, "status": "blocked"},
+        )
+        return self._record_exit(
+            trace_id=trace_id,
+            question=question,
+            retrieval_query=retrieval_query,
+            redaction_labels=redaction_labels,
+            auth_context=auth_context,
+            status="blocked",
+            event_type="blocked",
+            message=REFUSAL_MESSAGE,
+        )
 
-        # 4) Retrieve.
+    def _run_guard_v2(
+        self,
+        question: str,
+        retrieval_query: str,
+        trace_id: str,
+        redaction_labels: list[str],
+        auth_context: AuthContext | None,
+    ) -> tuple[GuardDecision | None, Answer | None]:
+        """Step 3b: SECURITY (v2, opt-in) -- normalize -> two-stage classify -> 3-zone
+        decide. Runs after the legacy guard above, which stays live and unconditional --
+        v2 only ever sees what already got past it; pure defense-in-depth, never a
+        replacement. Dormant unless `guard` was configured (Settings.guard_enabled).
+        Returns ``(decision, reject_answer)``; ``reject_answer`` is ``None`` unless the
+        zone is "reject"."""
+
+        if self._guard is None:
+            return None, None
+
+        with instrumented_step("guard_v2") as rec:
+            guard_decision = self._guard.evaluate(retrieval_query)
+            rec.set(guard_zone=guard_decision.zone, stage1_score=guard_decision.stage1.score)
+        record_guard_zone(guard_decision.zone)
+        if guard_decision.escalation_reason:
+            record_guard_stage1_escalation(guard_decision.escalation_reason)
+        if guard_decision.stage2.ran and guard_decision.stage2.label is not None:
+            record_guard_stage2_classification(guard_decision.stage2.label)
+
+        if guard_decision.zone != "reject":
+            return guard_decision, None
+
+        logger.warning(
+            "query rejected by guard v2",
+            extra={"status": "guard_v2_reject", "guard_zone": "reject"},
+        )
+        rejected = self._record_exit(
+            trace_id=trace_id,
+            question=question,
+            retrieval_query=retrieval_query,
+            redaction_labels=redaction_labels,
+            auth_context=auth_context,
+            status="guard_v2_reject",
+            event_type="guard_v2_reject",
+            message=GUARD_REJECT_MESSAGE,
+            abstained=True,
+            decision=guard_decision,
+            guard_version=self._guard.guard_version,
+            model_version=self._guard.model_version,
+            thresholds=(self._guard.low_threshold, self._guard.high_threshold),
+            accessed_chunks=[],  # retrieval never ran -- rejected before it
+        )
+        return guard_decision, rejected
+
+    def _retrieve_or_abstain(
+        self,
+        question: str,
+        retrieval_query: str,
+        trace_id: str,
+        redaction_labels: list[str],
+        auth_context: AuthContext | None,
+    ) -> list[RetrievedChunk] | Answer:
+        """Step 4: the empty-corpus short-circuit, the optional query rewrite,
+        retrieval itself, and the two confidence-driven abstentions (no chunks / every
+        chunk below threshold). Returns either the confidence-filtered chunk list to
+        continue with, or the ``Answer`` to return immediately."""
+
         try:
             corpus_is_empty = self._store.count() == 0
         except Exception as exc:
             raise VectorStoreError(f"Vector store count failed: {exc}") from exc
         if corpus_is_empty:
-            REQUEST_COUNT.add(1, {"status": "empty_kb"})
-            self._write_audit(
+            return self._record_exit(
                 trace_id=trace_id,
-                raw_question=question or "",
-                sanitized_retrieval_query=retrieval_query,
-                event_type="empty_kb",
+                question=question,
+                retrieval_query=retrieval_query,
+                redaction_labels=redaction_labels,
                 auth_context=auth_context,
-                accessed_chunks=[],
-            )
-            return Answer(
-                text=self._messages.empty_kb,
-                citations=[],
-                retrieved=[],
-                redactions=redaction_labels,
-                trace_id=trace_id,
+                status="empty_kb",
+                event_type="empty_kb",
+                message=self._messages.empty_kb,
             )
 
         # Rewrite the query for the retriever ONLY -- `retrieval_query` itself
@@ -725,24 +886,20 @@ class RAGEngine:
             # filtering removed every candidate or the query genuinely matched nothing --
             # distinguishing the two would let a caller map restricted content by varying
             # the query and watching which empty results are "denials".
-            logger.info("no chunks retrieved for query; abstaining", extra={"status": "no_chunks"})
-            REQUEST_COUNT.add(1, {"status": "no_chunks"})
-            ABSTENTION_COUNT.add(1, {"reason": "zero_chunks"})
-            self._write_audit(
-                trace_id=trace_id,
-                raw_question=question or "",
-                sanitized_retrieval_query=retrieval_query,
-                event_type="no_chunks",
-                auth_context=auth_context,
-                accessed_chunks=[],
+            logger.info(
+                "no chunks retrieved for query; abstaining", extra={"status": "no_chunks"}
             )
-            return Answer(
-                text=self._messages.no_chunks,
-                citations=[],
-                retrieved=[],
-                redactions=redaction_labels,
+            return self._record_exit(
                 trace_id=trace_id,
+                question=question,
+                retrieval_query=retrieval_query,
+                redaction_labels=redaction_labels,
+                auth_context=auth_context,
+                status="no_chunks",
+                event_type="no_chunks",
+                message=self._messages.no_chunks,
                 abstained=True,
+                abstention_reason="zero_chunks",
             )
 
         top_score = max(c.score for c in retrieved)
@@ -755,35 +912,40 @@ class RAGEngine:
                     "threshold": self._confidence_threshold,
                 },
             )
-            ABSTENTION_COUNT.add(1, {"reason": "low_confidence"})
             # No REQUEST_COUNT status label existed for this exit before this feature --
-            # "low_confidence" is the one chosen here, used only as the audit event_type
-            # (mirrors ABSTENTION_COUNT's own "low_confidence" reason above);
-            # REQUEST_COUNT itself is left as-is, out of this feature's scope.
-            self._write_audit(
+            # "low_confidence" is used only as the audit event_type (mirrors
+            # ABSTENTION_COUNT's own "low_confidence" reason); REQUEST_COUNT itself is
+            # left as-is, out of this feature's scope (count_request=False below).
+            return self._record_exit(
                 trace_id=trace_id,
-                raw_question=question or "",
-                sanitized_retrieval_query=retrieval_query,
-                event_type="low_confidence",
+                question=question,
+                retrieval_query=retrieval_query,
+                redaction_labels=redaction_labels,
                 auth_context=auth_context,
+                count_request=False,
+                event_type="low_confidence",
+                message=self._messages.no_chunks,
+                abstained=True,
+                abstention_reason="low_confidence",
                 accessed_chunks=[c.chunk.id for c in retrieved],
             )
-            return Answer(
-                text=self._messages.no_chunks,
-                citations=[],
-                retrieved=[],
-                redactions=redaction_labels,
-                trace_id=trace_id,
-                abstained=True,
-            )
 
-        retrieved = [c for c in retrieved if c.score >= self._confidence_threshold]
+        return [c for c in retrieved if c.score >= self._confidence_threshold]
 
-        # 4.5) Contradiction detection -- best-effort, never blocks the response.
-        # Runs only on the current query's retrieved chunk set (Constraint 1), before
-        # generation, so its [S#] references match the citation numbering the model's
-        # response will use. Dormant unless a detector was configured
-        # (RAGSettings.contradiction_detection_enabled).
+    def _detect_contradictions(
+        self,
+        retrieved: list[RetrievedChunk],
+        question: str,
+        retrieval_query: str,
+        trace_id: str,
+        auth_context: AuthContext | None,
+    ) -> str | None:
+        """Step 4.5: contradiction detection -- best-effort, never blocks the response.
+        Runs only on the current query's retrieved chunk set (Constraint 1), before
+        generation, so its [S#] references match the citation numbering the model's
+        response will use. Dormant unless a detector was configured
+        (RAGSettings.contradiction_detection_enabled)."""
+
         contradiction_warning: str | None = None
         if self._contradiction_detector is not None:
             try:
@@ -838,15 +1000,21 @@ class RAGEngine:
                     "contradiction_detection_failed",
                     extra={"trace_id": trace_id, "error": str(exc)},
                 )
+        return contradiction_warning
 
-        # 5) Cache check. Only the LLM call is skippable -- the key depends on the
-        # retrieved chunk ids (in retrieval order, never sorted -- see rag/cache.py), so
-        # retrieval must already have run, and it always runs regardless of cache state.
+    def _get_or_generate_answer(
+        self, retrieval_query: str, retrieved: list[RetrievedChunk]
+    ) -> tuple[str, str | None]:
+        """Steps 5-6: cache check, then generate a grounded answer on a miss. Only the
+        LLM call is skippable -- the cache key depends on the retrieved chunk ids (in
+        retrieval order, never sorted -- see rag/cache.py), so retrieval must already
+        have run, and it always runs regardless of cache state. Returns ``(text,
+        user_prompt)``; ``user_prompt`` stays ``None`` on a cache hit (the replay
+        snapshot then just has no verbatim prompt text for that request, which is fine,
+        since replay reconstructs the prompt fresh via service.ask() anyway)."""
+
         cache_key: str | None = None
         text: str | None = None
-        # Only built below on a cache miss -- stays None on a cache hit (the
-        # replay snapshot then just has no verbatim prompt text for that request, which
-        # is fine, since replay reconstructs the prompt fresh via service.ask() anyway).
         user_prompt: str | None = None
         if self._cache is not None:
             with instrumented_step("cache_lookup") as rec:
@@ -866,7 +1034,6 @@ class RAGEngine:
             else:
                 CACHE_MISSES.add(1)
 
-        # 6) Generate a grounded answer (skipped on a cache hit).
         if text is None:
             with instrumented_step("generate"):
                 user_prompt = build_user_prompt(retrieval_query, retrieved, self._messages)
@@ -878,20 +1045,26 @@ class RAGEngine:
                 assert self._cache is not None  # cache_key is only set when cache exists
                 self._cache.put(cache_key, text)
 
-        # 7) Map the [S#] tags the model actually used back to their sources, and flag
-        # any that don't match a real retrieved source. Runs unconditionally
-        # (hit or miss) against the *current* retrieved list, never a cached one.
-        with instrumented_step("cite") as rec:
-            citations, invalid_indices = self._extract_citations(text, retrieved)
-            rec.set(citation_count=len(citations))
+        return text, user_prompt
 
-        if invalid_indices:
-            text = self._flag_unverified_citations(text, invalid_indices)
+    def _apply_output_guard(
+        self,
+        text: str,
+        citations: list[Citation],
+        retrieved: list[RetrievedChunk],
+        invalid_indices: list[int],
+        guard_decision: GuardDecision | None,
+        question: str,
+        retrieval_query: str,
+        trace_id: str,
+        auth_context: AuthContext | None,
+    ) -> tuple[str, list[Citation], list[RetrievedChunk], bool]:
+        """Step 8: SECURITY (v2, opt-in) -- output-side validation (citation grounding
+        annotate-only, canary/extraction detection, PII egress which both block and
+        replace the answer with a safe fallback) plus the unconditional final audit
+        record. Only reached on a pass/restricted v2 decision -- a reject already
+        returned earlier, before the LLM was ever called."""
 
-        # 8) SECURITY (v2, opt-in): output-side validation -- citation grounding
-        # (annotate only), canary/extraction detection, PII egress (both block, replacing
-        # the answer with a safe fallback). Only reached on a pass/restricted v2 decision
-        # -- a reject already returned above before the LLM was ever called.
         abstained = False
         if self._guard is not None and guard_decision is not None:
             with instrumented_step("output_guard") as rec:
@@ -950,29 +1123,7 @@ class RAGEngine:
                 accessed_chunks=[c.chunk.id for c in retrieved],
             )
 
-        REQUEST_COUNT.add(1, {"status": "ok"})
-        return Answer(
-            text=text,
-            citations=citations,
-            retrieved=retrieved,
-            redactions=redaction_labels,
-            trace_id=trace_id,
-            abstained=abstained,
-            # Populated only on this, the one exit point that reaches "the end" of
-            # _answer() -- the earlier early-return Answers (empty question, legacy-guard
-            # block, empty KB, no chunks, low confidence, guard v2 reject) stay None,
-            # mirroring the audit records' own "one exit point" scope boundary.
-            llm_version=self._llm_version,
-            embedding_version=self._embedding_version,
-            system_prompt_version=self._system_prompt_version,
-            # For the replay snapshot -- same "one exit point" scope as the three
-            # fields above.
-            retrieval_query=retrieval_query,
-            user_prompt=user_prompt,
-            # Set above (Step 4.5), before generation even runs -- None whenever
-            # detection is disabled, found nothing, or degraded silently on failure.
-            contradiction_warning=contradiction_warning,
-        )
+        return text, citations, retrieved, abstained
 
     @staticmethod
     def _extract_citations(
