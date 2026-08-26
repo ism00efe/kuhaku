@@ -25,9 +25,11 @@ from typing import Any
 
 from .core.auth import AuthContext
 from .core.config import Settings, get_settings
+from .core.exceptions import SecurityComponentError
 from .core.llm import build_llm_provider
 from .core.llm.token_tracking import TokenTrackingLLM
 from .core.models import ExecutionResult, Message, ToolCall
+from .core.policy import enforce_guard_policy, validate_audit_log_path
 from .core.sanitization import Redaction
 from .tools.rag import (
     ACCESS_TAG_INTERNAL,
@@ -201,14 +203,49 @@ class RAG:
                 :class:`~kuhaku.core.llm.token_tracking.TokenTrackingLLM`, which
                 records per-call token usage (Prometheus metrics + a log line). ``True``
                 by default; pass ``False`` to skip it.
+            **kwargs: any field name from :class:`Settings` or
+                :class:`~kuhaku.tools.rag.config.RAGSettings` that has no dedicated
+                parameter above (e.g. ``guard_enabled``, ``retry_llm_max_attempts``,
+                ``chunk_size``) is accepted here and applied as an override on ``settings``/
+                ``rag_settings`` respectively -- equivalent to setting it on a
+                :class:`Settings`/:class:`RAGSettings` instance yourself, just without
+                needing to build one. A name matching neither still raises ``TypeError``,
+                so a typo is caught exactly as before this existed. This means a new
+                field added to either settings class becomes usable here immediately,
+                with no change to this constructor.
         """
 
+        # Anything left in kwargs after the named convenience parameters above have
+        # already claimed their names is either a typo, or the name of a field that
+        # lives on Settings/RAGSettings but has no dedicated convenience parameter here
+        # (`guard_enabled` is the running example -- see AGENTS.md's known gaps). Rather
+        # than reject the latter, route it generically: any name found on
+        # Settings.model_fields becomes a Settings override, any name found on
+        # RAGSettings' dataclass fields becomes a RAGSettings override (Settings wins
+        # the three names both classes share -- retry_enabled, vertex_project,
+        # vertex_location -- since RAGSettings.from_settings() already derives its own
+        # copy from Settings, so overriding Settings alone is enough to reach both).
+        # Only a name matching neither is still a hard TypeError, so a genuine typo
+        # (`RAG(guard_enalbed=True)`) is caught exactly as before -- this widens what a
+        # valid kwarg name can be, it does not loosen the "unknown names fail loudly"
+        # guarantee. A name already claimed by one of the explicit parameters above
+        # (`retrieval`, `audit_enabled`, ...) can never reach here at all: Python binds
+        # it to that parameter first, so there is no dual-path way to set the same knob.
+        settings_field_names = set(Settings.model_fields) - {"rag"}
+        rag_settings_field_names = {f.name for f in dataclasses.fields(RAGSettings)}
+        extra_settings_kwargs: dict[str, object] = {}
+        extra_rag_kwargs: dict[str, object] = {}
+        for key in list(kwargs):
+            if key in settings_field_names:
+                extra_settings_kwargs[key] = kwargs.pop(key)
+            elif key in rag_settings_field_names:
+                extra_rag_kwargs[key] = kwargs.pop(key)
         if kwargs:
             unexpected = next(iter(kwargs))
             raise TypeError(f"RAG.__init__() got an unexpected keyword argument {unexpected!r}")
 
         base = settings or get_settings()
-        settings_overrides: dict[str, object] = {}
+        settings_overrides: dict[str, object] = dict(extra_settings_kwargs)
         if vertex_project is not None:
             settings_overrides["vertex_project"] = vertex_project
         if vertex_location is not None:
@@ -228,7 +265,7 @@ class RAG:
         base_rag = rag_settings if rag_settings is not None else RAGSettings.from_settings(
             self._settings
         )
-        rag_overrides: dict[str, object] = {}
+        rag_overrides: dict[str, object] = dict(extra_rag_kwargs)
         if chunking is not None:
             rag_overrides["chunking_strategy"] = chunking
         if embedding is not None:
@@ -253,6 +290,29 @@ class RAG:
             raise ValueError(
                 f"retrieval must be one of {_VALID_RETRIEVAL_MODES}; got {effective_retrieval!r}"
             )
+
+        # Fail fast, at construction, before building anything (the embedder may
+        # download a model) rather than lazily discovering these at the first ask()/
+        # ingest() call. Two different severities, matching kuhaku.core.policy's
+        # three-tier design: `guard_enabled=True` is something the caller explicitly
+        # opted into through this very constructor's Settings, and RAG() does not build
+        # a GuardPipeline for it -- that broken promise must not pass silently, so it
+        # raises. The audit log is on (`audit_enabled=True`) by default for everyone,
+        # opted into by nobody explicitly -- unwritable, it is reported (with the
+        # reason) as a warning and construction continues, same as every other
+        # performance/helper component's fallback policy.
+        try:
+            enforce_guard_policy(self._settings, {"guard": None})
+        except SecurityComponentError as exc:
+            raise SecurityComponentError(
+                f"{exc} RAG() does not build a GuardPipeline itself yet -- construct "
+                "one and call rag.engine.update_guard(guard), or set "
+                "guard_enabled=False to opt out."
+            ) from exc
+        try:
+            validate_audit_log_path(self._settings)
+        except SecurityComponentError as exc:
+            logger.warning(str(exc))
 
         s = self._settings
         rs = self._rag_settings
