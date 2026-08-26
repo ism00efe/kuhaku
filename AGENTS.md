@@ -102,7 +102,10 @@ change, and do not document them as working:
   retrieval. Working access control is the `access_tags` intersection in
   `tools/rag/retriever.py`.
 - The second-generation guard and the entire output guard are not reachable through the
-  `RAG` facade; the engine only invokes them when a guard pipeline is supplied.
+  `RAG` facade; the engine only invokes them when a guard pipeline is supplied (via
+  `RAGEngine(guard=...)` or `rag.engine.update_guard(...)`). `RAG(settings=Settings(
+  guard_enabled=True))` does not build one for you, and now raises `SecurityComponentError`
+  at construction rather than silently ignoring the setting (see `core.policy.enforce_guard_policy`).
 - `core/policy.py` is tested but has no call sites.
 - Query rewriting and contradiction detection are constructible but not wired to the
   facade.

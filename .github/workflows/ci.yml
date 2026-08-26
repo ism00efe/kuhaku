@@ -22,6 +22,12 @@ jobs:
 
   docs:
     runs-on: ubuntu-latest
+    # gh-deploy pushes the built site to the gh-pages branch with the checkout token --
+    # needs contents:write. The build/link-check step below always runs (PRs included);
+    # only the deploy step is gated to a push on main, so a PR still fails loud on a
+    # broken internal link without ever publishing anything.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +35,11 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[docs]"
       - run: mkdocs build --strict
+      - if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdocs gh-deploy --force
 
 # Deliberately not run here yet: `ruff check .` and `mypy src`.
 #

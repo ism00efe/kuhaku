@@ -5,7 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] — unreleased
+## [Unreleased]
+
+### Added
+
+- `SECURITY.md`: vulnerability reporting policy, so GitHub's Security tab surfaces one.
+- CI/CD/PyPI/license badges in `README.md`.
+- CI's `docs` job now deploys the built site to GitHub Pages (`mkdocs gh-deploy`) on
+  every push to `main`; every job (including PRs) still runs `mkdocs build --strict`
+  first, so a broken internal link still fails the build without publishing anything.
+- `RAG(...)` now accepts any field name from `Settings` or `RAGSettings` that has no
+  dedicated named parameter (e.g. `RAG(guard_enabled=True)`, `RAG(chunk_size=999)`,
+  `RAG(llm_timeout_seconds=30)`) and applies it as an override, the same as building a
+  `Settings`/`RAGSettings` instance yourself and passing it as `settings=`/
+  `rag_settings=`. A name matching neither still raises `TypeError`, so a typo is
+  caught exactly as before. This means a new field added to either settings class is
+  usable through `RAG()` immediately, with no change to `RAG.__init__` itself.
+
+### Changed
+
+- `RAG()` now validates two things at construction instead of discovering them lazily
+  at the first `ask()`/`ingest()`: `guard_enabled=True` with no `GuardPipeline` wired in
+  (`RAG()` does not build one itself) now raises `SecurityComponentError` immediately,
+  since the facade cannot silently honor a setting the caller explicitly turned on; an
+  unwritable audit log path now logs a warning at construction (with the reason)
+  instead of only a per-request warning once the first record fails to write.
+  `kuhaku.core.policy.enforce_security_policy` is unchanged; the guard check is now
+  also available on its own as `enforce_guard_policy` for exactly this split.
+
+### Fixed
+
+- Add PEP 561 `py.typed` marker in `kuhaku` and declare it in `[tool.setuptools.package-data]`.
+- Declare `prometheus-client>=0.20` as a direct runtime dependency in `pyproject.toml`.
+- Fix `core/auth/policy.py`'s module docstring, which claimed `RAGEngine` has an
+  `authorization_policy` constructor parameter; it never did.
+- Remove leftover comments in four modules pointing at `service.build_service()`, a
+  composition-root function that does not exist in this package.
+- Fix CI: `tests/llm/test_vertex_provider.py` and `tests/rag/test_vertex_embeddings.py`
+  import `google.genai` unconditionally, but CI's `pip install -e ".[dev]"` never
+  installed the optional `vertex` extra -- every push to `main` has been failing on 18
+  failed / 19 errored tests since the CI workflow was added. Both files now
+  `pytest.importorskip("google.genai")`, matching how the rest of the suite treats
+  optional dependencies (e.g. the cross-encoder re-ranker).
+
+## [0.1.0] — 2026-08-25
 
 First public release. Alpha: the API may change before 1.0.
 
