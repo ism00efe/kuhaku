@@ -463,6 +463,7 @@ def test_reranker_retry_settings_reach_crossencoderreranker_construction(monkeyp
 
     assert _FakeCrossEncoderReranker.kwargs == [
         {
+            "device": "auto",
             "retry_enabled": False,
             "retry_max_attempts": 9,
             "retry_backoff_base_seconds": 1.5,

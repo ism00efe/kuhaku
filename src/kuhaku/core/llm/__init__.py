@@ -14,10 +14,72 @@ from .base import LLMError, LLMProvider
 logger = logging.getLogger(__name__)
 
 
+def _ollama_reachable(base_url: str, *, timeout: float = 1.5) -> bool:
+    """Best-effort local Ollama reachability probe, used only to pick a default
+    provider -- never called when the user explicitly asked for ``ollama``, so an
+    explicit choice always gets the real, informative error from OllamaProvider itself
+    on first use."""
+
+    if not base_url or not base_url.strip():
+        return False
+    try:
+        import requests
+
+        resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=timeout)
+        return resp.ok
+    except requests.RequestException:
+        return False
+
+
+def _resolve_default_provider(settings: Settings) -> str:
+    """No ``LLM_PROVIDER`` was set by the user: probe the local Ollama default and,
+    only if it is unreachable, fall back to the first hosted provider that has
+    credentials configured -- logging the switch either way."""
+
+    if _ollama_reachable(settings.ollama_base_url):
+        return "ollama"
+
+    for name, credential in (
+        ("anthropic", settings.anthropic_api_key),
+        ("openai", settings.openai_api_key),
+        ("vertex", settings.vertex_project),
+    ):
+        if credential:
+            logger.warning(
+                "Local Ollama is not reachable at '%s'; no LLM_PROVIDER was set, so "
+                "falling back to '%s' (credentials found).",
+                settings.ollama_base_url,
+                name,
+            )
+            return name
+
+    raise LLMError(
+        "No LLM backend is available: local Ollama is not reachable at "
+        f"'{settings.ollama_base_url}', and no hosted provider credentials were found.\n"
+        "Pick one of the following:\n"
+        "1. To use a hosted provider, set an API key, e.g.:\n"
+        "   KUHAKU_LLM_PROVIDER=anthropic and ANTHROPIC_API_KEY=sk-...\n"
+        "2. To use a local model, install Ollama and pull a model, e.g.:\n"
+        "   ollama serve\n"
+        f"   ollama pull {settings.ollama_model}"
+    )
+
+
 def build_llm_provider(settings: Settings) -> LLMProvider:
-    """Instantiate the LLM provider selected by ``settings.llm_provider``."""
+    """Instantiate the LLM provider selected by ``settings.llm_provider``.
+
+    If the user never set ``LLM_PROVIDER`` explicitly (it's still the ``"ollama"``
+    default), this probes the local Ollama default first and transparently falls back
+    to a hosted provider with configured credentials when it's unreachable -- see
+    :func:`_resolve_default_provider`. An explicit ``LLM_PROVIDER=ollama`` is always
+    honored as-is; if Ollama is actually unreachable, the existing clear error from
+    :class:`~kuhaku.core.llm.ollama_provider.OllamaProvider` surfaces on first use,
+    with no silent fallback.
+    """
 
     provider = settings.llm_provider.strip().lower()
+    if provider == "ollama" and "llm_provider" not in settings.model_fields_set:
+        provider = _resolve_default_provider(settings)
 
     # Retry/timeout/circuit-breaker kwargs are identical across all four providers
     # (extended to circuit breakers): they are structurally symmetric dependencies (an

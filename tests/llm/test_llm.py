@@ -65,6 +65,50 @@ def test_provider_selection_is_case_insensitive():
     assert isinstance(build_llm_provider(_settings(llm_provider="OLLAMA")), OllamaProvider)
 
 
+# --- default-provider auto-fallback (LLM_PROVIDER left unset) ---------------
+def test_default_provider_uses_ollama_when_reachable(monkeypatch):
+    monkeypatch.setattr(
+        "kuhaku.core.llm._ollama_reachable", lambda base_url, **kwargs: True
+    )
+    settings = Settings(_env_file=None, anthropic_api_key=None, openai_api_key=None)
+    assert "llm_provider" not in settings.model_fields_set
+    provider = build_llm_provider(settings)
+    assert isinstance(provider, OllamaProvider)
+
+
+def test_default_provider_falls_back_to_hosted_when_ollama_unreachable(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "kuhaku.core.llm._ollama_reachable", lambda base_url, **kwargs: False
+    )
+    settings = Settings(_env_file=None, anthropic_api_key="sk-test", openai_api_key=None)
+    with caplog.at_level("WARNING"):
+        provider = build_llm_provider(settings)
+    assert isinstance(provider, AnthropicProvider)
+    assert "falling back to 'anthropic'" in caplog.text
+
+
+def test_default_provider_raises_clear_error_when_nothing_is_available(monkeypatch):
+    monkeypatch.setattr(
+        "kuhaku.core.llm._ollama_reachable", lambda base_url, **kwargs: False
+    )
+    settings = Settings(_env_file=None, anthropic_api_key=None, openai_api_key=None)
+    with pytest.raises(LLMError) as exc_info:
+        build_llm_provider(settings)
+    message = str(exc_info.value)
+    assert "KUHAKU_LLM_PROVIDER=anthropic" in message
+    assert "ollama pull" in message
+
+
+def test_explicit_ollama_choice_skips_the_reachability_probe(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("must not probe when LLM_PROVIDER is set explicitly")
+
+    monkeypatch.setattr("kuhaku.core.llm._ollama_reachable", _boom)
+    settings = Settings(_env_file=None, llm_provider="ollama", anthropic_api_key=None)
+    provider = build_llm_provider(settings)
+    assert isinstance(provider, OllamaProvider)
+
+
 # --- missing credentials ----------------------------------------------------
 def test_anthropic_requires_key():
     with pytest.raises(LLMError):

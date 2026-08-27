@@ -60,8 +60,13 @@ class SentenceTransformerEmbeddings:
         # Imported lazily so unit tests that don't need embeddings stay fast.
         from sentence_transformers import SentenceTransformer
 
-        logger.info("Loading embedding model '%s'...", model_name)
-        self._model = SentenceTransformer(model_name, device=device)
+        from kuhaku.core.device import resolve_device
+
+        resolved_device = resolve_device(device or "auto", component="embedding model")
+        logger.info(
+            "Loading embedding model '%s' on device '%s'...", model_name, resolved_device
+        )
+        self._model = SentenceTransformer(model_name, device=resolved_device)
         self._model_name = model_name
         self._use_e5_prefixes = "e5" in model_name.lower()
         self._retry_enabled = retry_enabled

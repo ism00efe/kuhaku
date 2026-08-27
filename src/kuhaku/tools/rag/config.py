@@ -54,7 +54,10 @@ class RAGSettings:
     # --- Embeddings ----------------------------------------------------------------
     embedding_provider: str = "sentence-transformer"  # sentence-transformer | vertex
     embedding_model: str = "intfloat/multilingual-e5-small"
-    embedding_device: str = "cpu"
+    # "auto" | "cpu" | "cuda" | "mps" -- "auto" probes hardware at load time (CUDA, then
+    # Apple Silicon MPS, else CPU) via kuhaku.core.device.resolve_device, so the same
+    # default runs unmodified across NVIDIA, Apple Silicon, and CPU-only machines.
+    embedding_device: str = "auto"
     embedding_model_version: str = "intfloat/multilingual-e5-small"
     vertex_embedding_model: str = "gemini-embedding-001"
     vertex_embedding_dimensions: int = 768
@@ -84,6 +87,8 @@ class RAGSettings:
     # environment without touching code.
     rerank_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-base"
+    # Same "auto" | "cpu" | "cuda" | "mps" vocabulary as embedding_device -- see there.
+    reranker_device: str = "auto"
     rerank_candidates: int = 20
 
     # --- Contradiction detection ------------------------------------------------------

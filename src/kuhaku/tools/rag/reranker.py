@@ -64,8 +64,13 @@ class CrossEncoderReranker:
         if self._model is None:
             from sentence_transformers import CrossEncoder
 
-            logger.info("Loading cross-encoder '%s'...", self._model_name)
-            self._model = CrossEncoder(self._model_name, device=self._device)
+            from kuhaku.core.device import resolve_device
+
+            resolved_device = resolve_device(self._device or "auto", component="cross-encoder")
+            logger.info(
+                "Loading cross-encoder '%s' on device '%s'...", self._model_name, resolved_device
+            )
+            self._model = CrossEncoder(self._model_name, device=resolved_device)
         return self._model
 
     def rerank(

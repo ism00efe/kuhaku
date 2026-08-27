@@ -388,6 +388,7 @@ class RAG:
             )
             reranker_instance = CrossEncoderReranker(
                 model_name,
+                device=rs.reranker_device,
                 retry_enabled=rs.retry_enabled,
                 retry_max_attempts=rs.retry_reranker_max_attempts,
                 retry_backoff_base_seconds=rs.retry_reranker_backoff_base_seconds,
