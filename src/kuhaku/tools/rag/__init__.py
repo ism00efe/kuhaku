@@ -18,7 +18,12 @@ from .contradiction_detector import (
     ContradictionPair,
     ContradictionResult,
 )
-from .embeddings import EmbeddingProvider, SentenceTransformerEmbeddings, build_embedding_provider
+from .embeddings import (
+    EmbeddingProvider,
+    NullEmbeddings,
+    SentenceTransformerEmbeddings,
+    build_embedding_provider,
+)
 from .engine import RAGEngine
 from .evaluation_target import RAGTargetAdapter
 from .ingestion import (
@@ -65,6 +70,7 @@ __all__ = [
     "Answer",
     "EmbeddingProvider",
     "SentenceTransformerEmbeddings",
+    "NullEmbeddings",
     "build_embedding_provider",
     "RAGEngine",
     "RAGTargetAdapter",

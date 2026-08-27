@@ -62,7 +62,7 @@ Set with `KUHAKU_` + the field name in upper case, e.g. `KUHAKU_LLM_PROVIDER=ope
 
 | Setting | Default | Notes |
 |---|---|---|
-| `llm_provider` | `ollama` | `ollama`, `openai`, `anthropic`, `vertex` |
+| `llm_provider` | `auto` | `auto`, `ollama`, `openai`, `anthropic`, `vertex` — see "Auto" below |
 | `llm_temperature` | `0.1` | ignored by the `vertex` provider |
 | `llm_max_tokens` | `1024` | ignored by the `vertex` provider |
 | `llm_timeout_seconds` | `120` | per request, all providers |
@@ -98,7 +98,7 @@ Set with `KUHAKU_RAG__` + the field name, e.g. `KUHAKU_RAG__TOP_K=8`.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `retrieval` | `hybrid` | `dense`, `sparse`, `hybrid` |
+| `retrieval` | `auto` | `auto`, `dense`, `sparse`, `hybrid` — see "Auto" below |
 | `top_k` | `4` | chunks passed to the model |
 | `rag_confidence_threshold` | `0.15` | below this, kuhaku abstains |
 | `chunking_strategy` | `paragraph` | or `structural` |
@@ -110,7 +110,7 @@ Set with `KUHAKU_RAG__` + the field name, e.g. `KUHAKU_RAG__TOP_K=8`.
 | `chroma_collection` | `default_kb` | |
 | `embedding_provider` | `sentence-transformer` | or `vertex` |
 | `embedding_model` | `intfloat/multilingual-e5-small` | |
-| `embedding_device` | `cpu` | |
+| `embedding_device` | `auto` | `auto`, `cpu`, `cuda`, `mps` — see "Auto" below |
 | `rerank_enabled` | `False` | the model is ~1.1 GB |
 | `reranker_model` | `BAAI/bge-reranker-base` | |
 | `rerank_candidates` | `20` | pool size before re-ranking |
@@ -137,6 +137,34 @@ effect: `KUHAKU_RAG__VERTEX_PROJECT`, `KUHAKU_RAG__VERTEX_LOCATION` and
 `KUHAKU_RAG__RETRY_ENABLED`. Use the unprefixed core settings instead
 (`KUHAKU_VERTEX_PROJECT`, `KUHAKU_VERTEX_LOCATION`, `KUHAKU_RETRY_ENABLED`), which feed
 both layers.
+
+## Auto
+
+Three settings ship as `auto` and are resolved once, at construction, from what is
+actually installed or reachable — kuhaku's "start fast, override when you need to"
+default:
+
+| Setting | Baseline | `auto` resolves to |
+|---|---|---|
+| `llm_provider` | `ollama` | a reachable Ollama server, else the first provider whose credentials are set (`openai` → `anthropic` → `vertex`), else stays `ollama` |
+| `embedding_device` | `cpu` | `cuda` (NVIDIA) or `mps` (Apple Silicon) when torch reports one, else `cpu` |
+| `retrieval` | `hybrid` | `hybrid` when an embedding backend can be built, else `sparse` (BM25 only — no embeddings, no torch, no model download) |
+
+Rules:
+
+- **Your explicit value is absolute.** Setting `KUHAKU_RAG__RETRIEVAL=hybrid` (or passing
+  `RAG(retrieval="hybrid")`) pins it — `auto` never overrides a value you chose, and an
+  explicit `dense`/`hybrid` that then can't build its embedder fails loudly instead of
+  degrading.
+- **A downgrade is announced** on stderr and as a `FallbackWarning`, once per process:
+  `[kuhaku] retrieval: using 'sparse' (baseline 'hybrid'; …)`.
+- **`auto` never triggers a download.** It only ever moves toward fewer external
+  dependencies.
+- **`KUHAKU_AUTO=false`** freezes all three at their baseline with no probing, for a
+  fully deterministic startup.
+
+Detection is not cached to disk: it re-runs each process, so installing a GPU or starting
+Ollama takes effect on the next run with nothing to invalidate.
 
 ## Storage kuhaku writes to disk
 

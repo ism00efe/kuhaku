@@ -8,16 +8,49 @@ from __future__ import annotations
 
 import logging
 
+from ..capabilities import AUTO, auto_enabled, endpoint_reachable, resolve
 from ..config import Settings
 from .base import LLMError, LLMProvider
 
 logger = logging.getLogger(__name__)
 
 
-def build_llm_provider(settings: Settings) -> LLMProvider:
-    """Instantiate the LLM provider selected by ``settings.llm_provider``."""
+def _resolve_provider(settings: Settings) -> str:
+    """Map ``settings.llm_provider`` -- possibly ``"auto"`` -- to a concrete provider name.
 
-    provider = settings.llm_provider.strip().lower()
+    ``"auto"``: a reachable Ollama server wins (the baseline), else the first provider
+    whose credentials are present. When nothing matches it stays ``"ollama"`` so the
+    existing "start Ollama or set an API key" guidance still surfaces at first call.
+    """
+
+    configured = settings.llm_provider.strip().lower()
+    if configured != AUTO:
+        return configured
+    if not auto_enabled():
+        return "ollama"
+    return resolve(
+        "llm_provider",
+        AUTO,
+        baseline="ollama",
+        candidates=[
+            ("ollama", lambda: endpoint_reachable(settings.ollama_base_url)),
+            ("openai", lambda: bool(settings.openai_api_key)),
+            ("anthropic", lambda: bool(settings.anthropic_api_key)),
+            ("vertex", lambda: bool(settings.vertex_project)),
+        ],
+        reason_for=lambda v: (
+            "Ollama server reachable"
+            if v == "ollama"
+            else f"{v} credentials present, no local Ollama reachable"
+        ),
+    )
+
+
+def build_llm_provider(settings: Settings) -> LLMProvider:
+    """Instantiate the LLM provider selected by ``settings.llm_provider`` (``"auto"``
+    resolved via :mod:`kuhaku.core.capabilities`)."""
+
+    provider = _resolve_provider(settings)
 
     # Retry/timeout/circuit-breaker kwargs are identical across all four providers
     # (extended to circuit breakers): they are structurally symmetric dependencies (an

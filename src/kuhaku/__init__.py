@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .core.auth import AuthContext
+from .core.capabilities import AUTO, auto_enabled
 from .core.config import Settings, get_settings
 from .core.exceptions import SecurityComponentError
 from .core.llm import build_llm_provider
@@ -39,7 +40,9 @@ from .tools.rag import (
     ChromaVectorStore,
     CrossEncoderReranker,
     DenseRetriever,
+    EmbeddingProvider,
     HybridRetriever,
+    NullEmbeddings,
     QueryAnswerCache,
     RAGEngine,
     RAGSettings,
@@ -51,6 +54,7 @@ from .tools.rag import (
     build_embedding_provider,
     extract_text,
 )
+from .tools.rag.capabilities import announce_retrieval_downgrade
 from .tools.rag.prompts import load_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -282,13 +286,18 @@ class RAG:
 
         # One place decides the effective retrieval strategy: an explicit `retrieval`
         # argument always wins; `None` defers to `RAGSettings.retrieval` (default
-        # "hybrid"). Whichever value wins is validated the same way regardless of
-        # source, so a bad KUHAKU_RAG__RETRIEVAL value fails exactly like a bad
-        # explicit argument -- no silent fallback to a strategy nobody asked for.
-        effective_retrieval = retrieval if retrieval is not None else self._rag_settings.retrieval
-        if effective_retrieval not in _VALID_RETRIEVAL_MODES:
+        # "auto"). "auto" is resolved further down, once we know whether an embedding
+        # provider can actually be built (see `_resolve_retrieval_and_embedder`); every
+        # concrete value is validated here, the same way regardless of source, so a bad
+        # KUHAKU_RAG__RETRIEVAL value fails exactly like a bad explicit argument -- no
+        # silent fallback to a strategy nobody asked for.
+        requested_retrieval = (
+            retrieval if retrieval is not None else self._rag_settings.retrieval
+        )
+        if requested_retrieval != AUTO and requested_retrieval not in _VALID_RETRIEVAL_MODES:
             raise ValueError(
-                f"retrieval must be one of {_VALID_RETRIEVAL_MODES}; got {effective_retrieval!r}"
+                f"retrieval must be one of {_VALID_RETRIEVAL_MODES} or {AUTO!r}; "
+                f"got {requested_retrieval!r}"
             )
 
         # Fail fast, at construction, before building anything (the embedder may
@@ -317,7 +326,9 @@ class RAG:
         s = self._settings
         rs = self._rag_settings
         self._chunker = build_chunker(rs)
-        self._embedder = build_embedding_provider(rs)
+        effective_retrieval, self._embedder = self._resolve_retrieval_and_embedder(
+            requested_retrieval, rs
+        )
         self._store = ChromaVectorStore(
             rs.chroma_persist_dir,
             rs.chroma_collection,
@@ -361,6 +372,37 @@ class RAG:
             system_prompt=resolved_system_prompt,
             rag_settings=rs,
         )
+
+    def _resolve_retrieval_and_embedder(
+        self, requested: str, rs: RAGSettings
+    ) -> tuple[str, EmbeddingProvider]:
+        """Decide the effective retrieval strategy and build the matching embedder.
+
+        - ``"sparse"`` (pinned): no embeddings are needed for ranking, so use
+          :class:`NullEmbeddings` -- a sparse-only deployment never imports
+          ``torch``/``sentence-transformers`` and never downloads a model.
+        - ``"dense"`` / ``"hybrid"`` (pinned): the embedder is mandatory. A failure to
+          build it is the caller's misconfiguration and propagates -- auto never
+          silently degrades a strategy the caller asked for by name.
+        - ``"auto"`` (the default): try to build the embedder. On success, ``"hybrid"``.
+          On failure, announce the downgrade on the terminal and fall back to
+          ``"sparse"`` + :class:`NullEmbeddings`. ``KUHAKU_AUTO=false`` skips the probe
+          and treats ``"auto"`` as ``"hybrid"``.
+        """
+
+        if requested == "sparse":
+            return "sparse", NullEmbeddings()
+        if requested in ("dense", "hybrid"):
+            return requested, build_embedding_provider(rs)
+        # requested == AUTO
+        if not auto_enabled():
+            return "hybrid", build_embedding_provider(rs)
+        try:
+            embedder = build_embedding_provider(rs)
+        except Exception as exc:  # noqa: BLE001 -- any import/model-load failure means "no dense backend"
+            announce_retrieval_downgrade(f"embedding provider could not be built ({exc})")
+            return "sparse", NullEmbeddings()
+        return "hybrid", embedder
 
     def _build_retriever(self, retrieval: str, reranker: bool | str | None) -> Retriever:
         rs = self._rag_settings

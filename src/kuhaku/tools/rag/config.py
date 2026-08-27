@@ -54,7 +54,10 @@ class RAGSettings:
     # --- Embeddings ----------------------------------------------------------------
     embedding_provider: str = "sentence-transformer"  # sentence-transformer | vertex
     embedding_model: str = "intfloat/multilingual-e5-small"
-    embedding_device: str = "cpu"
+    # "auto" (the default) picks cuda / mps / cpu from what torch reports at build time
+    # (kuhaku.tools.rag.capabilities.resolve_embedding_device). cpu is the baseline; a
+    # concrete value is absolute; KUHAKU_AUTO=false pins it to cpu.
+    embedding_device: str = "auto"  # auto | cpu | cuda | mps
     embedding_model_version: str = "intfloat/multilingual-e5-small"
     vertex_embedding_model: str = "gemini-embedding-001"
     vertex_embedding_dimensions: int = 768
@@ -68,11 +71,15 @@ class RAGSettings:
     # --- Retrieval strategy + hybrid fusion (dense + sparse BM25, fused with RRF) ----
     # "dense" | "sparse" | "hybrid" -- the same vocabulary as kuhaku.RAG's `retrieval`
     # kwarg / `_VALID_RETRIEVAL_MODES` (validated there, at RAG() construction, not
-    # here -- see RAG.__init__). Defaults to "hybrid": per the project's "a default may
-    # cost CPU/memory, never a download" rule, hybrid needs neither (BM25 is built from
-    # the vector store's own chunks) and dense alone is weak on exact-match/rare-term
-    # queries that BM25 covers.
-    retrieval: str = "hybrid"
+    # here -- see RAG.__init__). "auto" (the default) resolves to "hybrid" when a real
+    # embedding provider can be built at construction time, and to "sparse" (BM25 only --
+    # no embeddings, no torch, no model download) when it cannot, announcing the
+    # downgrade on the terminal. "hybrid" is the baseline: per the project's "a default
+    # may cost CPU/memory, never a download" rule, hybrid needs neither (BM25 is built
+    # from the vector store's own chunks) and dense alone is weak on exact-match/
+    # rare-term queries that BM25 covers. An explicit "dense"/"hybrid"/"sparse" is
+    # absolute; KUHAKU_AUTO=false pins "auto" to "hybrid".
+    retrieval: str = "auto"  # auto | dense | sparse | hybrid
     rrf_k: int = 60
     bm25_k1: float = 1.5
     bm25_b: float = 0.75

@@ -29,7 +29,7 @@ Everything else is negotiable. This is not.
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 1023 tests, entirely offline
+pytest                      # ~1100 tests, entirely offline
 ruff check .
 mypy src
 ```
@@ -88,7 +88,11 @@ must be absolute GitHub URLs, not relative paths.
 - The default values in `core/config.py` and `tools/rag/config.py`. They encode a
   deliberate policy: **a default may cost CPU and memory, never a download.** Hybrid
   retrieval is on because it costs neither; the cross-encoder re-ranker is off because it
-  is roughly a gigabyte.
+  is roughly a gigabyte. `retrieval`, `llm_provider` and `embedding_device` default to
+  `"auto"`, resolved at build time by `core/capabilities.py` +
+  `tools/rag/capabilities.py` — auto only ever downgrades toward fewer dependencies,
+  never triggers a download, and never overrides an explicit value. Adding a new
+  external-dependency setting means giving it an `"auto"` chain the same way.
 - The layered system prompt in `tools/rag/prompts/`. The safety core — instruction
   precedence, data marking, the canary rule, grounding, mandatory citations,
   contradiction handling — is framework-owned and not up for trimming.

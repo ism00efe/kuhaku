@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Environment-aware `"auto"` settings. `retrieval`, `llm_provider` and
+  `embedding_device` now ship as `"auto"` and are resolved once, at construction, from
+  what is installed or reachable: `llm_provider` prefers a reachable Ollama then the
+  first provider whose credentials are set; `embedding_device` picks CUDA/MPS/CPU from
+  torch; `retrieval` stays `hybrid` when an embedding backend can be built and downgrades
+  to `sparse` (BM25 only — no embeddings, no torch, no model download) when it cannot,
+  announcing the downgrade on stderr and as a `FallbackWarning`. An explicit value is
+  always absolute, `"auto"` never triggers a download, and `KUHAKU_AUTO=false` disables
+  the probing entirely. New modules: `kuhaku.core.capabilities` (tool-agnostic probes +
+  resolver) and `kuhaku.tools.rag.capabilities` (the RAG chains); `NullEmbeddings` backs
+  the sparse-only path.
 - `SECURITY.md`: vulnerability reporting policy, so GitHub's Security tab surfaces one.
 - CI/CD/PyPI/license badges in `README.md`.
 - CI's `docs` job now deploys the built site to GitHub Pages (`mkdocs gh-deploy`) on
