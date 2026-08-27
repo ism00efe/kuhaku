@@ -38,14 +38,15 @@ dependencies = [
     # Retry-with-backoff for transient external-dependency failures (D40).
     "tenacity>=8.2",
     # OpenTelemetry (D57): tracing + metrics, the single telemetry standard --
-    # core/observability/telemetry.py. `prometheus-client` is no longer a direct
-    # dependency; it arrives transitively via opentelemetry-exporter-prometheus, which
-    # registers its own collector into prometheus_client's default REGISTRY so the
+    # core/observability/telemetry.py. telemetry.py imports prometheus_client directly
+    # (one module, deliberately contained there); opentelemetry-exporter-prometheus
+    # additionally registers its collector into the same default REGISTRY so the
     # existing Prometheus-exposition consumer keeps working unmodified.
     "opentelemetry-api>=1.27",
     "opentelemetry-sdk>=1.27",
     "opentelemetry-exporter-prometheus>=0.48b0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+    "prometheus-client>=0.20",
     # JWT authentication (core/auth/providers.py)
     "PyJWT>=2.8",
 ]
@@ -77,6 +78,7 @@ where = ["src"]
 # kuhaku/tools/rag/prompts.py's own file location, not the CWD, so the wheel must carry
 # them for a standalone `pip install` to work (see tools/rag/prompts.py, tools/rag/query_rewriter.py).
 [tool.setuptools.package-data]
+"kuhaku" = ["py.typed"]
 "kuhaku.tools.rag" = ["prompts/*.txt"]
 
 # pythonpath keeps `pytest` runnable straight from a clone, without an editable install.

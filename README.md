@@ -1,5 +1,10 @@
 # kuhaku
 
+[![CI](https://github.com/ism00efe/kuhaku/actions/workflows/ci.yml/badge.svg)](https://github.com/ism00efe/kuhaku/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/kuhaku.svg)](https://pypi.org/project/kuhaku/)
+[![Python](https://img.shields.io/pypi/pyversions/kuhaku.svg)](https://pypi.org/project/kuhaku/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 An AI orchestration framework for Python. `kuhaku.core` is tool-agnostic runtime
 infrastructure — LLM abstraction, configuration, identity, security, observability,
 retry. Tools are built on top of it, and retrieval-augmented generation is the first

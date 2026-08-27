@@ -79,8 +79,7 @@ Include:
 
 ## Reporting a security issue
 
-Please do not open a public issue for a vulnerability. Use GitHub's private security
-advisory form on the repository instead.
+See [SECURITY.md](SECURITY.md).
 
 ## License
 

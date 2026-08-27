@@ -7,6 +7,7 @@ import kuhaku
 from kuhaku import RAG
 from kuhaku.core.auth import AuthContext
 from kuhaku.core.config import Settings
+from kuhaku.core.exceptions import SecurityComponentError
 from kuhaku.core.security.guard import CANARY_TOKEN
 from kuhaku.tools.rag.config import RAGSettings
 from kuhaku.tools.rag.ingestion import UnsupportedFileType
@@ -468,3 +469,84 @@ def test_reranker_retry_settings_reach_crossencoderreranker_construction(monkeyp
             "retry_backoff_max_seconds": 8.0,
         }
     ]
+
+
+def test_guard_enabled_but_unwired_raises_at_construction(monkeypatch, tmp_path):
+    """RAG() builds no GuardPipeline itself -- guard_enabled=True is something the
+    caller explicitly opted into via Settings, so silently ignoring it would be exactly
+    the "setting without a reader" mistake AGENTS.md warns against. This must fail at
+    construction, not disappear silently."""
+
+    _patch_rag_deps(monkeypatch, FakeVectorStore(), FakeEmbeddings(), FakeLLM())
+    settings = Settings(
+        _env_file=None,
+        guard_enabled=True,
+        audit_enabled=False,
+    )
+
+    with pytest.raises(SecurityComponentError, match="update_guard"):
+        RAG(settings=settings, cache=False)
+
+
+def test_guard_disabled_by_default_does_not_raise(monkeypatch):
+    _patch_rag_deps(monkeypatch, FakeVectorStore(), FakeEmbeddings(), FakeLLM())
+    settings = Settings(_env_file=None, audit_enabled=False)
+
+    RAG(settings=settings, cache=False)  # must not raise
+
+
+def test_unwritable_audit_log_path_warns_but_does_not_raise(monkeypatch, tmp_path, caplog):
+    """Unlike guard_enabled, audit logging is on by default for everyone -- nobody
+    opted into it explicitly through this construction call -- so a broken sink is
+    reported (with the reason) and construction still succeeds, same as any other
+    performance/helper component's fallback policy."""
+
+    _patch_rag_deps(monkeypatch, FakeVectorStore(), FakeEmbeddings(), FakeLLM())
+    unwritable_parent = tmp_path / "not_a_directory"
+    unwritable_parent.write_text("x", encoding="utf-8")  # a file, not a directory
+    settings = Settings(
+        _env_file=None,
+        audit_enabled=True,
+        audit_log_path=str(unwritable_parent / "audit.jsonl"),
+    )
+
+    with caplog.at_level("WARNING"):
+        RAG(settings=settings, cache=False)  # must not raise
+
+    assert "audit log" in caplog.text
+
+
+# --- generic kwargs -> Settings/RAGSettings forwarding --------------------------------
+
+
+def test_unknown_settings_field_is_forwarded_without_a_dedicated_kwarg(build_rag):
+    """A Settings field with no dedicated RAG() parameter (llm_timeout_seconds) is still
+    settable directly -- the generic kwargs -> Settings/RAGSettings forwarding closes
+    the gap without RAG.__init__ needing to grow a new named parameter for it."""
+
+    rag = build_rag(llm_timeout_seconds=7)
+    assert rag._settings.llm_timeout_seconds == 7
+
+
+def test_unknown_ragsettings_field_is_forwarded_without_a_dedicated_kwarg(build_rag):
+    rag = build_rag(chunk_size=999)
+    assert rag._rag_settings.chunk_size == 999
+
+
+def test_field_shared_by_both_settings_classes_is_forwarded_via_settings_and_reaches_ragsettings(
+    build_rag,
+):
+    """retry_enabled exists on both Settings and RAGSettings (the latter mirrors the
+    former via RAGSettings.from_settings()) -- forwarding it once, to Settings, is
+    enough to reach both, since RAGSettings is derived from the overridden Settings."""
+
+    rag = build_rag(retry_enabled=False)
+    assert rag._settings.retry_enabled is False
+    assert rag._rag_settings.retry_enabled is False
+
+
+def test_truly_unknown_kwarg_still_raises_type_error(monkeypatch):
+    _patch_rag_deps(monkeypatch, FakeVectorStore(), FakeEmbeddings(), FakeLLM())
+
+    with pytest.raises(TypeError, match="unexpected keyword argument 'not_a_real_setting'"):
+        RAG(not_a_real_setting=True)

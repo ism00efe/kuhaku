@@ -84,31 +84,47 @@ def validate_custom_component(
     )
 
 
+def enforce_guard_policy(settings: Settings, components: dict[str, object]) -> None:
+    """Raise ``SecurityComponentError`` if ``guard_enabled=True`` but no working
+    ``GuardPipeline`` was supplied. Skipped entirely when ``guard_enabled=False`` (the
+    default) -- the user opted out, or never opted in, knowingly.
+
+    Split out from :func:`enforce_security_policy` so a caller can enforce the guard
+    piece as fatal -- it can only be True because the caller set it, through this exact
+    ``Settings`` field, on purpose -- independently of that function's audit-log check,
+    which a caller may want to treat as non-fatal instead (see ``RAG.__init__``, which
+    does exactly this: guard misconfiguration raises, an unwritable audit log only
+    warns).
+    """
+
+    if not settings.guard_enabled:
+        return
+    guard = components.get("guard")
+    if guard is None:
+        raise SecurityComponentError(
+            "Security component 'GuardPipeline' is set to 'default' "
+            "(guard_enabled=True) but was not constructed."
+        )
+    try:
+        guard.validate()
+    except Exception as exc:
+        raise SecurityComponentError(
+            f"Security component 'GuardPipeline' is set to 'default' but failed to "
+            f"initialize: {exc}"
+        ) from exc
+
+
 def enforce_security_policy(settings: Settings, components: dict[str, object]) -> None:
     """Raise ``SecurityComponentError`` if an enabled security-critical component is
     missing or fails its self-check. A component whose ``*_enabled`` setting is False is
     skipped entirely -- the user opted out knowingly.
     """
 
-    if settings.guard_enabled:
-        guard = components.get("guard")
-        if guard is None:
-            raise SecurityComponentError(
-                "Security component 'GuardPipeline' is set to 'default' "
-                "(guard_enabled=True) but was not constructed."
-            )
-        try:
-            guard.validate()
-        except Exception as exc:
-            raise SecurityComponentError(
-                f"Security component 'GuardPipeline' is set to 'default' but failed to "
-                f"initialize: {exc}"
-            ) from exc
-
-    _validate_audit_log_path(settings)
+    enforce_guard_policy(settings, components)
+    validate_audit_log_path(settings)
 
 
-def _validate_audit_log_path(settings: Settings) -> None:
+def validate_audit_log_path(settings: Settings) -> None:
     """Audit logging is independent of ``guard_enabled`` -- when
     ``settings.audit_enabled`` (default ``True``), every request writes here regardless
     of the guard. There is no dedicated class to construct/validate, only a path every
@@ -138,8 +154,10 @@ def _validate_audit_log_path(settings: Settings) -> None:
 
 
 def validate_startup(settings: Settings, components: dict[str, object]) -> dict[str, object]:
-    """Single startup entry point wiring Features 1-3 together. Called once from
-    ``build_service()``, never per-request.
+    """Single startup entry point wiring Features 1-3 together, meant to be called once
+    from whichever composition root the caller uses to build a ``RAGEngine`` -- kuhaku
+    ships none itself, so nothing in this package calls this today; it exists for a
+    caller who wants the fail-loud startup guarantee described in the module docstring.
 
     Performance-component fallback (Feature 2) already happened during construction --
     see ``apply_fallback_policy`` usage in ``build_retriever`` -- and custom-component
