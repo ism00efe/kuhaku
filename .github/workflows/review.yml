@@ -6,7 +6,35 @@ on:
 permissions:
   contents: read
   pull-requests: write      # to write the comment
-  id-token: write           # for WIF
+
+# --- LLM configuration -------------------------------------------------------
+# The four-axis judge is model-independent: which provider and model it uses is
+# decided entirely by these env vars, never hard-coded in the script below.
+# Switch provider = change these values (and the secret). Add a provider =
+# one Adapter subclass + one _PROVIDERS entry in the inline script; nothing
+# else changes.
+#
+#   LLM_PROVIDER   groq | openrouter | cerebras | nvidia | mistral | openai | gemini
+#                  (all but `gemini` are OpenAI-compatible and share one adapter)
+#   LLM_MODEL      provider's model id
+#   LLM_API_KEY    the provider's key (from a repository secret)
+#   LLM_BASE_URL   optional override of the provider's default endpoint
+#   LLM_MAX_CONCURRENCY / LLM_AXIS_DELAY   pace the 4 calls under a free-tier rate limit
+#   REVIEW_DIFF_LIMIT / REVIEW_AUX_LIMIT   input sizes (chars) — shrink for small free-tier
+#                                          token/minute budgets, grow for big-context models
+#
+# Current: Groq free tier (https://github.com/raullenchai/free-llm-api-resources),
+# ~12k tokens/minute — hence sequential calls, a pause between them, and trimmed inputs.
+env:
+  LLM_PROVIDER: groq
+  LLM_MODEL: openai/gpt-oss-120b
+  LLM_API_KEY: ${{ secrets.GROQ_API_KEY }}
+  LLM_TEMPERATURE: "0"
+  LLM_MAX_TOKENS: "1500"
+  LLM_MAX_CONCURRENCY: "1"
+  LLM_AXIS_DELAY: "25"
+  REVIEW_DIFF_LIMIT: "16000"
+  REVIEW_AUX_LIMIT: "8000"
 
 jobs:
   review:
@@ -16,23 +44,17 @@ jobs:
         with:
           fetch-depth: 0    # full history needed for diff
 
-      - id: auth
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: projects/328234140484/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-ci@finops-agent-497422.iam.gserviceaccount.com
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - run: pip install google-genai
+      # Only the Google AI Studio adapter needs a third-party package; the
+      # OpenAI-compatible adapter (Groq and friends) uses the standard library.
+      - if: env.LLM_PROVIDER == 'gemini'
+        run: pip install google-genai
 
-      - name: Gemini four-axis review
+      - name: Four-axis review
         env:
-          GOOGLE_CLOUD_PROJECT: finops-agent-497422
-          GOOGLE_CLOUD_LOCATION: global
-          GOOGLE_GENAI_USE_VERTEXAI: "true"
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           BASE_REF: ${{ github.base_ref }}
@@ -42,15 +64,134 @@ jobs:
           import json
           import pathlib
           import subprocess
+          import time
+          import urllib.request
+          import urllib.error
           import concurrent.futures
-          from google import genai
 
           base_ref = os.environ.get("BASE_REF", "main")
           pr_title = os.environ.get("PR_TITLE", "")
           pr_body = os.environ.get("PR_BODY", "")
 
+          # --- LLM adapter layer ---------------------------------------------
+          # One method: complete(prompt) -> str. The rest of this script talks
+          # only to this interface, so a new provider never touches the review
+          # logic or the output assembly.
+
+          class LLMError(RuntimeError):
+              pass
+
+          class OpenAICompatAdapter:
+              """POST {base_url}/chat/completions, Bearer auth, OpenAI response
+              shape. Covers Groq, OpenRouter, Cerebras, NVIDIA NIM, Mistral,
+              OpenAI -- every OpenAI-compatible entry in
+              https://github.com/raullenchai/free-llm-api-resources ."""
+
+              def __init__(self, *, api_key, model, base_url, temperature=0.0,
+                           max_tokens=0, timeout=600):
+                  if not api_key:
+                      raise LLMError("LLM_API_KEY is empty")
+                  self.api_key = api_key
+                  self.model = model
+                  self.base_url = base_url.rstrip("/")
+                  self.temperature = temperature
+                  self.max_tokens = max_tokens
+                  self.timeout = timeout
+
+              def complete(self, prompt):
+                  payload = {
+                      "model": self.model,
+                      "temperature": self.temperature,
+                      "messages": [{"role": "user", "content": prompt}],
+                  }
+                  if self.max_tokens:
+                      payload["max_tokens"] = self.max_tokens
+                  req = urllib.request.Request(
+                      f"{self.base_url}/chat/completions",
+                      data=json.dumps(payload).encode(),
+                      headers={
+                          "Authorization": f"Bearer {self.api_key}",
+                          "Content-Type": "application/json",
+                          # Groq (and others) sit behind Cloudflare, which 403s the
+                          # default urllib User-Agent -- send a real one.
+                          "User-Agent": "kuhaku-pr-review/1.0",
+                      },
+                      method="POST",
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                          data = json.loads(resp.read())
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")[:500]
+                      raise LLMError(f"HTTP {e.code}: {body}") from e
+                  except (urllib.error.URLError, TimeoutError) as e:
+                      raise LLMError(f"request failed: {e}") from e
+                  try:
+                      return data["choices"][0]["message"]["content"] or ""
+                  except (KeyError, IndexError, TypeError) as e:
+                      raise LLMError(f"unexpected response: {str(data)[:500]}") from e
+
+          class GeminiAdapter:
+              """Google AI Studio in API-key mode (not Vertex). Needs google-genai."""
+
+              def __init__(self, *, api_key, model, **_ignored):
+                  if not api_key:
+                      raise LLMError("LLM_API_KEY is empty")
+                  from google import genai
+                  self._client = genai.Client(api_key=api_key)
+                  self.model = model
+
+              def complete(self, prompt):
+                  r = self._client.models.generate_content(
+                      model=self.model, contents=prompt
+                  )
+                  return r.text or ""
+
+          _PROVIDERS = {
+              "groq":       ("https://api.groq.com/openai/v1",        OpenAICompatAdapter),
+              "openrouter": ("https://openrouter.ai/api/v1",          OpenAICompatAdapter),
+              "cerebras":   ("https://api.cerebras.ai/v1",            OpenAICompatAdapter),
+              "nvidia":     ("https://integrate.api.nvidia.com/v1",   OpenAICompatAdapter),
+              "mistral":    ("https://api.mistral.ai/v1",             OpenAICompatAdapter),
+              "openai":     ("https://api.openai.com/v1",             OpenAICompatAdapter),
+              "gemini":     (None,                                    GeminiAdapter),
+          }
+
+          def build_adapter():
+              provider = os.environ.get("LLM_PROVIDER", "groq").strip().lower()
+              if provider not in _PROVIDERS:
+                  raise LLMError(
+                      f"unknown LLM_PROVIDER '{provider}'; "
+                      f"known: {', '.join(sorted(_PROVIDERS))}"
+                  )
+              default_base, cls = _PROVIDERS[provider]
+              model = os.environ.get("LLM_MODEL", "").strip()
+              if not model:
+                  raise LLMError("LLM_MODEL is not set")
+              return cls(
+                  api_key=os.environ.get("LLM_API_KEY", ""),
+                  model=model,
+                  base_url=os.environ.get("LLM_BASE_URL", "").strip() or (default_base or ""),
+                  temperature=float(os.environ.get("LLM_TEMPERATURE", "0") or 0),
+                  max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "0") or 0),
+              )
+
+          _RETRYABLE = ("429", "413", "rate limit", "rate_limit", "quota", "overloaded", "503")
+
+          def complete_with_retry(adapter, prompt, attempts=3):
+              for attempt in range(attempts):
+                  try:
+                      return adapter.complete(prompt)
+                  except LLMError as e:
+                      msg = str(e).lower()
+                      if attempt < attempts - 1 and any(t in msg for t in _RETRYABLE):
+                          time.sleep(60)
+                          continue
+                      raise
+
           # 1. Prepare inputs
-          DIFF_LIMIT = 100000
+          DIFF_LIMIT = int(os.environ.get("REVIEW_DIFF_LIMIT", "100000") or 100000)
+          AUX_LIMIT = int(os.environ.get("REVIEW_AUX_LIMIT", "20000") or 20000)
           diff_truncated = False
 
           def get_diff(unified):
@@ -74,7 +215,7 @@ jobs:
               name_status = subprocess.check_output(
                   ["git", "diff", "--name-status", f"origin/{base_ref}...HEAD"],
                   text=True, stderr=subprocess.DEVNULL
-              )[:20000]
+              )[:AUX_LIMIT]
           except Exception:
               name_status = ""
 
@@ -85,12 +226,12 @@ jobs:
                    "*poetry.lock*", "*package.json*", "*pnpm-lock.yaml*", "*yarn.lock*",
                    "*Dockerfile*"],
                   text=True, stderr=subprocess.DEVNULL
-              )[:50000]
+              )[:AUX_LIMIT]
           except Exception:
               dep_diff = ""
 
           try:
-              architecture_doc = pathlib.Path("ARCHITECTURE.md").read_text()[:20000]
+              architecture_doc = pathlib.Path("ARCHITECTURE.md").read_text()[:AUX_LIMIT]
           except Exception:
               architecture_doc = ""
 
@@ -162,15 +303,12 @@ jobs:
 
           {make_suffix("structure")}"""
 
-          client = genai.Client()
+          adapter = build_adapter()
 
           def review_axis(axis_name, prompt):
               raw_text = ""
               try:
-                  r = client.models.generate_content(
-                      model="gemini-2.5-flash", contents=prompt
-                  )
-                  raw_text = r.text or ""
+                  raw_text = complete_with_retry(adapter, prompt) or ""
                   cleaned = raw_text.strip()
                   if cleaned.startswith("```"):
                       lines = cleaned.splitlines()
@@ -191,15 +329,28 @@ jobs:
               ("structure", prompt_structure),
           ]
 
+          # Concurrency is capped by config: free tiers with a tokens/minute limit
+          # run the axes one at a time with a pause; big-context providers can raise
+          # LLM_MAX_CONCURRENCY back to 4.
+          concurrency = max(1, int(os.environ.get("LLM_MAX_CONCURRENCY", "4") or 4))
+          axis_delay = float(os.environ.get("LLM_AXIS_DELAY", "0") or 0)
+
           results = {}
-          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-              futures = {
-                  executor.submit(review_axis, axis_name, prompt): axis_name
-                  for axis_name, prompt in axes_tasks
-              }
-              for future in concurrent.futures.as_completed(futures):
-                  axis_name, data, raw_text, err = future.result()
-                  results[axis_name] = {"data": data, "raw": raw_text, "error": err}
+          if concurrency == 1:
+              for i, (axis_name, prompt) in enumerate(axes_tasks):
+                  if i and axis_delay:
+                      time.sleep(axis_delay)
+                  name, data, raw_text, err = review_axis(axis_name, prompt)
+                  results[name] = {"data": data, "raw": raw_text, "error": err}
+          else:
+              with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+                  futures = {
+                      executor.submit(review_axis, axis_name, prompt): axis_name
+                      for axis_name, prompt in axes_tasks
+                  }
+                  for future in concurrent.futures.as_completed(futures):
+                      axis_name, data, raw_text, err = future.result()
+                      results[axis_name] = {"data": data, "raw": raw_text, "error": err}
 
           # Sort and merge
           severity_order = {"blocker": 0, "warning": 1}
@@ -217,7 +368,8 @@ jobs:
           all_findings.sort(key=lambda x: severity_order.get(str(x.get("severity", "")).lower(), 2))
           high_priority = [f for f in all_findings if str(f.get("severity", "")).lower() in ["blocker", "warning"]][:5]
 
-          lines = ["## Gemini PR Review (4 Axes)\n"]
+          model_label = f"{os.environ.get('LLM_PROVIDER', '?')}/{os.environ.get('LLM_MODEL', '?')}"
+          lines = [f"## PR Review — {model_label} (4 Axes)\n"]
           if diff_truncated:
               lines.append("> WARNING: diff was truncated, review may be incomplete\n")
           lines.append("### Key Findings (Blocker & Warning)")
