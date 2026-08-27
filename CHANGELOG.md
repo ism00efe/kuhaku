@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### CI
+
+- Groq free-tier four-axis PR review (review.yml, LLM_PROVIDER=groq).
+- pr-agent.yml: LiteLLM groq/ routing, Workload Identity Federation removed.
+
 ### Added
 
 - Environment-aware `"auto"` settings. `retrieval`, `llm_provider` and
