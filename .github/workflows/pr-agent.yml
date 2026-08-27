@@ -28,6 +28,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           config.model: "vertex_ai/gemini-2.5-flash"
           config.fallback_models: '["vertex_ai/gemini-2.5-flash"]'
+          config.patch_extra_lines_before: "20"
+          config.patch_extra_lines_after: "20"
+          config.max_model_tokens: "200000"
+          config.custom_model_max_tokens: "200000"
+          config.large_patch_policy: "clip"
+          config.temperature: "1.0"
+          config.ai_timeout: "600"
+          pr_reviewer.require_security_review: "true"
+          pr_reviewer.require_can_be_split_review: "true"
+          pr_reviewer.require_tests_review: "true"
+          pr_reviewer.require_estimate_effort_to_review: "true"
           vertexai.vertex_project: "finops-agent-497422"
           vertexai.vertex_location: "global"
           VERTEXAI_PROJECT: "finops-agent-497422"
