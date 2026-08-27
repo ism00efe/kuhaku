@@ -6,18 +6,22 @@ independently and have different consequences for what runs on your machine.
 
 ## Language models
 
-Four providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`.
+Four providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`, or leave it unset
+(`auto`, the default): kuhaku uses a reachable Ollama server, falling back to the first
+provider whose credentials are present. See
+[Configuration → Auto](configuration.md#auto).
 
 | Provider | Value | Credentials | Default model |
 |---|---|---|---|
-| Ollama | `ollama` *(default)* | none — a local server | `qwen2.5:7b-instruct` |
+| Ollama | `ollama` *(auto-preferred)* | none — a local server | `qwen2.5:7b-instruct` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
 | Google Vertex AI | `vertex` | Application Default Credentials | `gemini-2.5-flash` |
 
 ### Ollama
 
-The default. Nothing is sent anywhere, and no API key exists to leak.
+The auto-preferred route when a local server is running. Nothing is sent anywhere, and no
+API key exists to leak.
 
 ```bash
 ollama serve

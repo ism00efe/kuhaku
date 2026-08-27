@@ -36,7 +36,7 @@ pip install kuhaku
 Point it at a hosted model — no local server needed:
 
 ```bash
-export KUHAKU_LLM_PROVIDER=openai      # or: anthropic, vertex, ollama (the default)
+export KUHAKU_LLM_PROVIDER=openai      # or: anthropic, vertex, ollama; unset = auto-detect
 export OPENAI_API_KEY=sk-...
 ```
 
@@ -85,7 +85,7 @@ on a small disk.
 - **Caching** — query-answer cache keyed by the entitled chunk set, so two entitlements
   never share an entry
 
-1065 tests, no failures, entirely offline — in-memory fakes for the embedder, vector
+1098 tests, no failures, entirely offline — in-memory fakes for the embedder, vector
 store and LLM. No network, no model download, no running LLM server needed to run them.
 
 ---
@@ -174,7 +174,8 @@ pip install "kuhaku[dev]"      # pytest, ruff, mypy, build
 
 ### Running the LLM locally
 
-The default provider is a local [Ollama](https://ollama.com) server:
+With no provider set, kuhaku auto-selects a running local [Ollama](https://ollama.com)
+server:
 
 ```bash
 ollama serve
@@ -192,9 +193,9 @@ may cost CPU and memory, never a download.**
 
 | | Default |
 |---|---|
-| Retrieval | Hybrid — dense embeddings + BM25, fused with RRF |
-| LLM | Ollama, `qwen2.5:7b-instruct`, `http://localhost:11434` |
-| Embeddings | `intfloat/multilingual-e5-small`, CPU |
+| Retrieval | `auto` — hybrid (dense + BM25/RRF) when an embedding backend builds, else sparse-only |
+| LLM | `auto` — a reachable Ollama (`qwen2.5:7b-instruct`), else a provider whose API key is set |
+| Embeddings | `intfloat/multilingual-e5-small`; device `auto` — CUDA / MPS / CPU |
 | Vector store | Chroma, collection `default_kb`, temporary directory |
 | Chunking | Paragraph, 500 characters, 80 overlap |
 | `top_k` | 4 |
@@ -203,6 +204,12 @@ may cost CPU and memory, never a download.**
 | Audit log | On — one record per request, whatever the outcome (`RAG(audit_enabled=False)` disables it) |
 | Query cache | On — SQLite, 1 hour TTL |
 | Cross-encoder re-ranker | **Off** — `BAAI/bge-reranker-base` is ~1.1 GB |
+
+`retrieval`, `llm_provider` and `embedding_device` ship as `auto`: resolved once at
+construction from what is installed or reachable, downgrading toward fewer external
+dependencies and announcing any downgrade on the terminal. An explicit value always wins,
+and `KUHAKU_AUTO=false` disables the probing entirely — see
+[docs/configuration.md](https://github.com/ism00efe/kuhaku/blob/main/docs/configuration.md#auto).
 
 Every setting reads from the environment under a `KUHAKU_` prefix, with RAG settings
 nested under `KUHAKU_RAG__`:

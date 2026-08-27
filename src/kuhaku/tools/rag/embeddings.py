@@ -104,6 +104,27 @@ class SentenceTransformerEmbeddings:
         )
 
 
+class NullEmbeddings:
+    """A no-op :class:`EmbeddingProvider` for sparse-only retrieval.
+
+    ``retrieval="sparse"`` (whether pinned, or resolved from ``"auto"`` when no real
+    embedding backend can be built) needs no embeddings for ranking -- BM25 covers that.
+    But the ingest path must still hand the vector store *some* vector per chunk, so this
+    returns a fixed 1-dimension constant, letting a sparse-only deployment run with no
+    ``torch``/``sentence-transformers`` import and no model download. ``DenseRetriever``
+    is still constructed in ``sparse`` mode but never consulted; were it ever called it
+    would just see these constant vectors.
+    """
+
+    _VECTOR = (1.0,)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [list(self._VECTOR) for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return list(self._VECTOR)
+
+
 def build_embedding_provider(settings: RAGSettings) -> EmbeddingProvider:
     """Instantiate the embedding provider selected by ``settings.embedding_provider``.
 
@@ -128,9 +149,11 @@ def build_embedding_provider(settings: RAGSettings) -> EmbeddingProvider:
         )
 
     if provider == "sentence-transformer":
+        from .capabilities import resolve_embedding_device
+
         return SentenceTransformerEmbeddings(
             settings.embedding_model,
-            device=settings.embedding_device,
+            device=resolve_embedding_device(settings.embedding_device),
             retry_enabled=settings.retry_enabled,
             retry_max_attempts=settings.retry_embedding_max_attempts,
             retry_backoff_base_seconds=settings.retry_embedding_backoff_base_seconds,

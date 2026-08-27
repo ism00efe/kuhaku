@@ -70,7 +70,9 @@ def test_settings_has_no_application_specific_fields():
 def test_load_settings_without_loader_returns_defaults():
     settings = load_settings(env_file=None)
     assert isinstance(settings, Settings)
-    assert settings.llm_provider == "ollama"
+    # "auto" is the shipped default now; kuhaku.core.capabilities resolves it to a
+    # concrete provider at build time (see tests/test_capabilities.py).
+    assert settings.llm_provider == "auto"
 
 
 def test_load_settings_app_config_loader_overrides_settings():

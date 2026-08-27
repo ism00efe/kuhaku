@@ -59,7 +59,13 @@ class Settings(BaseSettings):
     )
 
     # --- LLM provider ---------------------------------------------------------
-    llm_provider: str = Field(default="ollama")  # ollama | anthropic | openai
+    # "auto" (the default) is resolved at build time by kuhaku.core.capabilities: a
+    # reachable Ollama server wins (the documented baseline), otherwise the first
+    # provider whose credentials are present (openai -> anthropic -> vertex); if none
+    # apply it stays "ollama" and the usual "start Ollama or set an API key" error
+    # surfaces at first use. A concrete value here is absolute -- auto never overrides
+    # it. KUHAKU_AUTO=false pins it to "ollama".
+    llm_provider: str = Field(default="auto")  # auto | ollama | anthropic | openai | vertex
     llm_temperature: float = Field(default=0.1)
     llm_max_tokens: int = Field(default=1024)
 

@@ -15,7 +15,7 @@ def test_ragsettings_instantiates_with_no_arguments():
     settings = RAGSettings()
     assert settings.top_k == 4
     assert settings.chunk_size == 500
-    assert settings.retrieval == "hybrid"
+    assert settings.retrieval == "auto"
     assert settings.rerank_enabled is False
     assert settings.embedding_model == "intfloat/multilingual-e5-small"
 
