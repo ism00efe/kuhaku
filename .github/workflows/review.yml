@@ -89,6 +89,11 @@ jobs:
           except Exception:
               dep_diff = ""
 
+          try:
+              architecture_doc = pathlib.Path("ARCHITECTURE.md").read_text()[:20000]
+          except Exception:
+              architecture_doc = ""
+
           REPORT_ONLY_PROBLEMS = """Report only problems: something missing, incorrect, risky, or unclear.
           Do NOT report that a change is good, well-designed, or an improvement.
           Praise is not a finding. Do NOT describe or summarize what the diff does --
@@ -129,6 +134,9 @@ jobs:
           prompt_scope = f"""You are a code reviewer. Examine the list of changed files below,
           along with the PR title and PR body, for SCOPE: does the work done match what the
           PR claims to do.
+
+          PROJECT ARCHITECTURE (for context on intended boundaries; may be unavailable):
+          {architecture_doc if architecture_doc else "(not available)"}
 
           PR TITLE:
           {pr_title}
