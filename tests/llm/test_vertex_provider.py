@@ -545,22 +545,20 @@ def test_is_retryable_vertex_exception():
     from google.genai import errors
     from kuhaku.core.llm.vertex_provider import is_retryable_vertex_exception
 
-    class _APIError(errors.APIError):
-        def __init__(self, code: int):
-            self.code = code
-            super().__init__(f"error {code}")
+    def _make_api_error(code: int) -> errors.APIError:
+        return errors.APIError(code, {"error": {"message": f"error {code}", "code": code}})
 
     # Retryable: rate limits (429), timeouts (408), and 5xx server errors
-    assert is_retryable_vertex_exception(_APIError(429)) is True
-    assert is_retryable_vertex_exception(_APIError(408)) is True
-    assert is_retryable_vertex_exception(_APIError(500)) is True
-    assert is_retryable_vertex_exception(_APIError(503)) is True
+    assert is_retryable_vertex_exception(_make_api_error(429)) is True
+    assert is_retryable_vertex_exception(_make_api_error(408)) is True
+    assert is_retryable_vertex_exception(_make_api_error(500)) is True
+    assert is_retryable_vertex_exception(_make_api_error(503)) is True
 
     # Non-retryable: client errors
-    assert is_retryable_vertex_exception(_APIError(400)) is False
-    assert is_retryable_vertex_exception(_APIError(401)) is False
-    assert is_retryable_vertex_exception(_APIError(403)) is False
-    assert is_retryable_vertex_exception(_APIError(404)) is False
+    assert is_retryable_vertex_exception(_make_api_error(400)) is False
+    assert is_retryable_vertex_exception(_make_api_error(401)) is False
+    assert is_retryable_vertex_exception(_make_api_error(403)) is False
+    assert is_retryable_vertex_exception(_make_api_error(404)) is False
 
     # Transport / request errors
     assert is_retryable_vertex_exception(httpx.RequestError("httpx err")) is True
