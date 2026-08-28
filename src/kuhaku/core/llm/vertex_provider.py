@@ -27,10 +27,10 @@ get_settings().vertex_location = "us-central1\""""
 
 
 def is_retryable_vertex_exception(exc: BaseException) -> bool:
-    """True for connection errors/timeouts and 5xx API errors; false for 4xx (retry won't
-    help a bad request or auth failure) and anything else -- mirrors
-    ``is_retryable_request_exception`` for the google-genai SDK's own exception
-    types, which are not ``requests.RequestException`` subclasses.
+    """True for connection errors/timeouts, rate limits (429), request timeouts (408),
+    and 5xx API errors; false for other 4xx (retry won't help a bad request or auth failure)
+    and anything else -- mirrors ``is_retryable_request_exception`` for the google-genai
+    SDK's own exception types, which are not ``requests.RequestException`` subclasses.
     """
 
     import httpx
@@ -38,8 +38,9 @@ def is_retryable_vertex_exception(exc: BaseException) -> bool:
     from google.genai import errors
 
     if isinstance(exc, errors.APIError):
-        return exc.code >= 500
+        return exc.code in {408, 429} or exc.code >= 500
     return isinstance(exc, (httpx.RequestError, requests.RequestException))
+
 
 
 class VertexAIProvider:

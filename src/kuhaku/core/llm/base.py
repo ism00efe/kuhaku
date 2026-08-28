@@ -53,8 +53,9 @@ class LLMProvider(Protocol):
 
 
 def is_retryable_request_exception(exc: BaseException) -> bool:
-    """True for connection errors/timeouts and 5xx responses; false for 4xx (retry won't
-    help a bad request or auth failure) and anything else.
+    """True for connection errors/timeouts, rate limits (429), request timeouts (408),
+    and 5xx responses; false for other 4xx (retry won't help a bad request or auth failure)
+    and anything else.
 
     Shared by all three providers (Ollama, Anthropic, OpenAI) -- each currently wraps the
     same ``requests.RequestException`` into ``LLMError`` identically, regardless of status
@@ -62,5 +63,8 @@ def is_retryable_request_exception(exc: BaseException) -> bool:
     """
 
     if isinstance(exc, requests.HTTPError):
-        return exc.response is not None and exc.response.status_code >= 500
+        if exc.response is None:
+            return False
+        return exc.response.status_code in {408, 429} or exc.response.status_code >= 500
     return isinstance(exc, requests.RequestException)
+

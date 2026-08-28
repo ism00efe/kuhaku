@@ -537,3 +537,36 @@ def test_missing_google_genai_raises_runtime_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="pip install google-genai"):
         VertexAIProvider()
+
+
+def test_is_retryable_vertex_exception():
+    import httpx
+    import requests
+    from google.genai import errors
+    from kuhaku.core.llm.vertex_provider import is_retryable_vertex_exception
+
+    class _APIError(errors.APIError):
+        def __init__(self, code: int):
+            self.code = code
+            super().__init__(f"error {code}")
+
+    # Retryable: rate limits (429), timeouts (408), and 5xx server errors
+    assert is_retryable_vertex_exception(_APIError(429)) is True
+    assert is_retryable_vertex_exception(_APIError(408)) is True
+    assert is_retryable_vertex_exception(_APIError(500)) is True
+    assert is_retryable_vertex_exception(_APIError(503)) is True
+
+    # Non-retryable: client errors
+    assert is_retryable_vertex_exception(_APIError(400)) is False
+    assert is_retryable_vertex_exception(_APIError(401)) is False
+    assert is_retryable_vertex_exception(_APIError(403)) is False
+    assert is_retryable_vertex_exception(_APIError(404)) is False
+
+    # Transport / request errors
+    assert is_retryable_vertex_exception(httpx.RequestError("httpx err")) is True
+    assert is_retryable_vertex_exception(requests.RequestException("req err")) is True
+
+    # Unrelated exceptions
+    assert is_retryable_vertex_exception(ValueError("val err")) is False
+    assert is_retryable_vertex_exception(RuntimeError("runtime err")) is False
+
