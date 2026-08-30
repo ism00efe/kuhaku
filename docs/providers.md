@@ -6,9 +6,9 @@ independently and have different consequences for what runs on your machine.
 
 ## Language models
 
-Four providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`, or leave it unset
-(`auto`, the default): kuhaku uses a reachable Ollama server, falling back to the first
-provider whose credentials are present. See
+Five providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`, or leave it unset
+(`auto`, the default): kuhaku uses a reachable local Ollama server, falling back to the
+first provider whose credentials are present. See
 [Configuration → Auto](configuration.md#auto).
 
 | Provider | Value | Credentials | Default model |
@@ -17,6 +17,10 @@ provider whose credentials are present. See
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
 | Google Vertex AI | `vertex` | Application Default Credentials | `gemini-2.5-flash` |
+| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+
+Groq is an OpenAI-compatible endpoint with a free tier; in `auto` it is tried last, after
+every other credentialed provider, because the prompt still leaves your machine.
 
 ### Ollama
 

@@ -19,6 +19,7 @@ logs/
 *.jsonl
 data/
 .cache/
+.kuhaku/
 
 # Model artifacts (large binaries, never committed)
 *.onnx

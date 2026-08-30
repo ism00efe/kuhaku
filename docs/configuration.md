@@ -146,25 +146,33 @@ default:
 
 | Setting | Baseline | `auto` resolves to |
 |---|---|---|
-| `llm_provider` | `ollama` | a reachable Ollama server, else the first provider whose credentials are set (`openai` → `anthropic` → `vertex`), else stays `ollama` |
+| `llm_provider` | `ollama` | a reachable local Ollama server, else the first provider whose credentials are set (`openai` → `anthropic` → `vertex` → `groq`); if none, a required build raises `CapabilityUnavailable` |
 | `embedding_device` | `cpu` | `cuda` (NVIDIA) or `mps` (Apple Silicon) when torch reports one, else `cpu` |
-| `retrieval` | `hybrid` | `hybrid` when an embedding backend can be built, else `sparse` (BM25 only — no embeddings, no torch, no model download) |
+| `retrieval` | `hybrid` | `hybrid` when the embedding package is installed **and** the model is already on disk, else `sparse` (BM25 only — no embeddings, no torch, no model download) |
 
 Rules:
 
-- **Your explicit value is absolute.** Setting `KUHAKU_RAG__RETRIEVAL=hybrid` (or passing
-  `RAG(retrieval="hybrid")`) pins it — `auto` never overrides a value you chose, and an
-  explicit `dense`/`hybrid` that then can't build its embedder fails loudly instead of
-  degrading.
-- **A downgrade is announced** on stderr and as a `FallbackWarning`, once per process:
-  `[kuhaku] retrieval: using 'sparse' (baseline 'hybrid'; …)`.
-- **`auto` never triggers a download.** It only ever moves toward fewer external
-  dependencies.
-- **`KUHAKU_AUTO=false`** freezes all three at their baseline with no probing, for a
-  fully deterministic startup.
+- **Your explicit value is absolute.** `RAG(retrieval="hybrid")` /
+  `KUHAKU_RAG__RETRIEVAL=hybrid` pins it. An explicit `dense`/`hybrid` with no usable
+  embedder raises `ConsentRequired` (interactive: it asks to install/download first) —
+  never a silent downgrade.
+- **Install and download need consent, separately.** `auto` never installs a package or
+  downloads a model on its own. When a decision needs one, kuhaku states the cost and,
+  if a terminal is attached, asks; approving an install never implies approving a
+  download. An approved install runs `pip` only inside a virtualenv/conda environment —
+  otherwise it prints the command and stops.
+- **Decisions are announced** through the `kuhaku` logger (INFO, or WARNING when a
+  decision was skipped because nobody was at the terminal). If your app configured no
+  logging, kuhaku attaches a stderr handler so the line is not lost. A degrade to a
+  lesser capability also raises a `FallbackWarning`.
+- **`KUHAKU_AUTO=false`** short-circuits before any probing: every setting resolves to
+  its baseline, nothing is asked, nothing installed. If a baseline is itself unusable
+  you get `CapabilityUnavailable` — with auto off there is no fallback.
 
-Detection is not cached to disk: it re-runs each process, so installing a GPU or starting
-Ollama takes effect on the next run with nothing to invalidate.
+Decisions are remembered in `.kuhaku/decisions.json` in your project directory (add
+`.kuhaku/` to `.gitignore` — it is machine-specific). Each decision is re-opened only
+when the part of the environment *it* depends on changes (a package installed/removed, a
+GPU added). An unwritable directory just means decisions are remade each run.
 
 ## Storage kuhaku writes to disk
 
