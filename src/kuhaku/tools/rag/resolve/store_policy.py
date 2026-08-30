@@ -45,6 +45,13 @@ def suggest_store_upgrade(
 
     heavier = [c for c in registry.candidates("store", env) if c.id != current_id]
     if not heavier:
+        # no heavier store is registered yet -- still note the size so the operator
+        # knows the threshold was crossed.
+        ui.announce(
+            f"the store holds {chunk_count:,} chunks, past the ~{threshold:,}-chunk "
+            f"point where a heavier store starts to pay off; no alternative store is "
+            f"available in this build."
+        )
         return None
 
     stay = Candidate(
@@ -57,12 +64,13 @@ def suggest_store_upgrade(
         activate=lambda: None,
     )
     options = [stay, *heavier]
-    choice = ui.ask(
+    summary = (
         f"the store holds {chunk_count:,} chunks, past the ~{threshold:,}-chunk point "
         f"where a heavier store starts to pay off. This is a suggestion, not a "
-        f"migration -- choose one:",
-        options,
+        f"migration."
     )
+    ui.announce(summary)
+    choice = ui.ask(summary + " Choose one:", options) if ui.is_interactive() else None
     if choice is not None and choice.id != current_id:
         ui.announce(
             f"to move to {choice.label}: {choice.cost.note}. Existing chunks, metadata "

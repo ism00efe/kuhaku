@@ -93,7 +93,10 @@ def docs_offline_environment(monkeypatch, tmp_path):
 
     monkeypatch.setattr(kuhaku, "build_embedding_provider", lambda rs: FakeEmbeddings())
     monkeypatch.setattr(kuhaku, "ChromaVectorStore", lambda *a, **k: shared_store)
-    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s: FakeLLM())
+    monkeypatch.setattr(
+        "kuhaku.tools.rag.resolve.adapters.embedding._model_cached", lambda name: True
+    )
+    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s, **_k: FakeLLM())
     monkeypatch.setattr(kuhaku, "QueryAnswerCache", lambda *a, **k: FakeCache())
 
     tmp_dir_counter = iter(range(1_000_000))

@@ -373,7 +373,7 @@ def test_rag_does_not_double_wrap_already_token_tracked_provider(monkeypatch, fa
     )
     raw = VertexAIProvider(project="p", location="l")
     already_wrapped = TokenTrackingLLM(raw, provider="vertex")
-    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s: already_wrapped)
+    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s, **_k: already_wrapped)
 
     rag = kuhaku.RAG(settings=settings, rag_settings=_vertex_rag_settings())
     assert rag._llm is already_wrapped  # noqa: SLF001

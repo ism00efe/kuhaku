@@ -55,8 +55,9 @@ class RAGSettings:
     embedding_provider: str = "sentence-transformer"  # sentence-transformer | vertex
     embedding_model: str = "intfloat/multilingual-e5-small"
     # "auto" (the default) picks cuda / mps / cpu from what torch reports at build time
-    # (kuhaku.tools.rag.capabilities.resolve_embedding_device). cpu is the baseline; a
-    # concrete value is absolute; KUHAKU_AUTO=false pins it to cpu.
+    # (build_embedding_provider -> kuhaku.core.resolve.probes.torch_accelerator, which
+    # does not go stale). A concrete value is absolute. RAG() passes the device it
+    # resolved; a standalone build_embedding_provider() call resolves it itself.
     embedding_device: str = "auto"  # auto | cpu | cuda | mps
     embedding_model_version: str = "intfloat/multilingual-e5-small"
     vertex_embedding_model: str = "gemini-embedding-001"
@@ -95,6 +96,15 @@ class RAGSettings:
 
     # --- Contradiction detection ------------------------------------------------------
     contradiction_detection_enabled: bool = True
+
+    # --- Capability-resolution tunables (§12). Both are estimates, not measurements --
+    # marked as such in the code that reads them (store_policy.CHUNK_UPGRADE_THRESHOLD,
+    # hardware.VRAM_HEADROOM), whose module-level constants supply these defaults.
+    # chunk_upgrade_threshold: RAG.ingest()/load_documents() suggest a heavier store once
+    # the store holds more chunks than this. vram_headroom: the fraction of VRAM RAG
+    # reserves beyond model weights when it reports which model size class should fit.
+    chunk_upgrade_threshold: int = 50_000
+    vram_headroom: float = 0.25
 
     # --- Query-answer cache (SQLite) --------------------------------------------------
     cache_enabled: bool = True

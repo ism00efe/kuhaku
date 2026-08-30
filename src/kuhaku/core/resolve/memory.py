@@ -9,12 +9,21 @@ directory is caught, announced once, and the process continues unpersisted.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Protocol
 
 from .environment import FIELDS_CONSUMED, Fingerprint, project
 
 _SCHEMA = 1
+
+
+def default_project_dir() -> Path:
+    """Where ``.kuhaku/`` lives: ``KUHAKU_PROJECT_DIR`` if set, otherwise the current
+    working directory. kuhaku never assumes this is writable -- :class:`JsonMemory`
+    degrades to unpersisted when it is not."""
+
+    return Path(os.environ.get("KUHAKU_PROJECT_DIR") or os.getcwd())
 
 
 class Memory(Protocol):
@@ -32,8 +41,9 @@ class JsonMemory:
     decisions are made again -- never a crash, never a silent migration.
     """
 
-    def __init__(self, project_dir: str | Path, *, ui=None) -> None:
-        self._path = Path(project_dir) / ".kuhaku" / "decisions.json"
+    def __init__(self, project_dir: str | Path | None = None, *, ui=None) -> None:
+        root = Path(project_dir) if project_dir is not None else default_project_dir()
+        self._path = root / ".kuhaku" / "decisions.json"
         self._ui = ui
         self._degraded = False
 

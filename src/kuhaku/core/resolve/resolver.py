@@ -62,7 +62,7 @@ def _cost_phrase(candidate: Candidate) -> str:
     if not tags:
         tags.append("local, no network")
     phrase = ", ".join(tags)
-    return f"{phrase} — {cost.note}" if cost.note else phrase
+    return f"{phrase} -- {cost.note}" if cost.note else phrase
 
 
 def _gap_message(kind: str, candidates: list[Candidate]) -> str:
@@ -81,7 +81,7 @@ def _gap_message(kind: str, candidates: list[Candidate]) -> str:
             needs.append(f"a model download ({format_bytes(cost.download_bytes)})")
         step = cost.note or "; ".join(needs) or "setup"
         detail = f" (needs {' and '.join(needs)})" if needs else ""
-        parts.append(f"{candidate.label}{detail} — {step}")
+        parts.append(f"{candidate.label}{detail} -- {step}")
     return f"{kind}: nothing is usable right now. " + "; ".join(parts) + "."
 
 
@@ -90,7 +90,7 @@ def _chosen_message(kind: str, candidate: Candidate, baseline_id: str | None) ->
     if baseline_id and baseline_id != candidate.id:
         tail = f" (the documented baseline is '{baseline_id}')"
     return (
-        f"{kind}: using {candidate.label} — the only option usable now"
+        f"{kind}: using {candidate.label} -- the only option usable now"
         f"{tail}. {_override_hint(kind)}"
     )
 
@@ -118,7 +118,7 @@ def _question(kind: str, ready: list[Candidate]) -> str:
 
 def _remembered_message(kind: str, candidate: Candidate) -> str:
     return (
-        f"remembered: {kind} = {candidate.label} — reset with "
+        f"remembered: {kind} = {candidate.label} -- reset with "
         f"`memory.reset({kind!r})` or delete .kuhaku/decisions.json"
     )
 

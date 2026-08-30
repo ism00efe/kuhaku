@@ -21,28 +21,29 @@ from .environment import (
     fingerprint,
     probe_environment,
 )
-from .memory import JsonMemory, Memory
+from .memory import JsonMemory, Memory, default_project_dir
 from .registry import Adapter, Registry
 from .resolver import Resolution, activate, resolve
 from .ui import UI, ConsoleUI
 
 __all__ = [
     "AUTO",
-    "auto_enabled",
-    "Cost",
-    "Candidate",
-    "Adapter",
-    "Registry",
-    "Resolution",
-    "resolve",
-    "activate",
+    "FIELDS_CONSUMED",
     "UI",
+    "Adapter",
+    "Candidate",
     "ConsoleUI",
+    "Cost",
     "Environment",
     "Fingerprint",
-    "FIELDS_CONSUMED",
-    "probe_environment",
-    "fingerprint",
-    "Memory",
     "JsonMemory",
+    "Memory",
+    "Registry",
+    "Resolution",
+    "activate",
+    "auto_enabled",
+    "default_project_dir",
+    "fingerprint",
+    "probe_environment",
+    "resolve",
 ]
