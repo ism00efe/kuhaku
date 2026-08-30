@@ -96,6 +96,7 @@ class FakeUI:
         self._ask_returns = ask_returns
         self._confirm_map = confirm_map or {}
         self._confirm_default = confirm_default
+        self._announced: set = set()
         self.announcements: list[tuple[str, bool, bool]] = []
         self.ask_calls: list[tuple[str, list[Candidate]]] = []
         self.confirm_calls: list[tuple[str, Cost]] = []
@@ -105,6 +106,10 @@ class FakeUI:
         return self._interactive
 
     def announce(self, message, *, prominent=False, degraded=False, dedupe_key=None):
+        if dedupe_key is not None:
+            if dedupe_key in self._announced:
+                return
+            self._announced.add(dedupe_key)
         self.announcements.append((message, prominent, degraded))
 
     def ask(self, question, options):

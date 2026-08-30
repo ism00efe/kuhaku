@@ -28,6 +28,10 @@ def _py_files(root: Path):
     return sorted(root.rglob("*.py")) if root.exists() else []
 
 
+def _rel(path: Path) -> str:
+    return path.relative_to(_SRC).as_posix()
+
+
 # --- Check 13 ----------------------------------------------------------------
 def test_check13_no_provider_names_in_the_mechanism():
     offenders: list[str] = []
@@ -37,7 +41,7 @@ def test_check13_no_provider_names_in_the_mechanism():
                 continue
             for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if _PROVIDER_NAMES.search(line):
-                    offenders.append(f"{path.relative_to(_SRC)}:{lineno}: {line.strip()}")
+                    offenders.append(f"{_rel(path)}:{lineno}: {line.strip()}")
     assert not offenders, "tool-specific names leaked outside adapters/:\n" + "\n".join(offenders)
 
 
@@ -47,7 +51,7 @@ def test_check14_isatty_only_in_default_ui():
     for path in _py_files(_SRC):
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if "isatty" in line:
-                hits.append(f"{path.relative_to(_SRC)}:{lineno}")
+                hits.append(f"{_rel(path)}:{lineno}")
     assert hits, "expected ConsoleUI.is_interactive to use isatty"
     assert all(h.startswith("core/resolve/ui.py:") for h in hits), (
         "isatty must live only in the default UI implementation; found: " + ", ".join(hits)
@@ -64,7 +68,7 @@ def test_check15_no_print_in_the_mechanism():
         for path in _py_files(pkg):
             for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 if _PRINT.search(line):
-                    offenders.append(f"{path.relative_to(_SRC)}:{lineno}: {line.strip()}")
+                    offenders.append(f"{_rel(path)}:{lineno}: {line.strip()}")
     assert not offenders, "print() in library resolution code:\n" + "\n".join(offenders)
 
 
