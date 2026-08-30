@@ -257,38 +257,50 @@ def test_check8_unspecified_without_embedder_degrades_with_announcement(env, mem
 
 
 # --- Check 9 --------------------------------------------------------------------
-def test_check9_crossing_chunk_threshold_suggests_two_options_never_migrates(env):
+def _store_registry() -> Registry:
+    return _registry(FakeAdapter("store", [
+        make_candidate("chroma", "store", label="Chroma (serverless)"),
+        make_candidate("qdrant", "store", label="Qdrant (server)"),
+    ]))
+
+
+def test_check9_crossing_chunk_threshold_suggests_options_never_migrates(env):
     from kuhaku.tools.rag.resolve.store_policy import suggest_store_upgrade
 
-    ui = FakeUI(interactive=True, ask_returns=None)
-    migrated: list = []
-    suggest_store_upgrade(chunk_count=60_000, current_id="builtin", ui=ui,
-                          migrate=lambda target: migrated.append(target))
+    ui = FakeUI(interactive=True, ask_returns=None)  # operator declines / no choice
+    choice = suggest_store_upgrade(
+        chunk_count=60_000, current_id="builtin",
+        registry=_store_registry(), env=env, ui=ui,
+    )
 
+    assert choice is None  # suggest_store_upgrade has no migration hook -- it cannot migrate
     assert len(ui.ask_calls) == 1
     _question, options = ui.ask_calls[0]
-    assert len(options) >= 2
-    assert migrated == []
+    assert len(options) >= 2  # at least "stay" plus one heavier store
 
 
 def test_check9_below_threshold_is_silent(env):
     from kuhaku.tools.rag.resolve.store_policy import suggest_store_upgrade
 
     ui = FakeUI(interactive=True)
-    suggest_store_upgrade(chunk_count=100, current_id="builtin", ui=ui, migrate=lambda t: None)
+    suggest_store_upgrade(chunk_count=100, current_id="builtin",
+                          registry=_store_registry(), env=env, ui=ui)
     assert ui.ask_calls == []
 
 
 # --- Check 10 -----------------------------------------------------------------
-@pytest.mark.xfail(reason="Tier-0 lightweight store not implemented in this change; "
-                          "§13 two-process verification tracked as follow-up", strict=False)
-def test_check10_second_process_conflict_is_clean(tmp_path):
+def test_check10_second_writer_conflict_is_clean_non_interactive(tmp_path):
+    """The lock-file guard turns a second writer into a clean StoreConflict. Full
+    two-process coverage against a real store lands with the Tier-0 store (§13)."""
     from kuhaku.tools.rag.resolve.store_policy import guard_single_writer
 
     with guard_single_writer(tmp_path, ui=FakeUI(interactive=False)):
         with pytest.raises(StoreConflict):
             with guard_single_writer(tmp_path, ui=FakeUI(interactive=False)):
                 pass
+    # released on exit
+    with guard_single_writer(tmp_path, ui=FakeUI(interactive=False)):
+        pass
 
 
 # --- Check 11 -----------------------------------------------------------------
