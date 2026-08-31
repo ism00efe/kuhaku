@@ -11,7 +11,7 @@ import requests
 from kuhaku.core.config import Settings
 from kuhaku.core.llm import build_llm_provider
 from kuhaku.core.llm.anthropic_provider import AnthropicProvider
-from kuhaku.core.llm.base import LLMError, TokenUsage
+from kuhaku.core.llm.base import LLMError, TokenUsage, is_retryable_request_exception
 from kuhaku.core.llm.ollama_provider import OllamaProvider
 from kuhaku.core.llm.openai_provider import OpenAIProvider
 from kuhaku.core.observability.metrics import (
@@ -546,3 +546,37 @@ def test_factory_wires_resilience_settings_through_to_provider():
     provider = build_llm_provider(settings)
     assert provider._timeout == 7  # noqa: SLF001
     assert provider._circuit_breaker is None  # noqa: SLF001
+
+
+def test_is_retryable_request_exception():
+    def _make_http_error(status_code: int) -> requests.HTTPError:
+        resp = requests.Response()
+        resp.status_code = status_code
+        return requests.HTTPError(f"{status_code} error", response=resp)
+
+    # Retryable: rate limits (429), timeouts (408), and 5xx server errors
+    assert is_retryable_request_exception(_make_http_error(429)) is True
+    assert is_retryable_request_exception(_make_http_error(408)) is True
+    assert is_retryable_request_exception(_make_http_error(500)) is True
+    assert is_retryable_request_exception(_make_http_error(502)) is True
+    assert is_retryable_request_exception(_make_http_error(503)) is True
+    assert is_retryable_request_exception(_make_http_error(504)) is True
+
+    # Non-retryable: client errors (bad request, auth, forbidden, not found)
+    assert is_retryable_request_exception(_make_http_error(400)) is False
+    assert is_retryable_request_exception(_make_http_error(401)) is False
+    assert is_retryable_request_exception(_make_http_error(403)) is False
+    assert is_retryable_request_exception(_make_http_error(404)) is False
+
+    # Connection and generic request errors
+    assert is_retryable_request_exception(requests.ConnectionError("conn reset")) is True
+    assert is_retryable_request_exception(requests.Timeout("timed out")) is True
+    assert is_retryable_request_exception(requests.RequestException("other")) is True
+
+    # HTTPError with no response attached
+    assert is_retryable_request_exception(requests.HTTPError("no resp")) is False
+
+    # Unrelated exceptions
+    assert is_retryable_request_exception(ValueError("val err")) is False
+    assert is_retryable_request_exception(RuntimeError("runtime err")) is False
+
