@@ -8,7 +8,7 @@ the LLM verifier.
 from __future__ import annotations
 
 from pr_review.config import Config
-from pr_review.models import Finding, Verdict, VerdictResult
+from pr_review.models import Finding, Verdict, VerdictResult, VerifiedFinding
 from pr_review.verification.deterministic import EVIDENCE_NOT_ANCHORED
 
 _SEVERITY_RANK = {"info": 0, "warning": 1, "blocker": 2}
@@ -32,6 +32,30 @@ class VerificationRouter:
                 finding.extra["confidence_capped_from"] = finding.confidence
                 finding.confidence = UNANCHORED_CONFIDENCE_CAP
             finding.extra["evidence_anchored"] = False
+
+    def enforce_blocker_bar(self, vf: VerifiedFinding) -> None:
+        """Demote a blocker that neither verification nor confidence supports.
+
+        Applied after verification, because that is the only point where both
+        signals exist. A finding whose evidence was not anchored has already
+        had its confidence capped below the band by :meth:`adjust`, so an
+        unquotable claim can never carry the label.
+        """
+        if not self.v.blocker_requires_evidence:
+            return
+        f = vf.finding
+        if f.severity != "blocker":
+            return
+        if vf.result.verdict == Verdict.VALID:
+            return
+        if f.confidence >= self.v.uncertain_high:
+            return
+        f.severity = "warning"
+        f.extra["severity_capped_from"] = "blocker"
+        f.extra["severity_capped_reason"] = (
+            f"unverified ({vf.result.verdict.value}) and confidence "
+            f"{f.confidence:.2f} < {self.v.uncertain_high}"
+        )
 
     def needs_llm(self, finding: Finding, deterministic: VerdictResult) -> bool:
         if not self.v.enabled or not self.v.llm_enabled:

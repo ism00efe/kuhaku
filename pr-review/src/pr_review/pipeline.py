@@ -246,7 +246,9 @@ class Pipeline:
                         result = llm_res
                 except Exception as exc:  # noqa: BLE001
                     errors.append(StageError("verification", f"llm: {exc}"))
-            out.append(VerifiedFinding(f, result))
+            vf = VerifiedFinding(f, result)
+            router.enforce_blocker_bar(vf)
+            out.append(vf)
         return out
 
     @staticmethod

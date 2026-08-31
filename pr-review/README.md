@@ -198,6 +198,13 @@ rules constrain what a model is allowed to assert:
   not, the model paraphrased instead of quoting: confidence is capped into the
   uncertain band and the LLM verifier is told so explicitly, rather than being
   asked to judge blind.
+- **A blocker has to be earned.** It is the only severity with automation
+  attached, so a finding keeps the label only if verification confirmed it
+  (verdict VALID) or its confidence sits outside the uncertain band. Otherwise
+  it is reported as a warning, marked `reported as BLOCKER`, with the reason.
+  No new threshold: both bars already existed, they simply were not applied to
+  severity. Combined with the rule above, an unquotable claim is capped below
+  the band and therefore can never block a build.
 - **Whole-PR claims cite no file.** `scope` and `method` findings use
   `file: "-"`, and are verified against the complete changed-file list and the
   PR text. Slicing an arbitrary file and asking a model "is this true?" invites
