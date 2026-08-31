@@ -1,0 +1,99 @@
+name: "pr-review"
+description: "Repository-agnostic, modular AI pull-request review."
+
+# Required permissions in the calling workflow:
+#   permissions:
+#     contents: read
+#     pull-requests: write   # only needed to post the comment
+#
+# On a pull request from a fork, GitHub withholds secrets and downgrades
+# GITHUB_TOKEN to read-only. This action handles that: the review still runs
+# (structural-only if no key reached it) and the report goes to the job summary
+# instead of a comment. Do not "fix" that by switching the caller to
+# pull_request_target -- that runs fork code with write access and secrets.
+
+inputs:
+  provider:
+    description: "Force an LLM provider for every tier (groq | openrouter | opencode | gemini | mock). Empty = use config / tier defaults, falling back to a structural-only review when no key is set."
+    required: false
+    default: ""
+  post-comment:
+    description: "Post the markdown report as a PR comment. Skipped automatically for fork PRs."
+    required: false
+    default: "true"
+  fail-on-blocker:
+    description: "Fail the job (exit 2) when a surfaced blocker survives verification."
+    required: false
+    default: "false"
+  python-version:
+    required: false
+    default: "3.12"
+  working-directory:
+    description: "Repository checkout to review."
+    required: false
+    default: "."
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install pr-review
+      shell: bash
+      run: pip install "${{ github.action_path }}"
+
+    - name: Run review
+      id: review
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PR_REVIEW_PROVIDER: ${{ inputs.provider }}
+      run: |
+        set -o pipefail
+        pr-review run \
+          --repo . \
+          --github-event "$GITHUB_EVENT_PATH" \
+          --out "$RUNNER_TEMP/pr-review.md" \
+          --json-out "$RUNNER_TEMP/pr-review.json" \
+          --quiet || echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+        echo "report=$RUNNER_TEMP/pr-review.md" >> "$GITHUB_OUTPUT"
+
+    # Always available, needs no permissions, and is the only channel that
+    # works for fork PRs.
+    - name: Write job summary
+      if: always()
+      shell: bash
+      run: |
+        if [ -f "$RUNNER_TEMP/pr-review.md" ]; then
+          cat "$RUNNER_TEMP/pr-review.md" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "pr-review produced no report." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Post comment
+      if: >-
+        inputs.post-comment == 'true'
+        && github.event.pull_request.number
+        && github.event.pull_request.head.repo.full_name == github.repository
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/pr-review.md"
+
+    - name: Note skipped comment
+      if: >-
+        inputs.post-comment == 'true'
+        && github.event.pull_request.number
+        && github.event.pull_request.head.repo.full_name != github.repository
+      shell: bash
+      run: |
+        echo "::notice::Fork pull request — GITHUB_TOKEN is read-only and secrets are withheld, so the review was written to the job summary instead of a PR comment."
+
+    - name: Enforce blockers
+      if: inputs.fail-on-blocker == 'true' && steps.review.outputs.exit_code == '2'
+      shell: bash
+      run: |
+        echo "::error::pr-review found a verified blocker"
+        exit 1

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewPlan",
+  "type": "object",
+  "required": ["reviews"],
+  "properties": {
+    "change_type": { "type": "string" },
+    "risk_areas": { "type": "array", "items": { "type": "string" } },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["axis", "depth"],
+        "properties": {
+          "axis": { "type": "string" },
+          "depth": { "enum": ["off", "basic", "normal", "deep"] },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}
