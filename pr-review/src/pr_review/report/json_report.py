@@ -39,6 +39,12 @@ class JSONReporter:
             ],
             "errors": [dataclasses.asdict(e) for e in result.errors],
             "notes": list(result.notes),
+            "coverage": {
+                "changed_files": len(result.changed_paths()),
+                "reviewed_files": len(result.reviewed_paths()),
+                "unreviewed_files": result.unreviewed_paths(),
+                "passes_per_axis": result.pass_count(),
+            },
             "stats": result.stats,
         }
         return json.dumps(payload, indent=2, default=_default)

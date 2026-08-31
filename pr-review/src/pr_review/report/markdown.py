@@ -29,8 +29,25 @@ class MarkdownReporter:
         )
         if plan.risk_areas:
             out.append(f"_risk areas_: {', '.join(plan.risk_areas)}")
+
+        total = len(result.changed_paths())
+        seen = len(result.reviewed_paths())
+        passes = result.pass_count()
+        if total and not result.structural_only:
+            line = f"_coverage_ **{seen}/{total}** changed files"
+            if passes > 1:
+                line += f" · {passes} passes per axis"
+            out.append(line)
         if result.pr.extra.get("diff_truncated"):
             out.append("> ⚠️ the diff was truncated; review may be incomplete")
+        missing = [] if result.structural_only else result.unreviewed_paths()
+        if missing:
+            shown = ", ".join(f"`{p}`" for p in missing[:12])
+            more = f" and {len(missing) - 12} more" if len(missing) > 12 else ""
+            out.append(
+                f"\n> ⚠️ **{len(missing)} changed file(s) were not reviewed** — the "
+                f"pass budget (`limits.max_passes_per_axis`) ran out: {shown}{more}"
+            )
         if result.pr.extra.get("repo_root_adjusted"):
             out.append(
                 "> ℹ️ the review root was moved to the repository top level "
@@ -102,6 +119,7 @@ class MarkdownReporter:
                    f"(+{result.analysis.total_additions}/-{result.analysis.total_deletions})")
         for e in plan.entries:
             out.append(f"  {e.axis:12} {e.depth:6} {e.reason}")
+        out.append(f"files reviewed: {seen}/{total} in {passes} pass(es) per axis")
         for k, v in result.stats.items():
             out.append(f"{k}: {v}")
         if result.notes:

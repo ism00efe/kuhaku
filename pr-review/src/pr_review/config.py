@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,56 @@ class TierConfig:
 
 
 @dataclass(frozen=True)
+class ModelLimits:
+    """What a concrete model accepts, and what its provider actually meters.
+
+    These are two different constraints and collapsing them into one number is
+    what produced the old global byte cap:
+
+    ``context_tokens``
+        the model's window -- a hard ceiling on a single request.
+    ``tokens_per_minute``
+        the provider's throughput cap. ``0`` means the provider does not meter
+        tokens at all: it counts *requests*, so a prompt that fills the window
+        costs exactly what a one-line prompt costs, and there is no reason to
+        send less than the work needs.
+
+    Declared per model rather than guessed, because the spread is enormous:
+    Groq allows 8K tokens a minute, MiniMax M3 accepts a million per request.
+    """
+
+    context_tokens: int
+    tokens_per_minute: int = 0
+
+
+# Conservative for source code, which tokenises worse than prose.
+CHARS_PER_TOKEN = 3.5
+# The axis goal, depth instruction, JSON schema and PR text wrapped around the
+# gathered context.
+PROMPT_OVERHEAD_TOKENS = 900
+
+DEFAULT_MODEL_LIMITS: dict[str, ModelLimits] = {
+    # Groq free tier: a large window, but throughput is the real wall.
+    "openai/gpt-oss-20b": ModelLimits(131_072, tokens_per_minute=8_000),
+    "openai/gpt-oss-120b": ModelLimits(131_072, tokens_per_minute=8_000),
+    "llama-3.1-8b-instant": ModelLimits(131_072, tokens_per_minute=8_000),
+    "llama-3.3-70b-versatile": ModelLimits(131_072, tokens_per_minute=8_000),
+    # OpenRouter :free -- metered by request count, not tokens.
+    "z-ai/glm-5.2:free": ModelLimits(256_000),
+    "minimax/minimax-m3:free": ModelLimits(1_048_576),
+    # OpenCode Zen free catalogue.
+    "nemotron-3-ultra-free": ModelLimits(262_144),
+    "mimo-v2.5-free": ModelLimits(262_144),
+    "mock": ModelLimits(1_000_000),
+}
+
+# What an unlisted model is assumed to accept. Deliberately small: under-using
+# a large window costs a little quality, overflowing a small one costs the
+# request.
+UNKNOWN_MODEL_LIMITS = ModelLimits(32_768)
+
+
+@dataclass(frozen=True)
 class Candidate:
     """One concrete attempt for a tier, in priority order.
 
@@ -67,6 +117,8 @@ class Candidate:
     temperature: float
     tier: str
     degraded: bool = False
+    input_budget_bytes: int = 0
+    """How much context this candidate can be sent, from its own limits."""
 
     def label(self) -> str:
         return f"{self.provider}:{self.model}"
@@ -160,10 +212,26 @@ DEFAULT_DEPTH_TIER = {"basic": "basic", "normal": "normal", "deep": "deep"}
 
 @dataclass(frozen=True)
 class Limits:
-    diff_bytes: int = 16_000
+    diff_bytes: int = 4_000_000
+    """Safety net only -- NOT a review budget.
+
+    The deterministic analysis is computed from this diff and costs nothing to
+    run, so starving it starves every decision downstream: which files exist,
+    which symbols moved, whether an interface changed, and therefore which axes
+    run at which depth. It must see the whole change. This cap exists solely so
+    a pathological repository cannot exhaust memory; how much of the diff each
+    *model* is shown is decided per task, from that model's own limits.
+    """
     aux_bytes: int = 8_000
     max_changed_files_listed: int = 60
-    context_max_bytes: int = 24_000
+    max_passes_per_axis: int = 4
+    """Spend dial: each pass over a slice of the change is one request.
+
+    A change too large for one request is split across passes instead of being
+    truncated. 0 lifts the cap -- every file gets reviewed, however many
+    requests that takes. When the cap bites, the report names the files that
+    were not reached.
+    """
 
 
 @dataclass(frozen=True)
@@ -198,6 +266,9 @@ class Config:
         default_factory=lambda: dict(DEFAULT_PROVIDERS)
     )
     tiers: dict[str, TierConfig] = field(default_factory=lambda: dict(DEFAULT_TIERS))
+    models: dict[str, ModelLimits] = field(
+        default_factory=lambda: dict(DEFAULT_MODEL_LIMITS)
+    )
     depth_tier: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_DEPTH_TIER))
     tier_degradation: dict[str, tuple[str, ...]] = field(
         default_factory=lambda: dict(DEFAULT_TIER_DEGRADATION)
@@ -230,6 +301,22 @@ class Config:
 
     # ----------------------------------------------------------------- #
 
+    def model_limits(self, model: str) -> ModelLimits:
+        return self.models.get(model) or UNKNOWN_MODEL_LIMITS
+
+    def input_budget_bytes(self, model: str, max_output_tokens: int) -> int:
+        """Context a single request to ``model`` may carry, in bytes.
+
+        Bounded by the window, and additionally by throughput where the
+        provider meters tokens per minute -- sending a 100K-token prompt to a
+        model allowed 8K tokens a minute does not fail fast, it stalls.
+        """
+        lim = self.model_limits(model)
+        room = lim.context_tokens - max_output_tokens - PROMPT_OVERHEAD_TOKENS
+        if lim.tokens_per_minute:
+            room = min(room, lim.tokens_per_minute - max_output_tokens - PROMPT_OVERHEAD_TOKENS)
+        return max(2_000, int(room * CHARS_PER_TOKEN))
+
     def tier(self, name: str) -> TierConfig:
         try:
             return self.tiers[name]
@@ -258,7 +345,9 @@ class Config:
             model = prov.default_model or tier.model
             return [
                 Candidate(
-                    self.force_provider, model, tier.max_tokens, tier.temperature, tier_name
+                    self.force_provider, model, tier.max_tokens, tier.temperature,
+                    tier_name,
+                    input_budget_bytes=self.input_budget_bytes(model, tier.max_tokens),
                 )
             ]
 
@@ -283,6 +372,7 @@ class Config:
                 Candidate(
                     provider_name, model, src.max_tokens, src.temperature,
                     source_tier, degraded,
+                    input_budget_bytes=self.input_budget_bytes(model, src.max_tokens),
                 )
             )
 
@@ -398,6 +488,11 @@ def load_config(
     return cfg
 
 
+def _replace_known(obj: Any, values: dict[str, Any]) -> Any:
+    known = {f.name for f in fields(obj)}
+    return replace(obj, **{k: v for k, v in values.items() if k in known})
+
+
 def _apply_mapping(cfg: Config, data: dict[str, Any]) -> Config:
     changes: dict[str, Any] = {}
     if "providers" in data:
@@ -406,6 +501,14 @@ def _apply_mapping(cfg: Config, data: dict[str, Any]) -> Config:
         changes["tiers"] = _merge_tiers(cfg.tiers, data["model_tiers"])
     if "tiers" in data:
         changes["tiers"] = _merge_tiers(cfg.tiers, data["tiers"])
+    if "models" in data:
+        merged = dict(cfg.models)
+        for name, raw in data["models"].items():
+            merged[name] = ModelLimits(
+                context_tokens=int(raw["context_tokens"]),
+                tokens_per_minute=int(raw.get("tokens_per_minute", 0)),
+            )
+        changes["models"] = merged
     if "depth_tier" in data:
         changes["depth_tier"] = {**cfg.depth_tier, **data["depth_tier"]}
     if "tier_degradation" in data:
@@ -436,12 +539,14 @@ def _apply_mapping(cfg: Config, data: dict[str, Any]) -> Config:
         if key in data:
             changes[key] = tuple(data[key])
 
+    # Hand-written config outlives the code that reads it: a key that has been
+    # renamed or retired must not abort the run.
     if "limits" in data:
-        changes["limits"] = replace(cfg.limits, **data["limits"])
+        changes["limits"] = _replace_known(cfg.limits, data["limits"])
     if "concurrency" in data:
-        changes["concurrency"] = replace(cfg.concurrency, **data["concurrency"])
+        changes["concurrency"] = _replace_known(cfg.concurrency, data["concurrency"])
     if "verification" in data:
-        changes["verification"] = replace(cfg.verification, **data["verification"])
+        changes["verification"] = _replace_known(cfg.verification, data["verification"])
 
     return replace(cfg, **changes)
 

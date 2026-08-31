@@ -20,9 +20,21 @@
 # reporters       = ["markdown", "json"]
 
 [limits]
-diff_bytes = 16000
+# A safety net, not a review budget. The deterministic analysis is computed
+# from this diff and costs nothing to run, so it must see the WHOLE change --
+# which files exist, which symbols moved, whether an interface changed, and
+# therefore which axes run at which depth, all come from it. How much of the
+# change each *model* is shown is decided per task from that model's own
+# limits (see [models] below), never from a single global number.
+diff_bytes = 4000000
 aux_bytes = 8000
-context_max_bytes = 24000
+
+# Each pass over a slice of the change is one request, and requests are what
+# the free tiers meter. A change too large for one request is split across
+# passes rather than truncated; this caps the spend. 0 = no cap (every file is
+# reviewed, however many requests that takes). When the cap bites, the report
+# names the files that were not reached.
+max_passes_per_axis = 4
 
 [concurrency]
 # Groq's free tier is capped at 8K tokens/minute for the gpt-oss models, and a
@@ -69,6 +81,39 @@ kind = "openai_compat"
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 default_model = "nemotron-3-ultra-free"
+
+# --- model limits ----------------------------------------------------------
+# What each model accepts, and what its provider actually meters. These are two
+# different constraints and collapsing them into one number is exactly what
+# made an earlier version review 8 of a PR's 51 files:
+#
+#   context_tokens     the model's window -- a hard ceiling per request
+#   tokens_per_minute  the provider's throughput cap. Omit it when the provider
+#                      meters REQUESTS instead of tokens: then a prompt that
+#                      fills the window costs the same as a one-line prompt,
+#                      and there is no reason to send less than the work needs.
+#
+# Groq allows 8K tokens a minute; MiniMax M3 takes a million per request. No
+# single byte budget can describe both. An unlisted model is assumed to accept
+# 32K tokens -- under-using a large window costs a little quality, overflowing
+# a small one costs the request.
+
+[models."openai/gpt-oss-20b"]
+context_tokens = 131072
+tokens_per_minute = 8000
+
+[models."openai/gpt-oss-120b"]
+context_tokens = 131072
+tokens_per_minute = 8000
+
+[models."z-ai/glm-5.2:free"]
+context_tokens = 256000
+
+[models."minimax/minimax-m3:free"]
+context_tokens = 1048576
+
+[models."nemotron-3-ultra-free"]
+context_tokens = 262144
 
 # --- model tiers -----------------------------------------------------------
 # Logical roles bound to a provider + concrete model, plus an ordered fallback

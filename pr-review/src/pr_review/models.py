@@ -92,6 +92,8 @@ class FileChange:
     old_path: str | None = None
     is_dependency_manifest: bool = False
     language: str = ""
+    diff_bytes: int = 0
+    """Size of this file's patch, so passes can be packed without re-parsing."""
 
 
 @dataclass
@@ -149,7 +151,13 @@ class ReviewPlan:
 
 @dataclass(frozen=True)
 class ContextSpec:
-    """What a depth wants gathered. The axis narrows *what kind*."""
+    """What KINDS of context a depth wants. The axis narrows it further.
+
+    Deliberately carries no byte ceiling. How much fits is a property of the
+    model the task will run on, not of the depth: the same "deep" reading is
+    worth 3 MB on a million-token model and 16 KB on a throughput-capped one.
+    That number travels on :attr:`ReviewTask.input_budget_bytes`.
+    """
 
     changed_file_body: bool = True
     surrounding_lines: int = 0
@@ -159,7 +167,6 @@ class ContextSpec:
     architecture_docs: bool = False
     repo_tree: bool = False
     max_files: int = 6
-    max_bytes: int = 24_000
 
 
 @dataclass(frozen=True)
@@ -169,6 +176,16 @@ class ReviewTask:
     model_tier: str
     context_strategy: str
     context_spec: ContextSpec
+    files: tuple[str, ...] = ()
+    """Changed files this pass covers. Empty means the whole change."""
+    pass_index: int = 1
+    pass_count: int = 1
+    """A change too large for one request is reviewed across several passes."""
+    input_budget_bytes: int = 24_000
+
+    def label(self) -> str:
+        base = f"{self.axis}/{self.depth}"
+        return base if self.pass_count == 1 else f"{base} [{self.pass_index}/{self.pass_count}]"
 
 
 # --------------------------------------------------------------------------- #
@@ -269,6 +286,29 @@ class ReviewResult:
     notes: list[str] = field(default_factory=list)
     """Non-failure run events worth showing: provider failover, degradation."""
     stats: dict[str, Any] = field(default_factory=dict)
+
+    def changed_paths(self) -> set[str]:
+        return {f.path for f in self.analysis.files}
+
+    def reviewed_paths(self) -> set[str]:
+        """Files at least one review pass actually carried.
+
+        A task with no explicit file list covers the whole change; otherwise
+        coverage is the union of the passes. Reported rather than assumed,
+        because a review that quietly saw a fraction of the diff is worse than
+        one that says so.
+        """
+        if not self.tasks:
+            return set()
+        if any(not t.files for t in self.tasks):
+            return self.changed_paths()
+        return {p for t in self.tasks for p in t.files} & self.changed_paths()
+
+    def unreviewed_paths(self) -> list[str]:
+        return sorted(self.changed_paths() - self.reviewed_paths())
+
+    def pass_count(self) -> int:
+        return max((t.pass_count for t in self.tasks), default=1)
 
     @property
     def structural_only(self) -> bool:

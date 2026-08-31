@@ -19,7 +19,6 @@ class DeepDepth:
             architecture_docs=True,
             repo_tree=True,
             max_files=18,
-            max_bytes=48_000,
         )
 
     def instruction(self) -> str:

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from pr_review.context.base import CONTEXT_STRATEGIES
+from pr_review.diff import parse_diff, render
 from pr_review.models import (
     ContextItem,
     DeterministicAnalysis,
@@ -27,6 +28,7 @@ _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "b
 @CONTEXT_STRATEGIES.register("default")
 class DefaultContextGatherer:
     name = "default"
+    config_max_listed = 60
 
     def gather(
         self,
@@ -39,7 +41,7 @@ class DefaultContextGatherer:
     ) -> ReviewContext:
         spec = task.context_spec
         ctx = ReviewContext(task=task)
-        budget = min(spec.max_bytes, 200_000)
+        budget = task.input_budget_bytes
         used = 0
 
         def add(kind: str, label: str, content: str) -> None:
@@ -51,12 +53,37 @@ class DefaultContextGatherer:
             ctx.items.append(ContextItem(kind=kind, label=label, content=body))
             used += len(body)
 
-        add("diff", f"unified diff ({pr.base_ref}...{pr.head_ref})", pr.diff)
+        # The files this pass is responsible for. Empty means the whole change.
+        scope = list(task.files) if task.files else [f.path for f in analysis.files]
+        in_scope = set(scope)
 
-        changed = [f.path for f in analysis.files if f.status != "deleted"]
+        # 1. The patch, restricted to this pass. Added first and never dropped:
+        #    everything else is supporting material for it.
+        by_path = {fd.path: fd for fd in parse_diff(pr.diff)}
+        patch = "\n".join(render(by_path[p]) for p in scope if p in by_path)
+        add("diff", f"unified diff ({pr.base_ref}...{pr.head_ref})", patch)
 
+        # 2. What this pass does NOT cover. Cheap, and it stops the model
+        #    reasoning as though the slice it was handed were the whole change.
+        elsewhere = [f for f in analysis.files if f.path not in in_scope]
+        if elsewhere:
+            listed = elsewhere[: self.config_max_listed]
+            rows = [
+                f"  {f.status:8} +{f.additions} -{f.deletions} {f.path}" for f in listed
+            ]
+            if len(elsewhere) > len(listed):
+                rows.append(f"  … and {len(elsewhere) - len(listed)} more")
+            add(
+                "note",
+                f"also changed by this PR, reviewed in another pass ({len(elsewhere)} files)",
+                "\n".join(rows),
+            )
+
+        changed = [p for p in scope if p not in set(analysis.deleted_paths)]
+
+        # 3. Bodies of the files this pass owns.
         if spec.changed_file_body:
-            for path in changed[: spec.max_files]:
+            for path in changed:
                 text = _read(repo_root / path)
                 if text is None:
                     continue
@@ -64,14 +91,16 @@ class DefaultContextGatherer:
                     text = _windows(text, path, analysis, spec.surrounding_lines)
                 add("file", path, text)
 
-        if spec.sibling_files:
-            for sib in self._siblings(repo_root, changed, limit=spec.max_files):
-                add("file", f"{sib} (sibling)", _read(repo_root / sib) or "")
-
+        # 4. Supporting context, most informative first, so a tight budget
+        #    sheds the least useful material rather than whatever came last.
         if spec.callers_usages:
             names = sorted({s.name for s in analysis.changed_symbols if len(s.name) > 2})[:8]
             for hit in self._usages(repo_root, names, changed, limit=40):
                 add("usage", hit[0], hit[1])
+
+        if spec.sibling_files:
+            for sib in self._siblings(repo_root, changed, limit=spec.max_files):
+                add("file", f"{sib} (sibling)", _read(repo_root / sib) or "")
 
         if spec.dependency_files:
             for dep in meta.dependency_files[:6]:

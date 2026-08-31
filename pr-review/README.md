@@ -142,6 +142,47 @@ Three behaviours keep this honest when a free tier gives out:
 catalogue entries forbid confidential data -- check before enabling one on a
 private repository.
 
+## How much of the change gets reviewed
+
+Two separate questions, kept separate:
+
+**What the deterministic layer sees: everything.** It costs no tokens and no
+money, and every later decision depends on it -- which files changed, which
+symbols moved, whether an interface or a dependency moved, and therefore which
+axes run at which depth. `limits.diff_bytes` is a safety net against a
+pathological repository, not a budget.
+
+**What a model is sent: whatever that model can take.** The budget is declared
+per model in `[models]`, from two independent facts:
+
+| | window | throughput | budget |
+|---|---|---|---|
+| `groq openai/gpt-oss-20b` | 131K tokens | 8K tokens/min | ~20 KB |
+| `z-ai/glm-5.2:free` | 256K tokens | metered by request | ~860 KB |
+| `minimax/minimax-m3:free` | 1M tokens | metered by request | ~3.5 MB |
+
+Groq's window is irrelevant: throughput is the wall. OpenRouter's `:free`
+models meter *requests*, so a prompt that fills the window costs exactly what a
+one-line prompt costs and there is no reason to send less than the work needs.
+No single byte number can describe both, which is why depths no longer carry
+one -- a `ContextSpec` says what *kinds* of context to gather, and the model
+says how much fits.
+
+**A change too large for one request is split into passes**, never truncated.
+Each pass carries its own files' patches and is told, by name, which files the
+other passes hold. `limits.max_passes_per_axis` caps the spend, since a pass is
+a request; when it bites, the report names every file that was not reached:
+
+```
+_coverage_ **12/40** changed files · 4 passes per axis
+
+> ⚠️ 28 changed file(s) were not reviewed — the pass budget ran out: …
+```
+
+An earlier version applied one 16 KB cap in the source layer, above the
+analyser. On a 51-file pull request it reviewed 8 files, planned the review
+from that 4%, and reported "changed files: 8" as though that were the change.
+
 ## What keeps a finding honest
 
 A review tool is only as useful as the worst thing it says confidently. Three

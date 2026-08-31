@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 
 from pr_review.analyzer import symbols
-from pr_review.diff import parse_diff
+from pr_review.diff import parse_diff, rendered_size
 from pr_review.discovery.languages import language_for
 from pr_review.discovery.manifests import DEP_FILE_NAMES
 from pr_review.models import (
@@ -46,6 +46,7 @@ class DeterministicAnalyzer:
                 old_path=fd.old_path if fd.status == "renamed" else None,
                 is_dependency_manifest=is_dep,
                 language=lang,
+                diff_bytes=rendered_size(fd),
             )
             result.files.append(fc)
             result.total_additions += fd.additions

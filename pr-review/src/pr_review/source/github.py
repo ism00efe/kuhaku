@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 
+from pr_review.config import Limits
 from pr_review.errors import SourceError
 from pr_review.models import PRContext
 from pr_review.source import base as g
@@ -22,11 +23,12 @@ class GitHubActionsSource:
         *,
         event_path: str | None = None,
         repo_root: str | Path = ".",
-        diff_bytes: int = 16_000,
+        diff_bytes: int = 0,
     ) -> None:
         self.event_path = event_path or os.environ.get("GITHUB_EVENT_PATH")
         self.repo_root = Path(repo_root)
-        self.diff_bytes = diff_bytes
+        # 0 = use the safety cap. Never a review budget: see Limits.diff_bytes.
+        self.diff_bytes = diff_bytes or Limits().diff_bytes
 
     def load(self) -> tuple[PRContext, Path]:
         if not self.event_path or not Path(self.event_path).is_file():

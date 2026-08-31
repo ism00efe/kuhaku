@@ -83,7 +83,7 @@ class Pipeline:
         classifier = Classifier(self.config, self.selector, self.dispatcher)
         plan = classifier.plan(analysis, meta, pr)
 
-        tasks = Planner(self.config).build(plan)
+        tasks = Planner(self.config).build(plan, analysis)
 
         if llm_available:
             raw_findings = self._review(tasks, repo_root, pr, analysis, meta, errors)

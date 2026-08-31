@@ -68,6 +68,42 @@ class FileDiff:
         ]
 
 
+def render(fd: FileDiff) -> str:
+    """Re-emit one file's diff in unified form.
+
+    The engine needs to hand a model *some* of the change rather than all of
+    it, so the unit of selection has to be a single file's patch. Rendering
+    from the parsed form -- instead of slicing the raw diff text at a byte
+    offset -- guarantees every hunk handed over is syntactically whole.
+    """
+    head = f"diff --git a/{fd.old_path or fd.new_path} b/{fd.new_path or fd.old_path}"
+    out = [head]
+    if fd.status == "added":
+        out.append("new file")
+    elif fd.status == "deleted":
+        out.append("deleted file")
+    elif fd.status == "renamed":
+        out.append(f"rename from {fd.old_path}")
+        out.append(f"rename to {fd.new_path}")
+    if fd.is_binary:
+        out.append("Binary file")
+        return "\n".join(out)
+    out.append(f"--- a/{fd.old_path or '/dev/null'}")
+    out.append(f"+++ b/{fd.new_path or '/dev/null'}")
+    for h in fd.hunks:
+        out.append(
+            f"@@ -{h.old_start},{h.old_count} +{h.new_start},{h.new_count} @@"
+            + (f" {h.section}" if h.section else "")
+        )
+        out.extend(f"{ln.kind}{ln.text}" for ln in h.lines)
+    return "\n".join(out)
+
+
+def rendered_size(fd: FileDiff) -> int:
+    """Bytes :func:`render` would produce for this file."""
+    return len(render(fd).encode())
+
+
 def _strip_prefix(path: str) -> str | None:
     if path in ("/dev/null", ""):
         return None

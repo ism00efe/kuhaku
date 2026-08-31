@@ -19,7 +19,6 @@ class NormalDepth:
             architecture_docs=False,
             repo_tree=False,
             max_files=10,
-            max_bytes=28_000,
         )
 
     def instruction(self) -> str:

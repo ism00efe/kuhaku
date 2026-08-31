@@ -19,7 +19,6 @@ class BasicDepth:
             architecture_docs=False,
             repo_tree=False,
             max_files=4,
-            max_bytes=12_000,
         )
 
     def instruction(self) -> str:

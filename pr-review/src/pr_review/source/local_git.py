@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pr_review.config import Limits
 from pr_review.models import PRContext
 from pr_review.source import base as g
 
@@ -21,14 +22,15 @@ class LocalGitSource:
         head_ref: str = "HEAD",
         title: str = "",
         body: str = "",
-        diff_bytes: int = 16_000,
+        diff_bytes: int = 0,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.base_ref = base_ref
         self.head_ref = head_ref
         self.title = title
         self.body = body
-        self.diff_bytes = diff_bytes
+        # 0 = use the safety cap. Never a review budget: see Limits.diff_bytes.
+        self.diff_bytes = diff_bytes or Limits().diff_bytes
 
     def load(self) -> tuple[PRContext, Path]:
         root = g.ensure_repo(self.repo_root)
