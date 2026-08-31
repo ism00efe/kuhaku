@@ -14,10 +14,11 @@ from .adapters.embedding import (
     ApiEmbeddingAdapter,
     LocalEmbeddingAdapter,
     local_candidate_id,
+    model_on_disk,
 )
 from .adapters.store import StoreAdapter
 
-__all__ = ["build_rag_registry", "local_candidate_id"]
+__all__ = ["build_rag_registry", "local_candidate_id", "model_on_disk"]
 
 
 def build_rag_registry(rag_settings, *, build_embedder, build_store) -> Registry:

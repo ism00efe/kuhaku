@@ -8,6 +8,7 @@ directory is caught, announced once, and the process continues unpersisted.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -111,12 +112,15 @@ class JsonMemory:
         return data
 
     def _write(self, data: dict) -> None:
+        tmp = self._path.with_name(self._path.name + ".tmp")
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_name(self._path.name + ".tmp")
             tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
             tmp.replace(self._path)
         except OSError as exc:
+            # If the write landed but the rename failed, don't leave the .tmp behind.
+            with contextlib.suppress(OSError):
+                tmp.unlink()
             if not self._degraded:
                 self._degraded = True
                 if self._ui is not None:

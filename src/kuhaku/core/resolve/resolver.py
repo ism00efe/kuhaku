@@ -168,6 +168,13 @@ def resolve(
     fp = fingerprint(env, packages=registry.required_packages())
 
     remembered_id = memory.get(kind, fp)
+
+    def remember(candidate_id: str) -> None:
+        # Skip the write when the store already holds this exact selection -- no need to
+        # rewrite decisions.json (or re-run its unwritable-dir handling) for a no-op.
+        if candidate_id != remembered_id:
+            memory.put(kind, fp, candidate_id)
+
     if remembered_id is not None:
         remembered = by_id.get(remembered_id)
         if remembered is not None and remembered.ready:
@@ -199,13 +206,13 @@ def resolve(
             _chosen_message(kind, chosen, baseline_id),
             dedupe_key=(kind, chosen.id, "only_option"),
         )
-        memory.put(kind, fp, chosen.id)
+        remember(chosen.id)
         return Resolution(chosen, "only_option", _baseline_meta(baseline_id, chosen))
 
     if ui.is_interactive():
         picked = ui.ask(_question(kind, ready), ready)
         if picked is not None:
-            memory.put(kind, fp, picked.id)
+            remember(picked.id)
             return Resolution(picked, "user_choice", _baseline_meta(baseline_id, picked))
 
     safe = min(ready, key=lambda c: (c.safety_rank, c.id))
@@ -214,7 +221,7 @@ def resolve(
         prominent=True,
         dedupe_key=(kind, safe.id, "safe_default"),
     )
-    memory.put(kind, fp, safe.id)
+    remember(safe.id)
     return Resolution(safe, "safe_default", _baseline_meta(baseline_id, safe))
 
 

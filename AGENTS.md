@@ -124,8 +124,10 @@ change, and do not document them as working:
 - The built-in lightweight (Tier-0) vector store and the Qdrant adapter are not
   implemented. Chroma is the only store candidate the resolver has, so the store
   decision always takes the "exactly one" branch, and `suggest_store_upgrade` has
-  nothing to offer. `guard_single_writer` (the concurrent-writer guard) exists but is
-  not yet on any store's write path.
+  nothing to offer. `guard_single_writer` wraps `RAG.ingest` (a second concurrent writer
+  to the same store dir gets `StoreConflict`), but a caller composing `RAGEngine`
+  directly is not covered, and there is still no built-in store whose own write path
+  invokes it.
 
 ## Reporting back
 

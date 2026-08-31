@@ -29,7 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stderr handler attached if the host configured none. `NullEmbeddings` still backs the
   sparse-only path. New errors: `KuhakuError` (now the root of `SecurityComponentError`
   and `CustomComponentError` too), `CapabilityUnavailable`, `ConsentRequired`,
-  `StoreConflict`, `ConfigError`.
+  `StoreConflict` (raised by `guard_single_writer`, which now wraps `RAG.ingest` — a
+  second process ingesting into the same store directory gets a clean conflict; a
+  caller composing `RAGEngine` directly is not covered), `ConfigError`.
 - **Groq** as an LLM provider (`LLM_PROVIDER=groq`, `GROQ_API_KEY`, `groq_model`,
   `groq_base_url`), an OpenAI-compatible endpoint added at the end of the `auto` order.
 - `RAGSettings.chunk_upgrade_threshold` (default 50 000) and `RAGSettings.vram_headroom`

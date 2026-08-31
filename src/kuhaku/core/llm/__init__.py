@@ -31,8 +31,6 @@ from .base import LLMError, LLMProvider
 
 logger = logging.getLogger(__name__)
 
-_KNOWN_PROVIDERS = ("ollama", "anthropic", "openai", "vertex", "groq")
-
 
 def build_llm_provider(
     settings: Settings,
@@ -48,18 +46,23 @@ def build_llm_provider(
     to the real implementation.
     """
 
-    configured = settings.llm_provider.strip().lower()
-    if configured != AUTO and configured not in _KNOWN_PROVIDERS:
-        raise LLMError(
-            f"Unknown LLM_PROVIDER '{settings.llm_provider}'. "
-            f"Expected one of: {', '.join(_KNOWN_PROVIDERS)}."
-        )
-
     registry = Registry()
     register_llm_adapters(registry, settings)
     env = env or probe_environment()
     ui = ui or ConsoleUI()
     memory = memory if memory is not None else JsonMemory(ui=ui)
+
+    configured = settings.llm_provider.strip().lower()
+    if configured != AUTO:
+        # A pinned provider name that no adapter offers is a config typo -- surface it as
+        # LLMError (not CapabilityUnavailable) and name the real options. The valid set
+        # comes from the registry, so adding a provider needs no edit here.
+        offered = {c.id for c in registry.candidates("llm", env)}
+        if configured not in offered:
+            raise LLMError(
+                f"Unknown LLM_PROVIDER '{settings.llm_provider}'. "
+                f"Expected one of: {', '.join(sorted(offered))}."
+            )
 
     resolution = resolve(
         "llm",

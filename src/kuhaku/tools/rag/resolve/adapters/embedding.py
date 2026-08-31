@@ -12,6 +12,7 @@ Two kinds:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from kuhaku.core.resolve import Candidate, Cost, Environment
 from kuhaku.core.resolve.probes import hf_cache_roots, module_available
@@ -26,20 +27,37 @@ def local_candidate_id() -> str:
     return _LOCAL_ID
 
 
+def _dir_has_content(path: Path) -> bool:
+    try:
+        return path.is_dir() and any(path.iterdir())
+    except OSError:
+        return False
+
+
 def _model_cached(model_name: str) -> bool:
-    """True when the model is already downloaded in any of the HuggingFace /
-    sentence-transformers cache locations, with an actual snapshot present -- not just a
-    ``models--*`` directory left behind by an interrupted download."""
+    """True when the model is already downloaded, with real content present -- not just a
+    directory left behind by an interrupted download.
+
+    Covers the modern HuggingFace hub layout (`models--org--name/snapshots/<hash>`) in
+    every location :func:`hf_cache_roots` knows about, plus the legacy
+    sentence-transformers layout (`~/.cache/torch/sentence_transformers/org_name`). It is
+    a heuristic: a false negative only costs a redundant consent prompt (or a
+    degrade-to-sparse announcement), never a crash -- ``SentenceTransformer`` itself
+    still finds a model wherever it actually lives."""
 
     slug = model_name.replace("/", "--")
     for root in hf_cache_roots():
-        snapshots = root / f"models--{slug}" / "snapshots"
-        try:
-            if snapshots.is_dir() and any(snapshots.iterdir()):
-                return True
-        except OSError:
-            continue
-    return False
+        if _dir_has_content(root / f"models--{slug}" / "snapshots"):
+            return True
+    legacy = Path.home() / ".cache" / "torch" / "sentence_transformers"
+    return _dir_has_content(legacy / model_name.replace("/", "_"))
+
+
+def model_on_disk(rag_settings) -> bool:
+    """Whether the configured local embedding model is already downloaded. Public
+    wrapper over :func:`_model_cached` for callers that only have ``RAGSettings``."""
+
+    return _model_cached(rag_settings.embedding_model)
 
 
 class LocalEmbeddingAdapter:

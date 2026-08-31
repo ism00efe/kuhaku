@@ -3,11 +3,14 @@ adapters by name."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from .cost import Candidate
 from .environment import Environment
+
+_log = logging.getLogger("kuhaku")
 
 
 @runtime_checkable
@@ -46,8 +49,13 @@ class Registry:
             try:
                 out.extend(adapter.probe(env))
             except Exception:
-                # probe() is contracted never to raise; this is defense in depth so one
-                # broken adapter cannot take down resolution for a whole kind.
+                # probe() is contracted never to raise. If one does it is a bug in that
+                # adapter, not a reason to fail the whole kind -- but log it, so a
+                # misconfigured adapter is not an invisible "zero candidates".
+                _log.warning(
+                    "adapter %r raised in probe(%s); treating as no candidates",
+                    type(adapter).__name__, kind, exc_info=True,
+                )
                 continue
         return out
 

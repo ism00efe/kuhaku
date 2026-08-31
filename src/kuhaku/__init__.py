@@ -25,7 +25,7 @@ from typing import Any
 
 from .core.auth import AuthContext
 from .core.config import Settings, get_settings
-from .core.exceptions import SecurityComponentError
+from .core.exceptions import CapabilityUnavailable, SecurityComponentError
 from .core.llm import build_llm_provider
 from .core.llm.token_tracking import TokenTrackingLLM
 from .core.models import ExecutionResult, Message, ToolCall
@@ -64,7 +64,7 @@ from .tools.rag import (
     extract_text,
 )
 from .tools.rag.prompts import load_system_prompt
-from .tools.rag.resolve import build_rag_registry, local_candidate_id
+from .tools.rag.resolve import build_rag_registry, local_candidate_id, model_on_disk
 
 logger = logging.getLogger(__name__)
 
@@ -467,7 +467,10 @@ class RAG:
           ``resolve`` announces the degrade and this returns ``"sparse"`` -- nothing is
           downloaded.
         - ``"auto"`` with ``KUHAKU_AUTO`` off: the documented baseline, ``"hybrid"`` +
-          the local embedder; if that baseline is not usable, ``CapabilityUnavailable``.
+          the local embedder. Deterministic: no probing, no consent flow. A local file
+          check is not the kind of probing the switch forbids, and per the
+          "a default may cost CPU/memory, never a download" rule an absent model here is
+          a hard ``CapabilityUnavailable`` rather than a download.
         """
 
         if requested == "sparse":
@@ -476,14 +479,34 @@ class RAG:
         provider = rs.embedding_provider.strip().lower()
         embed_id = "vertex-embeddings" if provider == "vertex" else local_candidate_id()
 
-        if requested in ("dense", "hybrid") or not auto_enabled():
+        if not auto_enabled():
+            # Deterministic startup: no probing, no consent flow. A local model that is
+            # not already present would mean a download, which this mode forbids.
+            effective = requested if requested in ("dense", "hybrid") else "hybrid"
+            if provider != "vertex" and not model_on_disk(rs):
+                raise CapabilityUnavailable(
+                    f"retrieval={effective} needs the embedding model "
+                    f"'{rs.embedding_model}' already on disk, and KUHAKU_AUTO is false, "
+                    f"which forbids downloading it. Pre-download the model, set "
+                    f"retrieval='sparse', or unset KUHAKU_AUTO."
+                )
+            try:
+                return effective, build_embedding_provider(rs)
+            except CapabilityUnavailable:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- baseline unbuildable -> deterministic failure
+                raise CapabilityUnavailable(
+                    f"retrieval={effective} needs an embedding backend, which is not "
+                    f"usable ({exc}); KUHAKU_AUTO is false, so there is no fallback. "
+                    f"Set retrieval='sparse' or unset KUHAKU_AUTO."
+                ) from exc
+
+        if requested in ("dense", "hybrid"):
             resolution = resolve(
                 "embedding", registry=registry, env=env, ui=ui, memory=memory,
                 requested=embed_id, required=True,
             )
-            return (requested if requested in ("dense", "hybrid") else "hybrid"), activate(
-                resolution, env=env, ui=ui
-            )
+            return requested, activate(resolution, env=env, ui=ui)
 
         resolution = resolve(
             "embedding", registry=registry, env=env, ui=ui, memory=memory, required=False
@@ -612,13 +635,16 @@ class RAG:
         """
 
         rs = self._rag_settings
-        result = self._engine.ingest_document(
-            text,
-            filename,
-            chunk_size=chunk_size if chunk_size is not None else rs.chunk_size,
-            overlap=overlap if overlap is not None else rs.chunk_overlap,
-            access_tags=access_tags,
-        )
+        from .tools.rag.resolve.store_policy import guard_single_writer
+
+        with guard_single_writer(rs.chroma_persist_dir, ui=self._decision_ui):
+            result = self._engine.ingest_document(
+                text,
+                filename,
+                chunk_size=chunk_size if chunk_size is not None else rs.chunk_size,
+                overlap=overlap if overlap is not None else rs.chunk_overlap,
+                access_tags=access_tags,
+            )
         self._maybe_suggest_store_upgrade()
         return result
 

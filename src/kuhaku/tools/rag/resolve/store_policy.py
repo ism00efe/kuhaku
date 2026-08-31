@@ -90,10 +90,18 @@ def guard_single_writer(store_dir: str | Path, *, ui) -> Iterator[None]:
     A second process that reaches this while the lock is held gets a clean
     :class:`StoreConflict` (or, when interactive, a chance to override) rather than a
     corrupted store. §13 fallback: an explicit lock at the head of the write path.
+    ``RAG.ingest`` wraps each ingest in this; a caller composing ``RAGEngine`` directly
+    is responsible for its own write path.
+
+    If the lock directory cannot be created or written (read-only filesystem), this
+    yields without a lock rather than failing the write -- best-effort, like the rest of
+    the resolver's on-disk state.
     """
 
-    lock = Path(store_dir) / _LOCK_NAME
+    directory = Path(store_dir)
+    lock = directory / _LOCK_NAME
     try:
+        directory.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as exc:
         message = (
@@ -106,6 +114,10 @@ def guard_single_writer(store_dir: str | Path, *, ui) -> Iterator[None]:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         else:
             raise StoreConflict(message) from exc
+    except OSError:
+        # cannot create the lock at all (read-only dir, etc.) -- proceed unguarded
+        yield
+        return
     try:
         os.write(fd, str(os.getpid()).encode())
         os.close(fd)

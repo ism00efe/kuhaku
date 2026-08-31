@@ -93,9 +93,66 @@ def test_model_cached_needs_an_actual_snapshot(monkeypatch, tmp_path):
     from kuhaku.tools.rag.resolve.adapters import embedding as emb
 
     monkeypatch.setattr(emb, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(emb.Path, "home", classmethod(lambda cls: tmp_path / "nohome"))
     model_dir = tmp_path / "models--intfloat--multilingual-e5-small"
     (model_dir / "snapshots").mkdir(parents=True)
     assert emb._model_cached("intfloat/multilingual-e5-small") is False  # snapshots dir empty
 
     (model_dir / "snapshots" / "abc123").mkdir()
     assert emb._model_cached("intfloat/multilingual-e5-small") is True
+
+
+# --- second-review BLOCKER: a failed rename leaves no .tmp behind --------------
+def test_write_failure_does_not_leak_a_tmp_file(tmp_path, monkeypatch):
+    mem = JsonMemory(tmp_path)
+
+    def _boom(self, target):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr("pathlib.Path.replace", _boom)
+    mem.put("llm", _fp(), "ollama")  # must not raise
+
+    assert list((tmp_path / ".kuhaku").glob("*.tmp")) == []
+
+
+# --- second-review: a raising adapter is logged, not silently swallowed -------
+def test_adapter_that_raises_in_probe_is_logged(caplog):
+    class _BrokenAdapter:
+        kind = "llm"
+        packages = frozenset()
+
+        def probe(self, env):
+            raise RuntimeError("adapter bug")
+
+        def baseline(self, env):
+            return None
+
+    reg = _registry(_BrokenAdapter(), FakeAdapter("llm", [make_candidate("ollama", "llm")]))
+    with caplog.at_level("WARNING", logger="kuhaku"):
+        cands = reg.candidates("llm", make_env())
+    assert [c.id for c in cands] == ["ollama"]  # the good adapter still contributes
+    assert any("adapter bug" in r.message or "_BrokenAdapter" in r.message for r in caplog.records)
+
+
+# --- second-review: KUHAKU_AUTO=false refuses a model download ----------------
+def test_auto_disabled_refuses_to_download_the_embedding_model(monkeypatch, tmp_path):
+    import kuhaku
+    from kuhaku import RAG
+    from kuhaku.core.config import Settings
+    from kuhaku.core.exceptions import CapabilityUnavailable
+    from tests.conftest import FakeLLM, FakeVectorStore
+
+    monkeypatch.setenv("KUHAKU_AUTO", "false")
+    monkeypatch.setattr(kuhaku, "ChromaVectorStore", lambda *a, **k: FakeVectorStore())
+    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s, **k: FakeLLM())
+    monkeypatch.setattr(
+        "kuhaku.tools.rag.resolve.adapters.embedding._model_cached", lambda name: False
+    )
+
+    def _must_not_build(rs, **k):
+        raise AssertionError("KUHAKU_AUTO=false must not download the model")
+
+    monkeypatch.setattr(kuhaku, "build_embedding_provider", _must_not_build)
+
+    with pytest.raises(CapabilityUnavailable):
+        RAG(settings=Settings(_env_file=None, audit_enabled=False), cache=False)
