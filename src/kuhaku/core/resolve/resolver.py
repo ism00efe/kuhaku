@@ -168,13 +168,22 @@ def resolve(
     fp = fingerprint(env, packages=registry.required_packages())
 
     remembered_id = memory.get(kind, fp)
-    if remembered_id in by_id and by_id[remembered_id].ready:
-        chosen = by_id[remembered_id]
+    if remembered_id is not None:
+        remembered = by_id.get(remembered_id)
+        if remembered is not None and remembered.ready:
+            ui.announce(
+                _remembered_message(kind, remembered),
+                dedupe_key=(kind, remembered.id, "remembered"),
+            )
+            return Resolution(remembered, "remembered", _baseline_meta(baseline_id, remembered))
+        # The remembered choice is gone (credential rotated, package removed, server
+        # stopped). Say so before re-deciding -- otherwise the fall-through to a lesser
+        # option looks like a fresh decision rather than a demotion.
         ui.announce(
-            _remembered_message(kind, chosen),
-            dedupe_key=(kind, chosen.id, "remembered"),
+            f"{kind}: the remembered choice '{remembered_id}' is no longer usable; "
+            f"re-deciding. Run `memory.reset({kind!r})` if that is unexpected.",
+            dedupe_key=(kind, remembered_id, "remembered_stale"),
         )
-        return Resolution(chosen, "remembered", _baseline_meta(baseline_id, chosen))
 
     if not ready:
         message = _gap_message(kind, candidates)

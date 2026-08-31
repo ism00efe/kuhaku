@@ -10,15 +10,13 @@ only the device decision.
 from __future__ import annotations
 
 import hashlib
-import os
 import platform
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
-from .probes import detect_isolation, gpu_kind, vram_class
+from .probes import detect_isolation, gpu_kind, hf_cache_roots, vram_class
 
 
 @dataclass(frozen=True)
@@ -66,20 +64,25 @@ def probe_environment() -> Environment:
 
 
 def _model_dir_digest() -> str | None:
-    """A digest of the HuggingFace hub cache -- entry names plus mtimes. Changes when a
-    model is pulled or removed; ``None`` when the cache does not exist."""
+    """A digest of the model caches -- entry names plus mtimes across every location
+    :func:`hf_cache_roots` knows about. Changes when a model is pulled or removed;
+    ``None`` when no cache directory exists. Kept in step with the embedding adapter's
+    ``_model_cached`` so installing a model in any of those locations re-opens the
+    decisions that depend on it."""
 
-    home = os.environ.get("HF_HOME")
-    root = Path(home) / "hub" if home else Path.home() / ".cache" / "huggingface" / "hub"
-    if not root.is_dir():
+    entries: list[str] = []
+    found = False
+    for root in hf_cache_roots():
+        if not root.is_dir():
+            continue
+        found = True
+        try:
+            entries.extend(f"{root}/{p.name}:{int(p.stat().st_mtime)}" for p in root.iterdir())
+        except OSError:
+            continue
+    if not found:
         return None
-    try:
-        entries = sorted(
-            f"{p.name}:{int(p.stat().st_mtime)}" for p in root.iterdir()
-        )
-    except OSError:
-        return None
-    return hashlib.sha256("\n".join(entries).encode()).hexdigest()[:16]
+    return hashlib.sha256("\n".join(sorted(entries)).encode()).hexdigest()[:16]
 
 
 def fingerprint(env: Environment, *, packages: Iterable[str] = ()) -> Fingerprint:

@@ -15,6 +15,7 @@ import os
 import shutil
 import socket
 import sys
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -143,6 +144,35 @@ def vram_class(gpu: str | None) -> Literal["none", "small", "medium", "large", "
     except Exception:
         return "unknown"
     return "unknown"
+
+
+def hf_cache_roots() -> list[Path]:
+    """Every directory a HuggingFace / sentence-transformers model may be cached under,
+    in priority order. Covers the env vars real deployments set (`HF_HUB_CACHE`,
+    `HUGGINGFACE_HUB_CACHE`, `HF_HOME`, `SENTENCE_TRANSFORMERS_HOME`) plus the default
+    layout. Existence is not checked here."""
+
+    roots: list[Path] = []
+    for var in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        value = os.environ.get(var)
+        if value:
+            roots.append(Path(value))
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        roots.append(Path(hf_home) / "hub")
+    st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
+    if st_home:
+        roots.append(Path(st_home))
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    # de-dupe, keep order
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return unique
 
 
 def detect_isolation() -> tuple[bool, Literal["venv", "conda", "prefix"] | None]:

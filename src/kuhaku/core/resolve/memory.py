@@ -46,6 +46,7 @@ class JsonMemory:
         self._path = root / ".kuhaku" / "decisions.json"
         self._ui = ui
         self._degraded = False
+        self._schema_warned = False
 
     # -- port ---------------------------------------------------------------
     def get(self, kind: str, fp: Fingerprint) -> str | None:
@@ -91,7 +92,21 @@ class JsonMemory:
             data = json.loads(raw)
         except ValueError:
             return None
-        if not isinstance(data, dict) or data.get("schema") != _SCHEMA:
+        if not isinstance(data, dict):
+            return None
+        if data.get("schema") != _SCHEMA:
+            # An unknown/newer schema means the file is ignored in full and the
+            # decisions are remade -- but say so once, the same way the unwritable-dir
+            # path does, so remembered selections do not just evaporate in silence.
+            if not self._schema_warned:
+                self._schema_warned = True
+                if self._ui is not None:
+                    self._ui.announce(
+                        f"decision memory at {self._path} has schema "
+                        f"{data.get('schema')!r}, not {_SCHEMA}; ignoring it and "
+                        f"re-deciding.",
+                        dedupe_key=("memory_schema",),
+                    )
             return None
         return data
 

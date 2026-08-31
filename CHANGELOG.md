@@ -20,9 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separate approvals, never inferred; an approved install runs `pip` only inside a
   verified virtualenv/conda environment, otherwise it prints the command and stops.
   Decisions are remembered in `.kuhaku/decisions.json` (project-scoped, per-field
-  invalidation against an environment fingerprint; unwritable directory → decisions
-  remade each run). Announcements go through the `kuhaku` logger, which gets a stderr
-  handler attached if the host configured none. `NullEmbeddings` still backs the
+  invalidation against an environment fingerprint; unwritable directory or an
+  unrecognised schema → decisions remade, and both are announced; a remembered choice
+  that is no longer usable is announced before re-deciding). Model-on-disk detection
+  honours `HF_HUB_CACHE` / `HUGGINGFACE_HUB_CACHE` / `HF_HOME` /
+  `SENTENCE_TRANSFORMERS_HOME` and requires an actual snapshot, not just a
+  `models--*` directory. Announcements go through the `kuhaku` logger, which gets a
+  stderr handler attached if the host configured none. `NullEmbeddings` still backs the
   sparse-only path. New errors: `KuhakuError` (now the root of `SecurityComponentError`
   and `CustomComponentError` too), `CapabilityUnavailable`, `ConsentRequired`,
   `StoreConflict`, `ConfigError`.

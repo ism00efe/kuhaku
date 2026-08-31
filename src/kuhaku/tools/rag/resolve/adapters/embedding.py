@@ -11,12 +11,10 @@ Two kinds:
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
-from pathlib import Path
 
 from kuhaku.core.resolve import Candidate, Cost, Environment
-from kuhaku.core.resolve.probes import module_available
+from kuhaku.core.resolve.probes import hf_cache_roots, module_available
 
 _LOCAL_ID = "sentence-transformer"
 _VERTEX_ID = "vertex-embeddings"
@@ -29,9 +27,19 @@ def local_candidate_id() -> str:
 
 
 def _model_cached(model_name: str) -> bool:
-    home = os.environ.get("HF_HOME")
-    root = Path(home) / "hub" if home else Path.home() / ".cache" / "huggingface" / "hub"
-    return (root / f"models--{model_name.replace('/', '--')}").is_dir()
+    """True when the model is already downloaded in any of the HuggingFace /
+    sentence-transformers cache locations, with an actual snapshot present -- not just a
+    ``models--*`` directory left behind by an interrupted download."""
+
+    slug = model_name.replace("/", "--")
+    for root in hf_cache_roots():
+        snapshots = root / f"models--{slug}" / "snapshots"
+        try:
+            if snapshots.is_dir() and any(snapshots.iterdir()):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class LocalEmbeddingAdapter:
