@@ -353,6 +353,12 @@ class Config:
         if self.force_provider:
             prov = self.provider(self.force_provider)
             model = prov.default_model or tier.model
+            # Forcing a provider pins the choice; it does not conjure a key.
+            # Without one the tier has no usable candidate, which is what makes
+            # the run report a structural-only review instead of failing every
+            # task with the same auth error.
+            if not model or (prov.api_key_env and not prov.api_key()):
+                return []
             return [
                 Candidate(
                     self.force_provider, model, tier.max_tokens, tier.temperature,

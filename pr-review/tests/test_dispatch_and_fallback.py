@@ -255,3 +255,24 @@ def test_structural_only_run_invents_nothing(tiny_repo: Path, monkeypatch):
     assert "Structural analysis only" in md
     assert "placeholder" not in md
     assert "[mock:" not in md
+
+
+def test_forcing_a_provider_does_not_conjure_a_key(monkeypatch, tiny_repo: Path):
+    """`--provider X` pins the choice; with no key it is still structural-only.
+
+    Otherwise a repository that pins one provider and forgets the secret gets a
+    wall of identical auth errors instead of the honest "no model was reachable"
+    report -- the failure mode the structural-only path exists to prevent.
+    """
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    from pr_review.config import load_config
+
+    cfg = load_config(tiny_repo, overrides={"force_provider": "openrouter"})
+    assert cfg.resolve_chain("deep") == []
+    assert not cfg.has_llm()
+
+    result = Pipeline(cfg).run(
+        LocalGitSource(tiny_repo, base_ref="main", head_ref="feature")
+    )
+    assert result.structural_only
+    assert result.findings == []
