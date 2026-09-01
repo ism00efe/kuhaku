@@ -89,10 +89,16 @@ must be absolute GitHub URLs, not relative paths.
   deliberate policy: **a default may cost CPU and memory, never a download.** Hybrid
   retrieval is on because it costs neither; the cross-encoder re-ranker is off because it
   is roughly a gigabyte. `retrieval`, `llm_provider` and `embedding_device` default to
-  `"auto"`, resolved at build time by `core/capabilities.py` +
-  `tools/rag/capabilities.py` — auto only ever downgrades toward fewer dependencies,
-  never triggers a download, and never overrides an explicit value. Adding a new
-  external-dependency setting means giving it an `"auto"` chain the same way.
+  `"auto"`, resolved at build time by `core/resolve/` (the registry-driven capability
+  resolver). `"auto"` only ever selects something usable now, never triggers a download
+  on its own, and never overrides an explicit value; consent for an install or a
+  download is asked separately and never inferred. Adding a new external-dependency
+  backend means a new adapter under `core/resolve/adapters/` or
+  `tools/rag/resolve/adapters/`, not a branch in the resolver. The resolver announces
+  through the `kuhaku` logger (attaching a stderr handler if the host configured none)
+  and remembers decisions in `.kuhaku/decisions.json` (project-scoped; recommend adding
+  `.kuhaku/` to `.gitignore`; an unwritable directory just means decisions are remade
+  each run).
 - The layered system prompt in `tools/rag/prompts/`. The safety core — instruction
   precedence, data marking, the canary rule, grounding, mandatory citations,
   contradiction handling — is framework-owned and not up for trimming.
@@ -115,6 +121,13 @@ change, and do not document them as working:
   facade.
 - References to `service.build_service()` in comments point at a module that does not
   exist in this package. They are leftovers.
+- The built-in lightweight (Tier-0) vector store and the Qdrant adapter are not
+  implemented. Chroma is the only store candidate the resolver has, so the store
+  decision always takes the "exactly one" branch, and `suggest_store_upgrade` has
+  nothing to offer. `guard_single_writer` wraps `RAG.ingest` (a second concurrent writer
+  to the same store dir gets `StoreConflict`), but a caller composing `RAGEngine`
+  directly is not covered, and there is still no built-in store whose own write path
+  invokes it.
 
 ## Reporting back
 

@@ -125,15 +125,21 @@ class NullEmbeddings:
         return list(self._VECTOR)
 
 
-def build_embedding_provider(settings: RAGSettings) -> EmbeddingProvider:
+def build_embedding_provider(
+    settings: RAGSettings, *, device: str | None = None
+) -> EmbeddingProvider:
     """Instantiate the embedding provider selected by ``settings.embedding_provider``.
 
     Mirrors ``kuhaku.core.llm.build_llm_provider``. Defaults to the local
-    sentence-transformers model (unchanged behavior); ``vertex`` opts into Google Vertex
-    AI embeddings for users with Google Cloud credits. Takes a
-    :class:`~kuhaku.tools.rag.config.RAGSettings` (not the flat
+    sentence-transformers model; ``vertex`` opts into Google Vertex AI embeddings. Takes
+    a :class:`~kuhaku.tools.rag.config.RAGSettings` (not the flat
     ``kuhaku.core.config.Settings``) -- callers holding a full ``Settings`` instance
     should pass ``RAGSettings.from_settings(settings)``.
+
+    ``device`` places a local model on ``cpu``/``cuda``/``mps``. ``None`` (or
+    ``"auto"``, or ``settings.embedding_device="auto"``) asks torch what is available --
+    ``torch_accelerator()`` does not go stale (§9), so this needs no persistence or
+    announcement. ``RAG.__init__`` passes the device it resolved.
     """
 
     provider = settings.embedding_provider.strip().lower()
@@ -149,11 +155,16 @@ def build_embedding_provider(settings: RAGSettings) -> EmbeddingProvider:
         )
 
     if provider == "sentence-transformer":
-        from .capabilities import resolve_embedding_device
+        from kuhaku.core.resolve.probes import torch_accelerator
+
+        configured = settings.embedding_device
+        chosen = device if device not in (None, "auto") else None
+        if chosen is None:
+            chosen = configured if configured not in (None, "auto") else torch_accelerator()
 
         return SentenceTransformerEmbeddings(
             settings.embedding_model,
-            device=resolve_embedding_device(settings.embedding_device),
+            device=chosen,
             retry_enabled=settings.retry_enabled,
             retry_max_attempts=settings.retry_embedding_max_attempts,
             retry_backoff_base_seconds=settings.retry_embedding_backoff_base_seconds,

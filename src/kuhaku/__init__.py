@@ -24,13 +24,24 @@ from pathlib import Path
 from typing import Any
 
 from .core.auth import AuthContext
-from .core.capabilities import AUTO, auto_enabled
 from .core.config import Settings, get_settings
-from .core.exceptions import SecurityComponentError
+from .core.exceptions import CapabilityUnavailable, SecurityComponentError
 from .core.llm import build_llm_provider
 from .core.llm.token_tracking import TokenTrackingLLM
 from .core.models import ExecutionResult, Message, ToolCall
 from .core.policy import enforce_guard_policy, validate_audit_log_path
+from .core.resolve import (
+    AUTO,
+    JsonMemory,
+    activate,
+    auto_enabled,
+    default_project_dir,
+    default_ui,
+    fingerprint,
+    probe_environment,
+    resolve,
+)
+from .core.resolve.adapters.llm import register_llm_adapters
 from .core.sanitization import Redaction
 from .tools.rag import (
     ACCESS_TAG_INTERNAL,
@@ -54,8 +65,8 @@ from .tools.rag import (
     build_embedding_provider,
     extract_text,
 )
-from .tools.rag.capabilities import announce_retrieval_downgrade
 from .tools.rag.prompts import load_system_prompt
+from .tools.rag.resolve import build_rag_registry, local_candidate_id, model_on_disk
 
 logger = logging.getLogger(__name__)
 
@@ -326,17 +337,48 @@ class RAG:
         s = self._settings
         rs = self._rag_settings
         self._chunker = build_chunker(rs)
+
+        # One environment probe, one UI, one decision memory -- shared across every
+        # capability decision this constructor makes (embedding, store, LLM) so a
+        # skipped-decision announcement or a "remembered:" line appears at most once,
+        # and so the whole construction resolves against a single snapshot of the
+        # machine. build_embedder/build_store are closures over the module-level names
+        # tests patch, keeping the "how to build it" detail out of the adapters.
+        env = probe_environment()
+        ui = default_ui()
+        memory = JsonMemory(default_project_dir(), ui=ui)
+        registry = build_rag_registry(
+            rs,
+            build_embedder=lambda: build_embedding_provider(rs),
+            build_store=lambda: ChromaVectorStore(
+                rs.chroma_persist_dir,
+                rs.chroma_collection,
+                retry_enabled=rs.retry_enabled,
+                retry_max_attempts=rs.retry_vectorstore_max_attempts,
+                retry_backoff_seconds=rs.retry_vectorstore_backoff_seconds,
+            ),
+        )
+        # one registry for every decision this constructor makes, LLM adapters included,
+        # so build_llm_provider enumerates against the same object rather than its own.
+        register_llm_adapters(registry, s)
+        # one fingerprint too -- computing it walks the model cache, so do it once and
+        # thread it through every resolve() call.
+        fp = fingerprint(env, packages=registry.required_packages())
+        self._decision_ui = ui
+        self._decision_env = env
+        self._decision_registry = registry
+
         effective_retrieval, self._embedder = self._resolve_retrieval_and_embedder(
-            requested_retrieval, rs
+            requested_retrieval, rs, registry=registry, env=env, ui=ui, memory=memory, fp=fp
         )
-        self._store = ChromaVectorStore(
-            rs.chroma_persist_dir,
-            rs.chroma_collection,
-            retry_enabled=rs.retry_enabled,
-            retry_max_attempts=rs.retry_vectorstore_max_attempts,
-            retry_backoff_seconds=rs.retry_vectorstore_backoff_seconds,
+        store_resolution = resolve(
+            "store", registry=registry, env=env, ui=ui, memory=memory, required=True,
+            fingerprint=fp,
         )
-        llm = build_llm_provider(s)
+        self._store = activate(store_resolution, env=env, ui=ui)
+        llm = build_llm_provider(
+            s, registry=registry, env=env, ui=ui, memory=memory, fingerprint=fp
+        )
         if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
             llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
         self._llm = llm
@@ -373,36 +415,117 @@ class RAG:
             rag_settings=rs,
         )
 
-    def _resolve_retrieval_and_embedder(
-        self, requested: str, rs: RAGSettings
-    ) -> tuple[str, EmbeddingProvider]:
-        """Decide the effective retrieval strategy and build the matching embedder.
+        self._upgrade_suggested = False
+        self._announce_hardware_hint()
 
-        - ``"sparse"`` (pinned): no embeddings are needed for ranking, so use
-          :class:`NullEmbeddings` -- a sparse-only deployment never imports
+    def _announce_hardware_hint(self) -> None:
+        """§9/§10: when a GPU is visible, report the model *size class* that should fit
+        given ``vram_headroom`` -- never a model name. Silent on a CPU-only box."""
+
+        env = self._decision_env
+        if env.gpu is None or env.vram_class in ("none", "unknown"):
+            return
+        from .core.resolve.hardware import recommended_size_class
+
+        size_class = recommended_size_class(
+            env.vram_class, headroom=self._rag_settings.vram_headroom
+        )
+        self._decision_ui.announce(
+            f"hardware: {env.gpu} with ~{env.vram_class} VRAM detected; local models up "
+            f"to size class '{size_class}' should fit (vram_headroom="
+            f"{self._rag_settings.vram_headroom}). No model name is chosen automatically.",
+            dedupe_key=("hardware-hint",),
+        )
+
+    def _maybe_suggest_store_upgrade(self) -> None:
+        """§8: once the corpus is large enough, suggest a heavier store. Runs at most
+        once per ``RAG`` instance and never migrates anything."""
+
+        if self._upgrade_suggested:
+            return
+        from .tools.rag.resolve.store_policy import suggest_store_upgrade
+
+        try:
+            count = self._store.count()
+        except Exception:  # noqa: BLE001 -- a store that cannot count is not a reason to fail ingest
+            return
+        choice = suggest_store_upgrade(
+            count,
+            current_id="chroma",
+            registry=self._decision_registry,
+            env=self._decision_env,
+            ui=self._decision_ui,
+            threshold=self._rag_settings.chunk_upgrade_threshold,
+        )
+        if count >= self._rag_settings.chunk_upgrade_threshold:
+            self._upgrade_suggested = True
+        _ = choice  # the operator's pick is surfaced by suggest_store_upgrade's announcement
+
+    def _resolve_retrieval_and_embedder(
+        self, requested: str, rs: RAGSettings, *, registry, env, ui, memory, fp
+    ) -> tuple[str, EmbeddingProvider]:
+        """Decide the effective retrieval strategy and build the matching embedder
+        (§7 -- the embedding axis, resolved at construction time).
+
+        - ``"sparse"`` (pinned): :class:`NullEmbeddings`; the embedding decision is not
+          entered at all, so a sparse-only deployment never imports
           ``torch``/``sentence-transformers`` and never downloads a model.
-        - ``"dense"`` / ``"hybrid"`` (pinned): the embedder is mandatory. A failure to
-          build it is the caller's misconfiguration and propagates -- auto never
-          silently degrades a strategy the caller asked for by name.
-        - ``"auto"`` (the default): try to build the embedder. On success, ``"hybrid"``.
-          On failure, announce the downgrade on the terminal and fall back to
-          ``"sparse"`` + :class:`NullEmbeddings`. ``KUHAKU_AUTO=false`` skips the probe
-          and treats ``"auto"`` as ``"hybrid"``.
+        - ``"dense"`` / ``"hybrid"`` (pinned): the embedder is mandatory. Goes through
+          ``resolve`` + ``activate`` -- if it is not ready and consent is withheld (or
+          nobody is at the terminal), ``ConsentRequired``; never a silent downgrade.
+        - ``"auto"`` (default, ``KUHAKU_AUTO`` on): if a real embedding backend is
+          usable now (package installed, model already on disk), ``"hybrid"``. If not,
+          ``resolve`` announces the degrade and this returns ``"sparse"`` -- nothing is
+          downloaded.
+        - ``"auto"`` with ``KUHAKU_AUTO`` off: the documented baseline, ``"hybrid"`` +
+          the local embedder. Deterministic: no probing, no consent flow. A local file
+          check is not the kind of probing the switch forbids, and per the
+          "a default may cost CPU/memory, never a download" rule an absent model here is
+          a hard ``CapabilityUnavailable`` rather than a download.
         """
 
         if requested == "sparse":
             return "sparse", NullEmbeddings()
-        if requested in ("dense", "hybrid"):
-            return requested, build_embedding_provider(rs)
-        # requested == AUTO
+
+        provider = rs.embedding_provider.strip().lower()
+        embed_id = "vertex-embeddings" if provider == "vertex" else local_candidate_id()
+
         if not auto_enabled():
-            return "hybrid", build_embedding_provider(rs)
-        try:
-            embedder = build_embedding_provider(rs)
-        except Exception as exc:  # noqa: BLE001 -- any import/model-load failure means "no dense backend"
-            announce_retrieval_downgrade(f"embedding provider could not be built ({exc})")
+            # Deterministic startup: no probing, no consent flow. A local model that is
+            # not already present would mean a download, which this mode forbids.
+            effective = requested if requested in ("dense", "hybrid") else "hybrid"
+            if provider != "vertex" and not model_on_disk(rs):
+                raise CapabilityUnavailable(
+                    f"retrieval={effective} needs the embedding model "
+                    f"'{rs.embedding_model}' already on disk, and KUHAKU_AUTO is false, "
+                    f"which forbids downloading it. Pre-download the model, set "
+                    f"retrieval='sparse', or unset KUHAKU_AUTO."
+                )
+            try:
+                return effective, build_embedding_provider(rs)
+            except CapabilityUnavailable:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- baseline unbuildable -> deterministic failure
+                raise CapabilityUnavailable(
+                    f"retrieval={effective} needs an embedding backend, which is not "
+                    f"usable ({exc}); KUHAKU_AUTO is false, so there is no fallback. "
+                    f"Set retrieval='sparse' or unset KUHAKU_AUTO."
+                ) from exc
+
+        if requested in ("dense", "hybrid"):
+            resolution = resolve(
+                "embedding", registry=registry, env=env, ui=ui, memory=memory,
+                requested=embed_id, required=True, fingerprint=fp,
+            )
+            return requested, activate(resolution, env=env, ui=ui)
+
+        resolution = resolve(
+            "embedding", registry=registry, env=env, ui=ui, memory=memory,
+            required=False, fingerprint=fp,
+        )
+        if resolution.candidate is None:
             return "sparse", NullEmbeddings()
-        return "hybrid", embedder
+        return "hybrid", activate(resolution, env=env, ui=ui)
 
     def _build_retriever(self, retrieval: str, reranker: bool | str | None) -> Retriever:
         rs = self._rag_settings
@@ -524,13 +647,18 @@ class RAG:
         """
 
         rs = self._rag_settings
-        return self._engine.ingest_document(
-            text,
-            filename,
-            chunk_size=chunk_size if chunk_size is not None else rs.chunk_size,
-            overlap=overlap if overlap is not None else rs.chunk_overlap,
-            access_tags=access_tags,
-        )
+        from .tools.rag.resolve.store_policy import guard_single_writer
+
+        with guard_single_writer(rs.chroma_persist_dir, ui=self._decision_ui):
+            result = self._engine.ingest_document(
+                text,
+                filename,
+                chunk_size=chunk_size if chunk_size is not None else rs.chunk_size,
+                overlap=overlap if overlap is not None else rs.chunk_overlap,
+                access_tags=access_tags,
+            )
+        self._maybe_suggest_store_upgrade()
+        return result
 
     def load_documents(
         self, directory: str | Path, *, access_tags: Sequence[str] | None = None

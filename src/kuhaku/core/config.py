@@ -59,13 +59,14 @@ class Settings(BaseSettings):
     )
 
     # --- LLM provider ---------------------------------------------------------
-    # "auto" (the default) is resolved at build time by kuhaku.core.capabilities: a
-    # reachable Ollama server wins (the documented baseline), otherwise the first
-    # provider whose credentials are present (openai -> anthropic -> vertex); if none
-    # apply it stays "ollama" and the usual "start Ollama or set an API key" error
-    # surfaces at first use. A concrete value here is absolute -- auto never overrides
-    # it. KUHAKU_AUTO=false pins it to "ollama".
-    llm_provider: str = Field(default="auto")  # auto | ollama | anthropic | openai | vertex
+    # "auto" (the default) is resolved at build time by kuhaku.core.resolve: a reachable
+    # local Ollama server wins, otherwise the first provider whose credentials are
+    # present (openai -> anthropic -> vertex -> groq). When several are usable and no
+    # terminal is attached, the safest is chosen and the skipped decision is announced
+    # prominently; when nothing is usable, RAG() raises CapabilityUnavailable at
+    # construction. A concrete value here is absolute. KUHAKU_AUTO=false pins it to the
+    # documented baseline ("ollama") with no probing.
+    llm_provider: str = Field(default="auto")  # auto | ollama | anthropic | openai | vertex | groq
     llm_temperature: float = Field(default=0.1)
     llm_max_tokens: int = Field(default=1024)
 
@@ -84,6 +85,17 @@ class Settings(BaseSettings):
     )
     openai_model: str = Field(default="gpt-4o-mini")
     openai_base_url: str = Field(default="https://api.openai.com/v1")
+
+    # Groq: OpenAI-compatible API, free tier as of writing. Added to the `auto` chain at
+    # the end (a reachable local Ollama and every other credentialed provider are
+    # preferred first -- see kuhaku.core.resolve.adapters.llm); prompt text still leaves
+    # the machine, so it is never selected silently over a local option.
+    groq_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("KUHAKU_GROQ_API_KEY", "GROQ_API_KEY"),
+    )
+    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
 
     # Google Vertex AI (optional, requires the `vertex` extra).
     # Auth is via Application Default Credentials (gcloud/service account), not an API

@@ -18,6 +18,22 @@ from kuhaku.tools.rag.models import ACCESS_TAGS_NONE_KEY, Chunk, RetrievedChunk
 from kuhaku.tools.rag.retriever import is_entitled
 
 
+@pytest.fixture(autouse=True)
+def _isolate_kuhaku_decisions(tmp_path_factory, monkeypatch):
+    """Point kuhaku's ``.kuhaku/decisions.json`` at a throwaway directory so a test that
+    builds a real ``RAG()`` or calls ``build_llm_provider`` through the resolver never
+    writes into the working tree (AGENTS.md: leave nothing behind).
+
+    ``KUHAKU_PROJECT_DIR`` is read at ``JsonMemory()`` construction time, not import
+    time, so an autouse fixture (which runs before every test body) is enough -- no
+    import-order dependency."""
+
+    monkeypatch.setenv("KUHAKU_PROJECT_DIR", str(tmp_path_factory.mktemp("kuhaku_decisions")))
+    from kuhaku.core.resolve.ui import _reset_default_ui
+
+    _reset_default_ui()  # so announcement-dedupe state does not leak between tests
+
+
 def _matching_samples(instrument, family_name: str, sample_name: str, labels: dict[str, str]):
     # Prometheus label names may not contain a ".": the OTel Prometheus exporter
     # sanitizes attribute keys by replacing "." with "_" on export (verified against the

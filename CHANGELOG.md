@@ -9,17 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Environment-aware `"auto"` settings. `retrieval`, `llm_provider` and
-  `embedding_device` now ship as `"auto"` and are resolved once, at construction, from
-  what is installed or reachable: `llm_provider` prefers a reachable Ollama then the
-  first provider whose credentials are set; `embedding_device` picks CUDA/MPS/CPU from
-  torch; `retrieval` stays `hybrid` when an embedding backend can be built and downgrades
-  to `sparse` (BM25 only — no embeddings, no torch, no model download) when it cannot,
-  announcing the downgrade on stderr and as a `FallbackWarning`. An explicit value is
-  always absolute, `"auto"` never triggers a download, and `KUHAKU_AUTO=false` disables
-  the probing entirely. New modules: `kuhaku.core.capabilities` (tool-agnostic probes +
-  resolver) and `kuhaku.tools.rag.capabilities` (the RAG chains); `NullEmbeddings` backs
-  the sparse-only path.
+- **Capability resolution (`kuhaku.core.resolve`).** A registry-driven resolver replaces
+  the earlier `kuhaku.core.capabilities` / `kuhaku.tools.rag.capabilities` modules. Each
+  decision point — LLM backend, embedding backend, store, retrieval mode — goes through
+  one loop: probe the environment, enumerate the candidates usable *right now* (no
+  install, no download), then branch on the count. Zero candidates for a required
+  capability raises `CapabilityUnavailable`; exactly one is used and announced; more than
+  one prompts if a terminal is attached, otherwise the safest is chosen and the skipped
+  decision is announced prominently. Package installs and model downloads are two
+  separate approvals, never inferred; an approved install runs `pip` only inside a
+  verified virtualenv/conda environment, otherwise it prints the command and stops.
+  Decisions are remembered in `.kuhaku/decisions.json` (project-scoped, per-field
+  invalidation against an environment fingerprint; unwritable directory or an
+  unrecognised schema → decisions remade, and both are announced; a remembered choice
+  that is no longer usable is announced before re-deciding). Model-on-disk detection
+  honours `HF_HUB_CACHE` / `HUGGINGFACE_HUB_CACHE` / `HF_HOME` /
+  `SENTENCE_TRANSFORMERS_HOME` and requires an actual snapshot, not just a
+  `models--*` directory. Announcements go through the `kuhaku` logger, which gets a
+  stderr handler attached if the host configured none. `NullEmbeddings` still backs the
+  sparse-only path. New errors: `KuhakuError` (now the root of `SecurityComponentError`
+  and `CustomComponentError` too), `CapabilityUnavailable`, `ConsentRequired`,
+  `StoreConflict` (raised by `guard_single_writer`, which now wraps `RAG.ingest` — a
+  second process ingesting into the same store directory gets a clean conflict; a
+  caller composing `RAGEngine` directly is not covered), `ConfigError`.
+- **Groq** as an LLM provider (`LLM_PROVIDER=groq`, `GROQ_API_KEY`, `groq_model`,
+  `groq_base_url`), an OpenAI-compatible endpoint added at the end of the `auto` order.
+- `RAGSettings.chunk_upgrade_threshold` (default 50 000) and `RAGSettings.vram_headroom`
+  (default 0.25) — both marked in code as estimates. Crossing the chunk threshold makes
+  `RAG.ingest`/`load_documents` *suggest* a heavier store (never migrate).
+
+### Changed
+
+- **`RAG(...)` and `build_llm_provider(...)` now fail at construction** for a required
+  capability that cannot be satisfied, or for anything explicitly requested that needs an
+  unapproved install/download — previously this surfaced at the first `ask()`/`ingest()`
+  or as a raw import error. Optional capabilities still degrade and announce.
+- **`retrieval="auto"` no longer downloads the embedding model.** It resolves to `hybrid`
+  only when the embedding package is installed *and* the model is already on disk;
+  otherwise it degrades to `sparse` and says so. `retrieval="dense"`/`"hybrid"` with no
+  ready embedder raises `ConsentRequired` (interactive: asks first).
+- `embedding_device` resolution moved into `build_embedding_provider(..., device=...)`;
+  `RAG` passes the device it resolved. Standalone calls still fall back to what torch
+  reports.
+- `KUHAKU_AUTO=false` now short-circuits before any probing and returns the documented
+  baseline for every decision; if a baseline is itself unusable it raises
+  `CapabilityUnavailable` (no fallback — determinism is the contract).
 - `SECURITY.md`: vulnerability reporting policy, so GitHub's Security tab surfaces one.
 - CI/CD/PyPI/license badges in `README.md`.
 - CI's `docs` job now deploys the built site to GitHub Pages (`mkdocs gh-deploy`) on

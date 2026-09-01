@@ -129,6 +129,12 @@ class MyLLM:
         ...
 ```
 
+To have `KUHAKU_LLM_PROVIDER=auto` consider a new backend, add an adapter under
+`kuhaku/core/resolve/adapters/` that reports a `Candidate` for it (its readiness, its
+`Cost`, and a zero-arg `activate` that builds it) and register it in
+`register_llm_adapters`. The resolver itself never names a provider — it only counts
+candidates and reads their cost.
+
 ### Chunker
 
 ```python

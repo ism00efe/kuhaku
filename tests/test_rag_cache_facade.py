@@ -23,7 +23,10 @@ from tests.conftest import FakeEmbeddings, FakeLLM, FakeVectorStore, make_chunk
 def _patch_rag_deps(monkeypatch, fake_store, fake_embedder, fake_llm):
     monkeypatch.setattr(kuhaku, "build_embedding_provider", lambda rs: fake_embedder)
     monkeypatch.setattr(kuhaku, "ChromaVectorStore", lambda *a, **k: fake_store)
-    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s: fake_llm)
+    monkeypatch.setattr(
+        "kuhaku.tools.rag.resolve.adapters.embedding._model_cached", lambda name: True
+    )
+    monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s, **_k: fake_llm)
 
 
 def _build_rag(monkeypatch, store, llm, *, rag_settings=None, **kwargs) -> RAG:

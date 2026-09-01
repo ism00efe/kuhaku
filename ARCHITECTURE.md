@@ -4,7 +4,9 @@
 kuhaku/
 ├── core/          tool-agnostic runtime infrastructure
 │   ├── config          typed, environment-driven Settings
-│   ├── llm              LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI
+│   ├── llm              LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI / Groq
+│   ├── resolve          capability resolution: probe → enumerate → branch on count;
+│   │                    registry of adapters, UI/consent/decision-memory ports
 │   ├── auth             AuthContext, AuthorizationPolicy, API-key and JWT providers
 │   ├── security          prompt-injection guard, output checks, PII sanitization, audit
 │   ├── observability      structured logging, OpenTelemetry tracing and metrics
@@ -38,6 +40,19 @@ target that satisfies the contract — `RAGEngine` is just the first thing that 
 [configuration](configuration.md) for its knobs and the `rag.engine` escape hatch into
 `RAGEngine`'s full constructor-injection surface (custom retrievers, query rewriting,
 contradiction detection, a custom `EngineMessages`, ...).
+
+## Capability resolution
+
+`core/resolve` decides which backend to use for each external dependency. Adapters
+(under `core/resolve/adapters/` and `tools/rag/resolve/adapters/`) each report only
+their own candidates and each candidate's `Cost`; the resolver branches on how many are
+usable right now and never names a specific backend. `RAG.__init__` and
+`build_llm_provider` share one environment probe, one UI and one decision memory
+(`.kuhaku/decisions.json`) across all their decisions.
+
+The built-in lightweight (Tier-0) store and Qdrant are not implemented yet: Chroma is
+the only store candidate, so the store decision always takes the "exactly one" branch,
+and the "no reprocessing on a store upgrade" property is not yet achievable.
 
 ## Known limitations
 
