@@ -1,0 +1,50 @@
+# pr-review — drop-in workflow for any repository.
+#
+# Save as .github/workflows/pr-review.yml in YOUR repository.
+# Pair it with a .pr-review.toml at the repository root (see pr-review.toml
+# next to this file) if you want your own provider or model.
+#
+# ONE THING TO CHANGE: the secret name on the `env:` line, so it matches
+# `api_key_env` in your .pr-review.toml. The action only sees what this file
+# passes it -- naming the variable in the toml alone is not enough.
+
+name: PR review
+
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write        # only needed to post the comment
+
+concurrency:
+  # Superseded runs are cancelled, so pushing twice does not pay twice.
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # required: base...head diffs need real history
+
+      - uses: ism00efe/kuhaku/pr-review@pr-review-v0.1.0
+        env:
+          MY_LLM_API_KEY: ${{ secrets.MY_LLM_API_KEY }}   # CHANGE -- must match api_key_env
+        with:
+          post-comment: true
+          fail-on-blocker: false   # turn on once you trust the blockers
+
+# Notes
+# -----
+# * With no key at all this still runs, and reports a structural-only review:
+#   the change analysis and the review plan, with no invented findings. A good
+#   zero-cost way to check the wiring before adding a secret.
+# * On a pull request from a fork GitHub withholds secrets and makes the token
+#   read-only. The review still runs and is written to the job summary instead
+#   of a comment. Do not switch this to `pull_request_target` to work around
+#   that -- it runs fork code with write access.
+# * Pinned to a release tag, so an upstream change cannot alter your CI
+#   without you moving the ref. Use `@main` instead to follow the default
+#   branch, accepting that it moves under you.

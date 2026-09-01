@@ -253,6 +253,16 @@ class VerificationConfig:
     uncertain_low: float = 0.35
     uncertain_high: float = 0.8
     max_llm_verifications: int = 6
+    blocker_requires_evidence: bool = True
+    """A blocker must be either verified or confident; otherwise it is a warning.
+
+    "Blocker" is the only severity with automation attached -- ``fail-on-blocker``
+    turns it into a red build -- so it has to mean more than a model asserting
+    it. A finding earns the label by surviving verification (verdict VALID), or
+    by being confident enough to sit outside the uncertain band
+    (``uncertain_high``). Anything else is still reported, as a warning, for a
+    human to judge. No new threshold is introduced: both bars already exist.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -343,6 +353,12 @@ class Config:
         if self.force_provider:
             prov = self.provider(self.force_provider)
             model = prov.default_model or tier.model
+            # Forcing a provider pins the choice; it does not conjure a key.
+            # Without one the tier has no usable candidate, which is what makes
+            # the run report a structural-only review instead of failing every
+            # task with the same auth error.
+            if not model or (prov.api_key_env and not prov.api_key()):
+                return []
             return [
                 Candidate(
                     self.force_provider, model, tier.max_tokens, tier.temperature,

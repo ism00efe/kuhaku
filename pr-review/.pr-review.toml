@@ -55,6 +55,12 @@ llm_min_severity = "warning"
 uncertain_low = 0.35
 uncertain_high = 0.8
 max_llm_verifications = 6
+# "blocker" is the only severity wired to automation (fail-on-blocker turns it
+# into a red build), so asserting it has to cost something: a blocker must
+# survive verification, or be confident enough to sit outside the uncertain
+# band above. Anything else is still reported -- as a warning, for a human to
+# weigh. Set false to take the model's word for it.
+blocker_requires_evidence = true
 
 # --- providers -------------------------------------------------------------
 # kind is the registered transport: "openai_compat" | "gemini" | "mock".

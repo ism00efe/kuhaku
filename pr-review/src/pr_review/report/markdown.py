@@ -87,11 +87,15 @@ class MarkdownReporter:
             f = vf.finding
             loc = f.file + (f":{f.line}" if f.line else "")
             badge = _VERDICT_BADGE.get(vf.result.verdict, "")
+            demoted = f.extra.get("severity_capped_from")
+            note = f" · _reported as {str(demoted).upper()}_" if demoted else ""
             out.append(
                 f"- **[{f.severity.upper()}]** `{loc}` · _{f.axis}_ · {badge} "
-                f"· conf {f.confidence:.2f}\n"
+                f"· conf {f.confidence:.2f}{note}\n"
                 f"  - {f.issue}"
             )
+            if demoted and f.extra.get("severity_capped_reason"):
+                out.append(f"  - _downgraded_: {f.extra['severity_capped_reason']}")
             if f.reasoning:
                 out.append(f"  - _why_: {f.reasoning}")
             if f.evidence:

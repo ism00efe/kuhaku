@@ -69,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: <owner>/pr-review@v0        # or ./pr-review from within this repo
+      - uses: ism00efe/kuhaku/pr-review@pr-review-v0.1.0   # or ./pr-review from within this repo
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -88,6 +88,29 @@ to read-only for PRs from forks. The action detects this: the review still runs
 (structural-only, since no key reached it) and the report is written to the job
 summary instead of a comment. Do not switch the caller to `pull_request_target`
 to work around it -- that runs fork-authored code with write access and secrets.
+
+## Using it from another repository
+
+The engine is a composite action living in a subdirectory, so any repository can
+call it by path -- there is nothing to copy or vendor:
+
+```yaml
+- uses: ism00efe/kuhaku/pr-review@pr-review-v0.1.0
+```
+
+Pin the tag rather than `@main`: a branch ref moves under you, and an upstream
+change should never alter someone else's CI without them asking for it.
+
+`examples/` holds two drop-in files: `workflow.yml` (save as
+`.github/workflows/pr-review.yml` in your repository) and `pr-review.toml` (save
+as `.pr-review.toml` at your repository root). The configuration is read from
+the repository *being reviewed*, so each repository brings its own provider,
+its own key and its own models while the action itself stays untouched.
+
+Any OpenAI-compatible endpoint works with configuration alone -- four fields:
+`base_url`, `api_key_env`, `default_model`, and that model's `context_tokens`.
+The key must also be passed through the workflow's `env:` block: naming it in
+the toml is not enough, since the action only sees what the workflow hands it.
 
 ## Providers, tiers and free-tier limits
 
@@ -198,6 +221,13 @@ rules constrain what a model is allowed to assert:
   not, the model paraphrased instead of quoting: confidence is capped into the
   uncertain band and the LLM verifier is told so explicitly, rather than being
   asked to judge blind.
+- **A blocker has to be earned.** It is the only severity with automation
+  attached, so a finding keeps the label only if verification confirmed it
+  (verdict VALID) or its confidence sits outside the uncertain band. Otherwise
+  it is reported as a warning, marked `reported as BLOCKER`, with the reason.
+  No new threshold: both bars already existed, they simply were not applied to
+  severity. Combined with the rule above, an unquotable claim is capped below
+  the band and therefore can never block a build.
 - **Whole-PR claims cite no file.** `scope` and `method` findings use
   `file: "-"`, and are verified against the complete changed-file list and the
   PR text. Slicing an arbitrary file and asking a model "is this true?" invites
