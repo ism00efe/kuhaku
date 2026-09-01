@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -83,15 +84,43 @@ def suggest_store_upgrade(
 _LOCK_NAME = ".kuhaku-writer.lock"
 
 
+def _holder_alive(lock: Path) -> bool:
+    """Whether the PID recorded in ``lock`` is still a running process. Conservative --
+    returns ``True`` when it cannot tell (unreadable file, PID 0, Windows, or any error).
+    ``os.kill(pid, 0)`` is POSIX-only for a liveness check; on Windows the same call
+    terminates the process, so it is never used there."""
+
+    if sys.platform == "win32":
+        return True
+    try:
+        pid = int(lock.read_text().strip() or "0")
+    except (OSError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 @contextlib.contextmanager
 def guard_single_writer(store_dir: str | Path, *, ui) -> Iterator[None]:
     """Hold an exclusive lock file under ``store_dir`` for the duration of a write.
 
-    A second process that reaches this while the lock is held gets a clean
+    A second process that reaches this while the lock is *actively* held gets a clean
     :class:`StoreConflict` (or, when interactive, a chance to override) rather than a
     corrupted store. §13 fallback: an explicit lock at the head of the write path.
     ``RAG.ingest`` wraps each ingest in this; a caller composing ``RAGEngine`` directly
     is responsible for its own write path.
+
+    The lock is *advisory* -- it is a signal, not an OS-level mutex, and there is a small
+    window around a crash. A lock whose recorded PID is no longer running is broken
+    automatically (the common "the last run was killed" case). Real concurrency safety
+    belongs to the store's own write path and lands with the built-in store.
 
     If the lock directory cannot be created or written (read-only filesystem), this
     yields without a lock rather than failing the write -- best-effort, like the rest of
@@ -104,11 +133,14 @@ def guard_single_writer(store_dir: str | Path, *, ui) -> Iterator[None]:
         directory.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as exc:
+        stale = not _holder_alive(lock)
         message = (
             f"another process holds the write lock at {lock}. If that process is gone, "
             f"delete the file and retry."
         )
-        if ui.is_interactive() and ui.confirm(f"{message}\nBreak the lock and continue?", Cost()):
+        if stale or (ui.is_interactive() and ui.confirm(
+            f"{message}\nBreak the lock and continue?", Cost()
+        )):
             with contextlib.suppress(OSError):
                 lock.unlink()
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)

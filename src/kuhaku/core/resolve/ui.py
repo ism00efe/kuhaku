@@ -44,7 +44,9 @@ class ConsoleUI:
     - ``announce`` -> the ``kuhaku`` logger at INFO (``prominent`` -> WARNING); never a
       direct write to stdout. If no handler is attached to that logger or any ancestor,
       it attaches a plain stderr handler once, so a decision the operator needs to see is
-      never lost to a host application that configured no logging.
+      never lost to a host application that configured no logging. A host that wants
+      silence attaches its own handler (a ``logging.NullHandler`` on ``"kuhaku"`` is
+      enough) -- the fallback is not added when one already exists.
     - ``ask`` / ``confirm`` -> ``None`` / ``False`` when not interactive; never blocks
       there. Consent is never inferred.
 

@@ -14,7 +14,6 @@ import platform
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Literal
 
 from .probes import detect_isolation, gpu_kind, hf_cache_roots, vram_class
@@ -47,6 +46,11 @@ class Fingerprint:
 # neither. A provider whose credentials rotate away is caught live on replay (the
 # remembered id is no longer `ready`, which the resolver announces), not by the
 # fingerprint.
+#
+# "device" and "retrieval" are decision kinds the spec names (§9, §3) that 0.2.0 does not
+# route through an adapter -- device placement is folded into build_embedding_provider()
+# via torch_accelerator(), and retrieval mode is derived from the embedding outcome. The
+# entries are kept so the taxonomy is complete and stays correct if an adapter is added.
 FIELDS_CONSUMED: Mapping[str, frozenset[str]] = {
     "device": frozenset({"gpu", "vram_class"}),
     "llm": frozenset({"packages"}),
@@ -71,7 +75,6 @@ def probe_environment() -> Environment:
     )
 
 
-@lru_cache(maxsize=1)
 def _model_dir_digest() -> str | None:
     """A digest of the model caches -- entry names plus mtimes across every location
     :func:`hf_cache_roots` knows about. Changes when a model is pulled or removed;
@@ -79,10 +82,10 @@ def _model_dir_digest() -> str | None:
     ``_model_cached`` so installing a model in any of those locations re-opens the
     decisions that depend on it.
 
-    Memoised for the process (``_model_dir_digest.cache_clear()`` to force a re-scan):
-    every ``resolve()`` call folds it into the fingerprint, and a full ``stat()`` walk of
-    a large HuggingFace cache on each of the three-plus decisions per ``RAG()`` is pure
-    overhead -- "detection runs once per process" is the intended contract."""
+    Not memoised -- callers that make several decisions against one environment snapshot
+    (``RAG.__init__``, ``build_llm_provider``) compute :func:`fingerprint` once and thread
+    it through ``resolve(fingerprint=...)``, so the ``stat()`` walk runs once per
+    construction and still picks up a model pulled between two constructions."""
 
     entries: list[str] = []
     found = False

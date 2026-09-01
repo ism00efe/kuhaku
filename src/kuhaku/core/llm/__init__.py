@@ -39,13 +39,14 @@ def build_llm_provider(
     env=None,
     ui=None,
     memory=None,
+    fingerprint=None,
 ) -> LLMProvider:
     """Instantiate the LLM provider selected by ``settings.llm_provider``.
 
-    ``registry`` / ``env`` / ``ui`` / ``memory`` are injection points for tests and for
-    ``RAG.__init__`` (which shares one of each across all its decisions). ``registry``,
-    when given, must already have the LLM adapters registered; otherwise a fresh one is
-    built here.
+    ``registry`` / ``env`` / ``ui`` / ``memory`` / ``fingerprint`` are injection points
+    for tests and for ``RAG.__init__`` (which shares one of each across all its
+    decisions). ``registry``, when given, must already have the LLM adapters registered;
+    otherwise a fresh one is built here.
     """
 
     if registry is None:
@@ -75,6 +76,7 @@ def build_llm_provider(
         requested=None if configured == AUTO else configured,
         required=True,
         candidates=candidates,
+        fingerprint=fingerprint,
     )
     return activate(resolution, env=env, ui=ui)
 

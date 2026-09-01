@@ -37,6 +37,7 @@ from .core.resolve import (
     auto_enabled,
     default_project_dir,
     default_ui,
+    fingerprint,
     probe_environment,
     resolve,
 )
@@ -360,18 +361,24 @@ class RAG:
         # one registry for every decision this constructor makes, LLM adapters included,
         # so build_llm_provider enumerates against the same object rather than its own.
         register_llm_adapters(registry, s)
+        # one fingerprint too -- computing it walks the model cache, so do it once and
+        # thread it through every resolve() call.
+        fp = fingerprint(env, packages=registry.required_packages())
         self._decision_ui = ui
         self._decision_env = env
         self._decision_registry = registry
 
         effective_retrieval, self._embedder = self._resolve_retrieval_and_embedder(
-            requested_retrieval, rs, registry=registry, env=env, ui=ui, memory=memory
+            requested_retrieval, rs, registry=registry, env=env, ui=ui, memory=memory, fp=fp
         )
         store_resolution = resolve(
-            "store", registry=registry, env=env, ui=ui, memory=memory, required=True
+            "store", registry=registry, env=env, ui=ui, memory=memory, required=True,
+            fingerprint=fp,
         )
         self._store = activate(store_resolution, env=env, ui=ui)
-        llm = build_llm_provider(s, registry=registry, env=env, ui=ui, memory=memory)
+        llm = build_llm_provider(
+            s, registry=registry, env=env, ui=ui, memory=memory, fingerprint=fp
+        )
         if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
             llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
         self._llm = llm
@@ -455,7 +462,7 @@ class RAG:
         _ = choice  # the operator's pick is surfaced by suggest_store_upgrade's announcement
 
     def _resolve_retrieval_and_embedder(
-        self, requested: str, rs: RAGSettings, *, registry, env, ui, memory
+        self, requested: str, rs: RAGSettings, *, registry, env, ui, memory, fp
     ) -> tuple[str, EmbeddingProvider]:
         """Decide the effective retrieval strategy and build the matching embedder
         (§7 -- the embedding axis, resolved at construction time).
@@ -508,12 +515,13 @@ class RAG:
         if requested in ("dense", "hybrid"):
             resolution = resolve(
                 "embedding", registry=registry, env=env, ui=ui, memory=memory,
-                requested=embed_id, required=True,
+                requested=embed_id, required=True, fingerprint=fp,
             )
             return requested, activate(resolution, env=env, ui=ui)
 
         resolution = resolve(
-            "embedding", registry=registry, env=env, ui=ui, memory=memory, required=False
+            "embedding", registry=registry, env=env, ui=ui, memory=memory,
+            required=False, fingerprint=fp,
         )
         if resolution.candidate is None:
             return "sparse", NullEmbeddings()

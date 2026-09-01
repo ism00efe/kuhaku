@@ -17,7 +17,8 @@ from ._auto import auto_enabled
 from ._text import format_bytes
 from .consent import consent_and_prepare
 from .cost import Candidate
-from .environment import Environment, fingerprint
+from .environment import Environment, Fingerprint
+from .environment import fingerprint as build_fingerprint
 from .registry import Registry
 from .ui import UI
 
@@ -133,10 +134,13 @@ def resolve(
     requested: str | None = None,
     required: bool,
     candidates: list[Candidate] | None = None,
+    fingerprint: Fingerprint | None = None,
 ) -> Resolution:
     """``candidates`` lets a caller that already enumerated this kind (e.g.
     ``build_llm_provider`` for its pinned-name check) pass the list in, so ``probe()``
-    is not run a second time. Ignored when ``KUHAKU_AUTO`` is off."""
+    is not run a second time. ``fingerprint`` lets a caller that makes several decisions
+    against one environment snapshot (``RAG.__init__``) compute it once -- otherwise each
+    ``resolve()`` re-walks the model cache. Both are ignored when ``KUHAKU_AUTO`` is off."""
 
     baseline_candidate = registry.baseline(kind, env)
     baseline_id = baseline_candidate.id if baseline_candidate else None
@@ -171,7 +175,9 @@ def resolve(
         return Resolution(chosen, "user_requested", _baseline_meta(baseline_id, chosen))
 
     ready = [c for c in candidates if c.ready]
-    fp = fingerprint(env, packages=registry.required_packages())
+    fp = fingerprint if fingerprint is not None else build_fingerprint(
+        env, packages=registry.required_packages()
+    )
 
     remembered_id = memory.get(kind, fp)
 
@@ -221,7 +227,10 @@ def resolve(
             remember(picked.id)
             return Resolution(picked, "user_choice", _baseline_meta(baseline_id, picked))
 
-    safe = min(ready, key=lambda c: (c.safety_rank, c.id))
+    # lowest safety_rank wins; min() is stable, so a rank tie falls to the order the
+    # adapters registered their candidates (deterministic, and the adapter's own
+    # intent), not to an alphabetical accident.
+    safe = min(ready, key=lambda c: c.safety_rank)
     ui.announce(
         _skipped_message(kind, safe, ready, baseline_id),
         prominent=True,

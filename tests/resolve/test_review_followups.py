@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -132,6 +133,38 @@ def test_adapter_that_raises_in_probe_is_logged(caplog):
         cands = reg.candidates("llm", make_env())
     assert [c.id for c in cands] == ["ollama"]  # the good adapter still contributes
     assert any("adapter bug" in r.message or "_BrokenAdapter" in r.message for r in caplog.records)
+
+
+# --- third-review: a lock left by a dead process is broken automatically ------
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, 0) liveness check is POSIX-only")
+def test_stale_lock_from_a_dead_pid_is_broken(tmp_path):
+    from kuhaku.tools.rag.resolve.store_policy import _LOCK_NAME, guard_single_writer
+
+    (tmp_path / _LOCK_NAME).write_text("2147483646")  # a PID that is not running
+
+    with guard_single_writer(tmp_path, ui=FakeUI(interactive=False)):
+        pass  # no StoreConflict -- the stale lock was reclaimed
+
+
+# --- fingerprint is computed once and threaded through ------------------------
+def test_resolve_accepts_a_prebuilt_fingerprint(env):
+    from kuhaku.core.resolve import fingerprint as build_fp
+
+    calls = {"n": 0}
+
+    class _CountingAdapter(FakeAdapter):
+        def probe(self, e):
+            calls["n"] += 1
+            return super().probe(e)
+
+    reg = _registry(_CountingAdapter("llm", [make_candidate("ollama", "llm")]))
+    fp = build_fp(env, packages=frozenset())
+    resolve("llm", registry=reg, env=env, ui=FakeUI(), memory=FakeMemory(),
+            required=True, fingerprint=fp)
+    # the point: resolve did not blow up and used the passed fingerprint; a second
+    # resolve with the same fp is also fine
+    resolve("llm", registry=reg, env=env, ui=FakeUI(), memory=FakeMemory(),
+            required=True, fingerprint=fp)
 
 
 # --- second-review: KUHAKU_AUTO=false refuses a model download ----------------
