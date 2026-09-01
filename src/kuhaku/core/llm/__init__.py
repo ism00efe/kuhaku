@@ -19,10 +19,10 @@ import logging
 from ..config import Settings
 from ..resolve import (
     AUTO,
-    ConsoleUI,
     JsonMemory,
     Registry,
     activate,
+    default_ui,
     probe_environment,
     resolve,
 )
@@ -35,34 +35,36 @@ logger = logging.getLogger(__name__)
 def build_llm_provider(
     settings: Settings,
     *,
+    registry: Registry | None = None,
     env=None,
     ui=None,
     memory=None,
 ) -> LLMProvider:
     """Instantiate the LLM provider selected by ``settings.llm_provider``.
 
-    ``env`` / ``ui`` / ``memory`` are injection points for tests and for
-    ``RAG.__init__`` (which shares one of each across all its decisions); each defaults
-    to the real implementation.
+    ``registry`` / ``env`` / ``ui`` / ``memory`` are injection points for tests and for
+    ``RAG.__init__`` (which shares one of each across all its decisions). ``registry``,
+    when given, must already have the LLM adapters registered; otherwise a fresh one is
+    built here.
     """
 
-    registry = Registry()
-    register_llm_adapters(registry, settings)
+    if registry is None:
+        registry = Registry()
+        register_llm_adapters(registry, settings)
     env = env or probe_environment()
-    ui = ui or ConsoleUI()
+    ui = ui or default_ui()
     memory = memory if memory is not None else JsonMemory(ui=ui)
 
     configured = settings.llm_provider.strip().lower()
-    if configured != AUTO:
+    candidates = registry.candidates("llm", env)  # one probe, reused by resolve() below
+    if configured != AUTO and configured not in {c.id for c in candidates}:
         # A pinned provider name that no adapter offers is a config typo -- surface it as
         # LLMError (not CapabilityUnavailable) and name the real options. The valid set
         # comes from the registry, so adding a provider needs no edit here.
-        offered = {c.id for c in registry.candidates("llm", env)}
-        if configured not in offered:
-            raise LLMError(
-                f"Unknown LLM_PROVIDER '{settings.llm_provider}'. "
-                f"Expected one of: {', '.join(sorted(offered))}."
-            )
+        raise LLMError(
+            f"Unknown LLM_PROVIDER '{settings.llm_provider}'. "
+            f"Expected one of: {', '.join(sorted(c.id for c in candidates))}."
+        )
 
     resolution = resolve(
         "llm",
@@ -72,6 +74,7 @@ def build_llm_provider(
         memory=memory,
         requested=None if configured == AUTO else configured,
         required=True,
+        candidates=candidates,
     )
     return activate(resolution, env=env, ui=ui)
 

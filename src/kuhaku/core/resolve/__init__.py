@@ -24,7 +24,7 @@ from .environment import (
 from .memory import JsonMemory, Memory, default_project_dir
 from .registry import Adapter, Registry
 from .resolver import Resolution, activate, resolve
-from .ui import UI, ConsoleUI
+from .ui import UI, ConsoleUI, default_ui
 
 __all__ = [
     "AUTO",
@@ -43,6 +43,7 @@ __all__ = [
     "activate",
     "auto_enabled",
     "default_project_dir",
+    "default_ui",
     "fingerprint",
     "probe_environment",
     "resolve",

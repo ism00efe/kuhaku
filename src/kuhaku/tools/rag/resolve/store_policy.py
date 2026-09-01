@@ -119,9 +119,11 @@ def guard_single_writer(store_dir: str | Path, *, ui) -> Iterator[None]:
         yield
         return
     try:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
+        with contextlib.suppress(OSError):
+            os.write(fd, str(os.getpid()).encode())
         yield
     finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
         with contextlib.suppress(OSError):
             lock.unlink()

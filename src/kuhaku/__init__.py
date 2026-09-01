@@ -32,14 +32,15 @@ from .core.models import ExecutionResult, Message, ToolCall
 from .core.policy import enforce_guard_policy, validate_audit_log_path
 from .core.resolve import (
     AUTO,
-    ConsoleUI,
     JsonMemory,
     activate,
     auto_enabled,
     default_project_dir,
+    default_ui,
     probe_environment,
     resolve,
 )
+from .core.resolve.adapters.llm import register_llm_adapters
 from .core.sanitization import Redaction
 from .tools.rag import (
     ACCESS_TAG_INTERNAL,
@@ -343,7 +344,7 @@ class RAG:
         # machine. build_embedder/build_store are closures over the module-level names
         # tests patch, keeping the "how to build it" detail out of the adapters.
         env = probe_environment()
-        ui = ConsoleUI()
+        ui = default_ui()
         memory = JsonMemory(default_project_dir(), ui=ui)
         registry = build_rag_registry(
             rs,
@@ -356,6 +357,9 @@ class RAG:
                 retry_backoff_seconds=rs.retry_vectorstore_backoff_seconds,
             ),
         )
+        # one registry for every decision this constructor makes, LLM adapters included,
+        # so build_llm_provider enumerates against the same object rather than its own.
+        register_llm_adapters(registry, s)
         self._decision_ui = ui
         self._decision_env = env
         self._decision_registry = registry
@@ -367,7 +371,7 @@ class RAG:
             "store", registry=registry, env=env, ui=ui, memory=memory, required=True
         )
         self._store = activate(store_resolution, env=env, ui=ui)
-        llm = build_llm_provider(s, env=env, ui=ui, memory=memory)
+        llm = build_llm_provider(s, registry=registry, env=env, ui=ui, memory=memory)
         if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
             llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
         self._llm = llm

@@ -50,7 +50,9 @@ class ConsoleUI:
 
     Announcement de-duplication is per instance (keyed on whatever ``dedupe_key`` the
     caller passes -- the resolver uses ``(kind, candidate_id, reason)``), so a fresh
-    ``ConsoleUI`` starts clean.
+    ``ConsoleUI`` starts clean. Real usage goes through :func:`default_ui`, a
+    process-wide singleton, so an identical decision is announced once per process; a
+    caller that injects its own ``ConsoleUI`` (or a test) is isolated.
     """
 
     def __init__(self) -> None:
@@ -130,3 +132,25 @@ class ConsoleUI:
         if logger.level == logging.NOTSET:
             logger.setLevel(logging.INFO)
         self._fallback_handler_attached = True
+
+
+_default_ui: ConsoleUI | None = None
+
+
+def default_ui() -> ConsoleUI:
+    """The process-wide :class:`ConsoleUI`. ``build_llm_provider`` and ``RAG.__init__``
+    use this when no UI is injected, so an identical decision (and the "auto disabled"
+    line) is announced once per process rather than once per call site."""
+
+    global _default_ui
+    if _default_ui is None:
+        _default_ui = ConsoleUI()
+    return _default_ui
+
+
+def _reset_default_ui() -> None:
+    """Test hook -- drop the singleton so announcement-dedupe state does not leak
+    between tests."""
+
+    global _default_ui
+    _default_ui = None

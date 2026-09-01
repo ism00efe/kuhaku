@@ -81,7 +81,10 @@ def test_auto_disabled_returns_baseline_without_probing_or_memory(monkeypatch):
     assert mem.get_calls == [] and mem.put_calls == []  # memory neither read nor written
 
 
-def test_auto_disabled_announced_once_per_process(monkeypatch):
+def test_auto_disabled_announced_once_per_ui_instance(monkeypatch):
+    # Dedupe state lives on the UI instance (ruling 6). Real usage routes through
+    # kuhaku.core.resolve.default_ui() -- a process-wide singleton -- so in practice this
+    # is "once per process"; a caller with its own UI (like this test) is isolated.
     monkeypatch.setenv("KUHAKU_AUTO", "false")
     adapter = FakeAdapter("llm", [make_candidate("ollama", "llm")], baseline_id="ollama")
     ui = FakeUI(interactive=False)
@@ -89,6 +92,17 @@ def test_auto_disabled_announced_once_per_process(monkeypatch):
         resolve("llm", registry=_registry(adapter), env=make_env(), ui=ui,
                 memory=FakeMemory(), required=True)
     assert sum("auto disabled" in m.lower() for m in ui.messages) == 1
+
+
+def test_default_ui_is_a_process_singleton():
+    from kuhaku.core.resolve import default_ui
+    from kuhaku.core.resolve.ui import _reset_default_ui
+
+    _reset_default_ui()
+    a = default_ui()
+    assert default_ui() is a
+    _reset_default_ui()
+    assert default_ui() is not a
 
 
 def test_auto_disabled_missing_baseline_raises_naming_the_switch(monkeypatch):

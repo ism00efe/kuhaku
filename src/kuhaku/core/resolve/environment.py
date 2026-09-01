@@ -14,6 +14,7 @@ import platform
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from .probes import detect_isolation, gpu_kind, hf_cache_roots, vram_class
@@ -38,7 +39,14 @@ class Fingerprint:
     model_dir: str | None
 
 
-# decision kind -> the fingerprint fields that decision depends on
+# decision kind -> the fingerprint fields that decision depends on.
+#
+# "llm" consumes only "packages": the provider choice turns on which SDK is importable,
+# not on which model is pulled. "model_dir" here is the HuggingFace hub cache (the local
+# embedder's), not a local runner's own model store -- pulling a runner model changes
+# neither. A provider whose credentials rotate away is caught live on replay (the
+# remembered id is no longer `ready`, which the resolver announces), not by the
+# fingerprint.
 FIELDS_CONSUMED: Mapping[str, frozenset[str]] = {
     "device": frozenset({"gpu", "vram_class"}),
     "llm": frozenset({"packages"}),
@@ -63,12 +71,18 @@ def probe_environment() -> Environment:
     )
 
 
+@lru_cache(maxsize=1)
 def _model_dir_digest() -> str | None:
     """A digest of the model caches -- entry names plus mtimes across every location
     :func:`hf_cache_roots` knows about. Changes when a model is pulled or removed;
     ``None`` when no cache directory exists. Kept in step with the embedding adapter's
     ``_model_cached`` so installing a model in any of those locations re-opens the
-    decisions that depend on it."""
+    decisions that depend on it.
+
+    Memoised for the process (``_model_dir_digest.cache_clear()`` to force a re-scan):
+    every ``resolve()`` call folds it into the fingerprint, and a full ``stat()`` walk of
+    a large HuggingFace cache on each of the three-plus decisions per ``RAG()`` is pure
+    overhead -- "detection runs once per process" is the intended contract."""
 
     entries: list[str] = []
     found = False

@@ -29,6 +29,13 @@ def _isolate_kuhaku_decisions(tmp_path_factory, monkeypatch):
     import-order dependency."""
 
     monkeypatch.setenv("KUHAKU_PROJECT_DIR", str(tmp_path_factory.mktemp("kuhaku_decisions")))
+    # _model_dir_digest is process-memoised; drop it so a test that stages a model
+    # (or patches the cache roots) sees a fresh scan.
+    from kuhaku.core.resolve.environment import _model_dir_digest
+    from kuhaku.core.resolve.ui import _reset_default_ui
+
+    _model_dir_digest.cache_clear()
+    _reset_default_ui()  # so announcement-dedupe state does not leak between tests
 
 
 def _matching_samples(instrument, family_name: str, sample_name: str, labels: dict[str, str]):

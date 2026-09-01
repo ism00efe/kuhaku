@@ -132,7 +132,12 @@ def resolve(
     memory,
     requested: str | None = None,
     required: bool,
+    candidates: list[Candidate] | None = None,
 ) -> Resolution:
+    """``candidates`` lets a caller that already enumerated this kind (e.g.
+    ``build_llm_provider`` for its pinned-name check) pass the list in, so ``probe()``
+    is not run a second time. Ignored when ``KUHAKU_AUTO`` is off."""
+
     baseline_candidate = registry.baseline(kind, env)
     baseline_id = baseline_candidate.id if baseline_candidate else None
 
@@ -150,7 +155,8 @@ def resolve(
             )
         return Resolution(baseline_candidate, "auto_disabled", baseline=None)
 
-    candidates = registry.candidates(kind, env)
+    if candidates is None:
+        candidates = registry.candidates(kind, env)
     by_id = {c.id: c for c in candidates}
 
     if requested is not None:
