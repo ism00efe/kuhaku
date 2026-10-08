@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Any, Generic, TypeVar
 
@@ -11,7 +12,9 @@ from kuhaku.core.config import Settings, get_settings
 from kuhaku.core.exceptions import ConfigError
 from kuhaku.core.llm import build_llm_provider
 from kuhaku.core.llm.base import LLMProvider
+from kuhaku.core.llm.token_tracking import TokenTrackingLLM
 from kuhaku.core.models import Message
+from kuhaku.core.observability import bind_trace_id, instrumented_step
 
 from .context import ExtractionContext
 from .pipeline import Pipeline, Step
@@ -21,6 +24,8 @@ from .steps.continuation import CONTINUATION_STEP, ContinuationStep
 from .steps.extract import ExtractStep
 
 M = TypeVar("M", bound=BaseModel)
+
+logger = logging.getLogger(__name__)
 
 
 class Extractor(Generic[M]):
@@ -34,6 +39,11 @@ class Extractor(Generic[M]):
     ``llm`` takes any :class:`~kuhaku.core.llm.base.LLMProvider`; when omitted, the
     provider is built from ``settings`` (or the environment) through
     :func:`~kuhaku.core.llm.build_llm_provider`, the same path ``RAG`` uses.
+    ``fallback_llms`` are tried in order when ``llm`` cannot produce usable output --
+    see :class:`~kuhaku.tools.extraction.steps.ExtractStep`.
+
+    Every provider is wrapped in :class:`~kuhaku.core.llm.token_tracking.TokenTrackingLLM`
+    unless ``enable_token_tracking=False``, as ``RAG`` does.
     """
 
     def __init__(
@@ -44,13 +54,20 @@ class Extractor(Generic[M]):
         settings: Settings | None = None,
         steps: Sequence[Step] = (),
         max_repair_attempts: int = 1,
+        fallback_llms: Sequence[LLMProvider] = (),
+        enable_token_tracking: bool = True,
     ) -> None:
         self.schema: ExtractionSchema[M] = as_schema(schema)
-        self.llm: LLMProvider = (
-            llm if llm is not None else build_llm_provider(settings or get_settings())
-        )
+        built = llm if llm is not None else build_llm_provider(settings or get_settings())
+        track = _token_tracked if enable_token_tracking else _untracked
+        self.llm: LLMProvider = track(built)
+        fallbacks = [track(fallback) for fallback in fallback_llms]
         self.pipeline = Pipeline(
-            [ExtractStep(max_repair_attempts=max_repair_attempts), ContinuationStep(), *steps]
+            [
+                ExtractStep(max_repair_attempts=max_repair_attempts, fallbacks=fallbacks),
+                ContinuationStep(),
+                *steps,
+            ]
         )
 
     def extract(
@@ -60,6 +77,7 @@ class Extractor(Generic[M]):
         history: Sequence[Message] = (),
         reference: Any = None,
         prior: ExtractionResult[Any] | dict[str, Any] | None = None,
+        trace_id: str | None = None,
     ) -> ExtractionResult[M]:
         """Extract from ``text``.
 
@@ -69,6 +87,9 @@ class Extractor(Generic[M]):
 
         ``prior`` continues an earlier extraction -- the previous result, or its
         ``data`` dict -- see :class:`ContinuationStep`.
+
+        ``trace_id`` binds every log record and span of this call to an id; without
+        one, an id bound by the caller is inherited, else a new one is minted.
         """
 
         if not isinstance(text, str):
@@ -81,13 +102,32 @@ class Extractor(Generic[M]):
                 f"prior= was given but the '{CONTINUATION_STEP}' step is not enabled, so it "
                 f"would be silently ignored. Enable it or stop passing prior=."
             )
-        ctx = ExtractionContext(
-            schema=self.schema,
-            text=text,
-            llm=self.llm,
-            history=tuple(history),
-            reference=reference,
-            prior_data=prior_data,
-        )
-        self.pipeline.run(ctx)
-        return ctx.to_result()
+        with (
+            bind_trace_id(trace_id) as tid,
+            instrumented_step("extraction", logger, schema=self.schema.name) as rec,
+        ):
+            ctx = ExtractionContext(
+                schema=self.schema,
+                text=text,
+                llm=self.llm,
+                history=tuple(history),
+                reference=reference,
+                prior_data=prior_data,
+                trace_id=tid,
+            )
+            self.pipeline.run(ctx)
+            result = ctx.to_result()
+            rec.set(outcome=result.status.value, attempts=result.attempts)
+            return result
+
+
+def _token_tracked(llm: LLMProvider) -> LLMProvider:
+    if isinstance(llm, TokenTrackingLLM):
+        return llm
+    # A provider's name is "<provider>:<model>"; the part before the colon is what
+    # TokenTrackingLLM labels its metrics with.
+    return TokenTrackingLLM(llm, provider=llm.name.split(":", 1)[0])
+
+
+def _untracked(llm: LLMProvider) -> LLMProvider:
+    return llm

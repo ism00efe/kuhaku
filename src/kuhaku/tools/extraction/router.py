@@ -12,6 +12,7 @@ to a default schema: which way an unclassifiable text should go is a domain deci
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -19,12 +20,15 @@ from typing import Any
 from kuhaku.core.exceptions import ConfigError, CustomComponentError
 from kuhaku.core.llm.base import LLMError, LLMProvider, LLMUnavailableError
 from kuhaku.core.models import Message
+from kuhaku.core.observability import bind_trace_id, instrumented_step
 
 from .extractor import Extractor
 from .parsing import OutputParseError, parse_json_object
 from .prompts import render, source_fence
 from .result import ExtractionResult, ExtractionStatus
 from .schema import ExtractionSchema
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -81,9 +85,15 @@ class LLMRoute:
             raise LLMUnavailableError(str(exc)) from exc
         try:
             choice = parse_json_object(raw).get("schema")
-        except OutputParseError:
+        except OutputParseError as exc:
+            # Deferring is right for the result, but an UNROUTED caused by an unusable
+            # reply must be told apart from a text that genuinely fits no schema.
+            logger.warning("llm route reply unusable, deferring", extra={"error": str(exc)})
             return None
-        return choice if choice in names else None
+        if choice is not None and choice not in names:
+            logger.warning("llm route named an unknown schema, deferring", extra={"choice": str(choice)})
+            return None
+        return choice
 
 
 class ExtractionRouter:
@@ -126,17 +136,20 @@ class ExtractionRouter:
             history=tuple(history),
             reference=reference,
         )
-        for route in self.routes:
-            name = route(request)
-            if name is None:
-                continue
-            if name not in self.extractors:
-                raise CustomComponentError(
-                    f"Route {route!r} returned '{name}', which is not a registered schema "
-                    f"({sorted(self.extractors)})."
-                )
-            return name
-        return None
+        with instrumented_step("extraction.route", logger) as rec:
+            for route in self.routes:
+                name = route(request)
+                if name is None:
+                    continue
+                if name not in self.extractors:
+                    raise CustomComponentError(
+                        f"Route {route!r} returned '{name}', which is not a registered "
+                        f"schema ({sorted(self.extractors)})."
+                    )
+                rec.set(schema=name, route=_route_name(route))
+                return name
+            rec.set(schema=None)
+            return None
 
     def extract(
         self,
@@ -145,14 +158,26 @@ class ExtractionRouter:
         history: Sequence[Message] = (),
         reference: Any = None,
         prior: ExtractionResult[Any] | None = None,
+        trace_id: str | None = None,
     ) -> ExtractionResult[Any]:
         """Route, then extract. ``prior`` is carried over only when the text routes to
-        the same schema it came from -- a follow-up that changes topic starts fresh."""
+        the same schema it came from -- a follow-up that changes topic starts fresh.
+        That check needs the schema name, which is why ``prior`` here is a result and
+        not a bare ``data`` dict as :meth:`Extractor.extract` also accepts.
 
-        name = self.route(text, history=history, reference=reference)
-        if name is None:
-            return ExtractionResult(status=ExtractionStatus.UNROUTED, schema_name="")
-        carried = prior if prior is not None and prior.schema_name == name else None
-        return self.extractors[name].extract(
-            text, history=history, reference=reference, prior=carried
-        )
+        Routing and extraction share one ``trace_id``."""
+
+        with bind_trace_id(trace_id) as tid:
+            name = self.route(text, history=history, reference=reference)
+            if name is None:
+                return ExtractionResult(
+                    status=ExtractionStatus.UNROUTED, schema_name="", trace_id=tid
+                )
+            carried = prior if prior is not None and prior.schema_name == name else None
+            return self.extractors[name].extract(
+                text, history=history, reference=reference, prior=carried
+            )
+
+
+def _route_name(route: Route) -> str:
+    return getattr(route, "__name__", None) or type(route).__name__

@@ -33,6 +33,7 @@ class ExtractionContext:
     history: Sequence[Message] = ()
     reference: Any = None
     prior_data: dict[str, Any] | None = None
+    trace_id: str = ""
 
     # Written during the prepare phase: steps that need something from the model (e.g.
     # evidence) add a system-prompt rule, a top-level response key or a titled block of
@@ -69,4 +70,5 @@ class ExtractionContext:
             fields=dict(self.fields),
             attempts=self.attempts,
             metadata=dict(self.metadata),
+            trace_id=self.trace_id,
         )

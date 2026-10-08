@@ -14,14 +14,18 @@ the model is called. ``run`` then executes in order and stops early once a step 
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from kuhaku.core.exceptions import ConfigError
+from kuhaku.core.observability import instrumented_step
 
 from .context import ExtractionContext
 
 EXTRACT_STEP = "extract"
+
+logger = logging.getLogger(__name__)
 
 
 class Step:
@@ -122,7 +126,11 @@ class Pipeline:
         for step in active:
             if ctx.stopped:
                 break
-            step.run(ctx)
+            # Prefixed so these stages never share a STAGE_DURATION label with another
+            # tool's stage of the same name.
+            with instrumented_step(f"extraction.{step.name}", logger) as rec:
+                step.run(ctx)
+                rec.set(issue_count=len(ctx.issues))
 
     # --- internals --------------------------------------------------------------------
 

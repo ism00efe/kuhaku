@@ -106,7 +106,8 @@ class ExtractionResult(Generic[M]):
     ``value`` is set only when ``status`` is ``COMPLETE``. ``data`` is the model's last
     parsed output as a plain dict, kept even when it did not validate, so a caller can
     show what was understood so far or carry it into a follow-up turn. ``fields`` is
-    empty unless the evidence step is enabled.
+    empty unless the evidence step is enabled. ``trace_id`` is the id every log record
+    and span of this extraction carries, to find them again.
     """
 
     status: ExtractionStatus
@@ -117,6 +118,7 @@ class ExtractionResult(Generic[M]):
     fields: dict[str, FieldReport] = field(default_factory=dict)
     attempts: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    trace_id: str = ""
 
     @property
     def ok(self) -> bool:

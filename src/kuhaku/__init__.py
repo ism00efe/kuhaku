@@ -1,10 +1,13 @@
 """kuhaku — generic, tool-agnostic runtime infrastructure (``kuhaku.core``), a
 generic evaluation harness (``kuhaku.evaluation``), and RAG as one tool built on top
-of both (``kuhaku.tools.rag``).
+of both (``kuhaku.tools.rag``), plus structured extraction as a second tool
+(``kuhaku.tools.extraction``).
 
-This top-level module re-exports two things: the generic core primitives
-(:class:`Settings`, :func:`build_llm_provider`, :class:`Message`/:class:`ToolCall`/
-:class:`ExecutionResult`) any tool built on kuhaku can use, and :class:`RAG` --
+This top-level module re-exports three things: the extraction entry points
+(:class:`Extractor`, :class:`ExtractionRouter` and their schema/result types), the
+generic core primitives (:class:`Settings`, :func:`build_llm_provider`,
+:class:`Message`/:class:`ToolCall`/:class:`ExecutionResult`) any tool built on kuhaku
+can use, and :class:`RAG` --
 a thin, opinionated wrapper around :class:`~kuhaku.tools.rag.engine.RAGEngine` for
 callers who don't need the full composition-root control the individual RAG building
 blocks offer (see ``kuhaku.tools.rag`` for those). Every knob :class:`RAG` takes is
@@ -43,6 +46,13 @@ from .core.resolve import (
 )
 from .core.resolve.adapters.llm import register_llm_adapters
 from .core.sanitization import Redaction
+from .tools.extraction import (
+    ExtractionResult,
+    ExtractionRouter,
+    ExtractionSchema,
+    ExtractionStatus,
+    Extractor,
+)
 from .tools.rag import (
     ACCESS_TAG_INTERNAL,
     ACCESS_TAG_PUBLIC,
@@ -787,6 +797,13 @@ class RAG:
 __all__ = [
     "__version__",
     "RAG",
+    # Structured extraction, the second tool -- the entry points only; steps, routes
+    # and the pipeline stay in kuhaku.tools.extraction.
+    "Extractor",
+    "ExtractionRouter",
+    "ExtractionSchema",
+    "ExtractionResult",
+    "ExtractionStatus",
     # Generic core primitives, re-exported for callers that build a non-RAG tool on
     # kuhaku without reaching into `kuhaku.core` directly.
     "Settings",
