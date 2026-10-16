@@ -59,20 +59,23 @@ class Settings(BaseSettings):
 
     # --- LLM provider ---------------------------------------------------------
     # "auto" (the default) is resolved at build time by kuhaku.core.resolve from the
-    # credentials that are set and whether a local Ollama answers -- nothing else about
-    # the machine is probed. The provider used last (remembered in
+    # credentials that are set and which models a local Ollama has pulled -- nothing else
+    # about the machine is probed. The provider used last (remembered in
     # .kuhaku/decisions.json, explicit choices included) wins and is announced;
-    # otherwise a reachable local Ollama, then the free OpenRouter, then the first
-    # other credentialed provider (openai -> anthropic -> vertex -> groq). A concrete
-    # value is absolute and built directly. KUHAKU_AUTO=false pins "auto" to the
-    # documented baseline ("ollama").
+    # otherwise a provider whose key is set (the free OpenRouter first, then openai ->
+    # anthropic -> vertex -> groq), and only without one a local Ollama with a pulled
+    # model. A concrete value is absolute and built directly. KUHAKU_AUTO=false pins
+    # "auto" to the documented baseline ("ollama", which then needs ollama_model).
     # auto | ollama | openrouter | anthropic | openai | vertex | groq
     llm_provider: str = Field(default="auto")
     llm_temperature: float = Field(default=0.1)
     llm_max_tokens: int = Field(default=1024)
 
     ollama_base_url: str = Field(default="http://localhost:11434")
-    ollama_model: str = Field(default="qwen2.5:7b-instruct")
+    # Unset: one of the models already pulled on the server (asked in a terminal when
+    # there are several). kuhaku never names a model of its own -- it would have to be
+    # downloaded, and a fixed name goes stale.
+    ollama_model: str | None = Field(default=None)
 
     anthropic_api_key: str | None = Field(
         default=None,

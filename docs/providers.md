@@ -8,13 +8,13 @@ independently and have different consequences for what runs on your machine.
 
 Six providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`, or leave it unset
 (`auto`, the default): kuhaku continues with the provider you used last, and the first
-time it uses a reachable local Ollama server, then OpenRouter's free model, then the
-first other provider whose credentials are present. Choosing checks only credentials and
-the Ollama endpoint. See [Configuration → Auto](configuration.md#auto).
+time a provider whose key is set (OpenRouter's free model first), and only without a key
+a reachable local Ollama server, with a model already pulled on it. Choosing checks only
+credentials and the Ollama server's model list. See [Configuration → Auto](configuration.md#auto).
 
 | Provider | Value | Credentials | Default model |
 |---|---|---|---|
-| Ollama | `ollama` *(auto-preferred)* | none — a local server | `qwen2.5:7b-instruct` |
+| Ollama | `ollama` | none — a local server | a model you pulled |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
 | Google Vertex AI | `vertex` | Application Default Credentials | `gemini-2.5-flash` |
@@ -38,12 +38,14 @@ default stops answering, pick another one ending in `:free`.
 
 ### Ollama
 
-The auto-preferred route when a local server is running. Nothing is sent anywhere, and no
-API key exists to leak.
+Used by `auto` when no API key is set and a local server is running. Nothing is sent
+anywhere, and no API key exists to leak. kuhaku runs a model you already pulled -- it never
+pulls one itself; with several pulled it asks which one in a terminal (and remembers),
+without a terminal it takes the most recently pulled one and says so.
 
 ```bash
 ollama serve
-ollama pull qwen2.5:7b-instruct
+ollama pull llama3.2
 ```
 
 ```bash

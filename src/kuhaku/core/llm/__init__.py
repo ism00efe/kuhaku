@@ -3,10 +3,11 @@
 ``build_llm_provider(settings)`` maps ``settings.llm_provider`` to a concrete
 implementation. ``"auto"`` (the default) goes through the capability resolver
 (:mod:`kuhaku.core.resolve`): the provider used last wins and is announced; otherwise a
-reachable local Ollama, then the free OpenRouter, then the first other credentialed API
-provider; when several are usable and no terminal is attached the safest is chosen and
-announced prominently; when nothing is usable a required build raises
-``CapabilityUnavailable``. Only credentials and the Ollama endpoint are checked -- the
+provider whose key is set -- the free OpenRouter first, then the other credentialed API
+providers -- and only without one a local Ollama, running one of the models already
+pulled on it; when several are usable a terminal is asked (and the answer remembered),
+without one the safest is chosen and announced prominently; when nothing is usable a
+required build raises ``CapabilityUnavailable``. Only credentials and the Ollama endpoint are checked -- the
 GPU probes import torch and an LLM backend does not need them. A concrete value is built
 directly and recorded as the last one used.
 
@@ -66,6 +67,15 @@ def build_llm_provider(
     memory = memory if memory is not None else JsonMemory(ui=ui)
 
     configured = settings.llm_provider.strip().lower()
+    if configured == "ollama" and not settings.ollama_model:
+        # Pinned to Ollama without a model: one of the pulled models, chosen exactly as
+        # auto chooses among them (asked in a terminal, remembered).
+        local = [c for c in registry.candidates("llm", env) if _is_ollama(c.id)]
+        resolution = resolve(
+            "llm", registry=registry, env=env, ui=ui, memory=memory, required=True,
+            candidates=local, fingerprint=fingerprint,
+        )
+        return activate(resolution, env=env, ui=ui)
     if configured != AUTO:
         # A pinned provider is built as asked, with no probing; it is still recorded so
         # that a later "auto" run continues with the provider used last.
@@ -82,6 +92,13 @@ def build_llm_provider(
         return provider
 
     candidates = registry.candidates("llm", env)
+    fingerprint = fingerprint or build_fingerprint(env, packages=registry.required_packages())
+    if any(c.ready and not _is_ollama(c.id) for c in candidates) and not _is_ollama(
+        memory.get("llm", fingerprint) or ""
+    ):
+        # A key the user set wins over a local model -- unless a local model is what
+        # they used last, which keeps winning like any provider used last.
+        candidates = [c for c in candidates if not _is_ollama(c.id)]
     resolution = resolve(
         "llm",
         registry=registry,
@@ -93,6 +110,10 @@ def build_llm_provider(
         fingerprint=fingerprint,
     )
     return activate(resolution, env=env, ui=ui)
+
+
+def _is_ollama(candidate_id: str) -> bool:
+    return candidate_id == "ollama" or candidate_id.startswith("ollama:")
 
 
 def with_runtime(llm: LLMProvider, *, token_tracking: bool = True) -> LLMProvider:

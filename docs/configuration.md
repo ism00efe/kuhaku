@@ -69,7 +69,7 @@ Set with `KUHAKU_` + the field name in upper case, e.g. `KUHAKU_LLM_PROVIDER=ope
 | `llm_max_tokens` | `1024` | ignored by the `vertex` provider |
 | `llm_timeout_seconds` | `120` | per request, all providers |
 | `ollama_base_url` | `http://localhost:11434` | |
-| `ollama_model` | `qwen2.5:7b-instruct` | |
+| `ollama_model` | — | unset: one of the models pulled on the server (asked in a terminal when there are several) |
 | `openai_api_key` | — | also accepted unprefixed as `OPENAI_API_KEY` |
 | `openai_model` | `gpt-4o-mini` | |
 | `openai_base_url` | `https://api.openai.com/v1` | point at an OpenAI-compatible server |
@@ -153,7 +153,7 @@ default:
 
 | Setting | Baseline | `auto` resolves to |
 |---|---|---|
-| `llm_provider` | `ollama` | the provider used last (remembered, and announced), else a reachable local Ollama server, else `openrouter`, else the first other provider whose credentials are set (`openai` → `anthropic` → `vertex` → `groq`); if none, a required build raises `CapabilityUnavailable`. Only credentials and the Ollama endpoint are checked — never the GPU |
+| `llm_provider` | `ollama` | the provider used last (remembered, and announced), else a provider whose credentials are set (`openrouter` → `openai` → `anthropic` → `vertex` → `groq`), else a reachable local Ollama server with a model pulled — with several models, a terminal is asked and the answer remembered; without a terminal the most recently pulled one is used and announced; if none, a required build raises `CapabilityUnavailable`. Only credentials and the Ollama server's model list are checked — never the GPU |
 | `embedding_device` | `cpu` | `cuda` (NVIDIA) or `mps` (Apple Silicon) when torch reports one, else `cpu` |
 | `retrieval` | `hybrid` | `hybrid` when the embedding package is installed **and** the model is already on disk, else `sparse` (BM25 only — no embeddings, no torch, no model download) |
 

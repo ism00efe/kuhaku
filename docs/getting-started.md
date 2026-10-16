@@ -32,10 +32,11 @@ export KUHAKU_LLM_PROVIDER=openrouter
 
 ```bash
 ollama serve
-ollama pull qwen2.5:7b-instruct        # or any other Ollama model
+ollama pull llama3.2                   # any Ollama chat model
 ```
 
-A running Ollama server is picked up without any environment variable.
+With no API key set, a running Ollama server is picked up without any environment
+variable, with the model you pulled; with several, kuhaku asks which one once.
 
 Either way the *embedding* model runs locally. Dense retrieval needs it on disk (about
 490 MB); kuhaku asks before downloading it and searches by keyword (BM25) until then. An

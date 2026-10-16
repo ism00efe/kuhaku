@@ -438,7 +438,7 @@ def test_runner_auto_creates_zero_temperature_judge_from_settings(tmp_path):
     )
     target = FakeRAGTarget(FakeRAGAnswer("an answer", [_rc("a")]))
     metric = FaithfulnessMetric()
-    settings = Settings(llm_provider="ollama", llm_temperature=0.7)
+    settings = Settings(llm_provider="ollama", ollama_model="m", llm_temperature=0.7)
     runner = EvaluationRunner([metric], dataset_path, settings=settings)
 
     assert metric.judge is None  # not wired until run() so a metric can still opt out

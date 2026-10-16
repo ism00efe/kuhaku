@@ -45,6 +45,7 @@ def _no_ollama(monkeypatch):
 
 def test_auto_prefers_reachable_ollama(monkeypatch):
     monkeypatch.setattr(llm_adapters, "_ollama_reachable", lambda url: True)
+    monkeypatch.setattr(llm_adapters, "_ollama_models", lambda url: ["m"])
     provider, _ = _build(_settings(), reachable=True)
     assert isinstance(provider, OllamaProvider)
 
@@ -66,7 +67,7 @@ def test_auto_noninteractive_many_candidates_picks_safest_and_flags():
 
 
 def test_pinned_value_wins_over_auto():
-    provider, _ = _build(_settings(llm_provider="ollama"), reachable=False)
+    provider, _ = _build(_settings(llm_provider="ollama", ollama_model="m"), reachable=False)
     assert isinstance(provider, OllamaProvider)
 
 
@@ -77,7 +78,7 @@ def test_pinned_groq_builds_groq():
 
 def test_auto_disabled_uses_ollama_baseline(monkeypatch):
     monkeypatch.setenv("KUHAKU_AUTO", "false")
-    provider, _ = _build(_settings(anthropic_api_key="k"), reachable=False)
+    provider, _ = _build(_settings(anthropic_api_key="k", ollama_model="m"), reachable=False)
     assert isinstance(provider, OllamaProvider)  # documented baseline, no probing
 
 

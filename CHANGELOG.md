@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StructuredMatchMetric` in `kuhaku.evaluation`: `field_accuracy` and `exact_match` of a
   JSON answer against a JSON `golden_answer`.
 - **OpenRouter** as an LLM provider (`openrouter`, `OPENROUTER_API_KEY`), defaulting to a
-  free model. In `auto` it comes after a local Ollama and before every paid provider.
+  free model. In `auto` it comes before every paid provider.
 - `kuhaku.core.llm.with_runtime`, `kuhaku.core.observability.traced_call` and
   `kuhaku.core.security.InputPolicy` / `InputSecurity`: the entry points a tool uses for
   model calls, a call's observability and input checks, so what core adds reaches every
@@ -73,8 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `grpcio`) to `kuhaku[otlp]`, imported only when `OTEL_TRACES_EXPORTER=otlp`.
 - **`llm_provider="auto"` continues with the provider used last**, announcing it, and an
   explicitly chosen provider is recorded as the last used. Choosing an LLM checks only
-  credentials and the Ollama endpoint — the GPU probe, which imports torch, no longer
-  runs for it. A pinned provider is built directly, with no probing.
+  credentials and the Ollama server's model list — the GPU probe, which imports torch,
+  no longer runs for it. A pinned provider is built directly, with no probing.
+- **In `auto`, a set API key now comes before a local Ollama**, and Ollama runs a model
+  already pulled on it: with several, a terminal is asked once (the answer is
+  remembered), without one the most recently pulled is used and announced. A server
+  with no chat model pulled is not usable. `ollama_model` no longer defaults to
+  `qwen2.5:7b-instruct`; set it to pin one model.
 - **BREAKING: `Settings.rag` is gone.** RAG's settings are tool-owned:
   `RAGSettings.from_env()` reads the same `KUHAKU_RAG__*` variables;
   `RAGSettings.from_settings(settings)` adds the vertex/retry overlay and is what `RAG()`

@@ -207,7 +207,6 @@ concern.
 | Model | When | Size |
 |---|---|---|
 | `intfloat/multilingual-e5-small` (embeddings) | dense retrieval, after you approve it | ~490 MB |
-| `qwen2.5:7b-instruct` (LLM) | `ollama pull`, local route only | 4.7 GB |
 | `BAAI/bge-reranker-base` (re-ranker) | only if you enable it | ~1.1 GB |
 
 An API key removes the LLM download, not the embedding one. The only fully hosted
@@ -223,14 +222,15 @@ pip install "kuhaku[dev]"      # pytest, ruff, mypy, build, and every optional p
 ### Running the LLM locally
 
 With no provider set, kuhaku continues with the provider you used last; the first time,
-it picks a running local [Ollama](https://ollama.com) server if there is one:
+it uses a provider whose API key is set, and without one a running local
+[Ollama](https://ollama.com) server with a model you pulled:
 
 ```bash
 ollama serve
-ollama pull qwen2.5:7b-instruct   # or any other Ollama model you prefer
+ollama pull llama3.2   # any Ollama chat model
 ```
 
-Point kuhaku at a different one with `KUHAKU_OLLAMA_MODEL`.
+With several pulled, kuhaku asks which one once; `KUHAKU_OLLAMA_MODEL` names it instead.
 
 ---
 
@@ -242,7 +242,7 @@ governing rule: **a default may cost CPU and memory, never a download.**
 | | Default |
 |---|---|
 | Retrieval | `auto` — hybrid (dense + BM25/RRF) when an embedding backend builds, else sparse-only |
-| LLM | `auto` — the provider used last; else a reachable Ollama (`qwen2.5:7b-instruct`), else OpenRouter's free model, else another provider whose API key is set |
+| LLM | `auto` — the provider used last; else a provider whose API key is set (OpenRouter's free model first); else a running Ollama, with a model you pulled |
 | Embeddings | `intfloat/multilingual-e5-small`; device `auto` — CUDA / MPS / CPU |
 | Vector store | Chroma, collection `default_kb`, temporary directory |
 | Chunking | Paragraph, 500 characters, 80 overlap |
