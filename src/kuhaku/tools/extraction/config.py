@@ -1,9 +1,9 @@
 """Extraction's shared settings, read from ``KUHAKU_EXTRACTION__``-prefixed variables.
 
-One place for what every extraction should do alike -- the router's own schema choice
+One place for what every extraction should do alike -- the choice between extractors
 included -- so nothing has to be set per extractor to start. An extractor that needs
 something different gets its own ``ExtractionSettings``; an argument passed to
-:class:`Extractor` or :class:`ExtractionRouter` wins over both.
+:class:`Extractor` wins over both.
 
 Kept out of core's :class:`~kuhaku.core.config.Settings` on purpose: core may not depend
 on a tool, so a tool's settings read the environment themselves.

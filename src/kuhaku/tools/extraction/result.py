@@ -35,8 +35,9 @@ class ExtractionStatus(str, Enum):
     """No usable structured output, even after the allowed retry attempts."""
 
     NO_MATCH = "no_match"
-    """An :class:`ExtractionRouter` found no schema that fits the text. Nothing was
-    extracted -- what to do with such a text is the caller's decision, not a default."""
+    """An :class:`Extractor` given a list of extractors found none that fits the text.
+    Nothing was extracted -- what to do with such a text is the caller's decision, not a
+    default."""
 
     BLOCKED = "blocked"
     """The input guard refused the text before any model saw it. Nothing was extracted."""

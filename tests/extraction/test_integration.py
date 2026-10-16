@@ -8,7 +8,7 @@ from pathlib import Path
 
 import kuhaku
 from kuhaku.core.observability import bind_trace_id
-from kuhaku.tools.extraction import ExtractionRouter, Extractor
+from kuhaku.tools.extraction import Extractor
 
 from .conftest import Order, ScriptedLLM
 
@@ -42,7 +42,6 @@ def test_core_never_depends_on_extraction():
 def test_entry_points_are_exported_from_kuhaku():
     for name in (
         "Extractor",
-        "ExtractionRouter",
         "ExtractionSchema",
         "ExtractionResult",
         "ExtractionStatus",
@@ -71,7 +70,7 @@ def test_an_outer_trace_id_is_inherited():
 
 def test_routing_and_extraction_share_one_trace_id(caplog):
     llm = ScriptedLLM({"data": {"choice": "Order"}}, GOOD)
-    router = ExtractionRouter([Extractor(Order, llm=llm)])
+    router = Extractor([Extractor(Order, llm=llm)])
 
     with caplog.at_level(logging.INFO, logger="kuhaku.tools.extraction"):
         result = router.extract("5 tea", trace_id="shared")

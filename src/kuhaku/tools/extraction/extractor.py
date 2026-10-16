@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
@@ -28,6 +28,9 @@ from .schema import ExtractionSchema, FieldSpec, as_schema
 from .steps.extract import ExtractStep
 from .steps.security import SecurityStep
 from .steps.slot_filling import SLOT_FILLING_STEP, SlotFillingStep
+
+if TYPE_CHECKING:
+    from .router import Route, Router
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -68,14 +71,27 @@ class Extractor(Generic[M]):
     ``max_retries`` and ``audit_log_path`` left as ``None`` come from
     ``extraction_settings``, which defaults to :class:`ExtractionSettings` read from
     ``KUHAKU_EXTRACTION__*`` environment variables -- the settings every extraction
-    shares, the router's schema choice included. Its ``security`` options are run by a
+    shares, the schema choice included. Its ``security`` options are run by a
     :class:`SecurityStep` at the front of every pipeline; a step named ``security``
     passed in ``steps`` is used instead.
+
+    **Several kinds of text.** ``schema`` may instead be a list of extractors --
+    ``Extractor([order, complaint])``. Each text is then first matched to one of them by
+    its ``name`` and ``description`` (a model call; ``instructions`` add your routing
+    rules), and extracted with that one; ``result.schema_name`` says which. A text that
+    fits none is ``NO_MATCH``. ``prior`` is simply the previous result: each extractor's
+    data is carried in only when the text goes to it, so an order interrupted by a
+    complaint or a greeting is picked up again afterwards. :attr:`routes` is the chain
+    of choosers, tried in order -- insert a cheap keyword rule in front of the model one.
+    ``llm`` and ``fallback_llms`` default to the first extractor's, as do the settings.
+    Steps, a pipeline and :meth:`preview` belong to the extractors in the list.
     """
+
+    _router: Router | None = None
 
     def __init__(
         self,
-        schema: ExtractionSchema[M] | type[M] | FieldSpec,
+        schema: ExtractionSchema[M] | type[M] | FieldSpec | Sequence[Extractor[Any]],
         *,
         name: str = "",
         description: str = "",
@@ -90,6 +106,25 @@ class Extractor(Generic[M]):
         audit_log_path: str | None = None,
         extraction_settings: ExtractionSettings | None = None,
     ) -> None:
+        if _is_extractor_list(schema):
+            if steps or name or description or settings is not None:
+                raise ConfigError(
+                    "An Extractor given a list of extractors only chooses between them; "
+                    "steps, name, description and settings belong on the extractors in the "
+                    "list."
+                )
+            self._init_routing(
+                list(schema),  # type: ignore[arg-type]
+                instructions=instructions,
+                llm=llm,
+                fallback_llms=fallback_llms,
+                max_retries=max_retries,
+                prompts=prompts,
+                audit_log_path=audit_log_path,
+                extraction_settings=extraction_settings,
+            )
+            return
+
         es = extraction_settings or ExtractionSettings()
         self.extraction_settings = es
         if max_retries is None:
@@ -97,7 +132,10 @@ class Extractor(Generic[M]):
         self.audit_log_path = audit_log_path if audit_log_path is not None else es.audit_log_path
         self.prompts: ExtractionPrompts = as_prompts(prompts)
         self.schema: ExtractionSchema[M] = as_schema(
-            schema, name=name, description=description, instructions=instructions
+            schema,  # type: ignore[arg-type]  # a list of extractors returned above
+            name=name,
+            description=description,
+            instructions=instructions,
         )
         built = llm if llm is not None else build_llm_provider(settings or get_settings())
         self.llm: LLMProvider = with_runtime(built, token_tracking=enable_token_tracking)
@@ -117,6 +155,52 @@ class Extractor(Generic[M]):
                 *steps,
             ]
         )
+
+    def _init_routing(
+        self,
+        extractors: list[Extractor[Any]],
+        *,
+        instructions: str,
+        llm: LLMProvider | None,
+        fallback_llms: Sequence[LLMProvider],
+        max_retries: int | None,
+        prompts: ExtractionPrompts | Mapping[str, str] | None,
+        audit_log_path: str | None,
+        extraction_settings: ExtractionSettings | None,
+    ) -> None:
+        # Imported here: the router builds Extractors itself (its model choice is one).
+        from .router import LLMRoute, Router
+
+        if any(extractor._router is not None for extractor in extractors):
+            raise ConfigError(
+                "An extractor in the list chooses between extractors itself; list the "
+                "extractors it holds instead."
+            )
+        router = Router(
+            extractors,
+            routes=[LLMRoute(instructions=instructions, max_retries=max_retries, prompts=prompts)],
+            llm=llm,
+            fallback_llms=fallback_llms,
+            audit_log_path=audit_log_path,
+            extraction_settings=extraction_settings,
+        )
+        self._router = router
+        self.extractors: dict[str, Extractor[Any]] = router.extractors
+        self.routes: list[Route] = router.routes
+        self.llm = router.llm
+        self.fallback_llms = router.fallback_llms
+        self.extraction_settings = router.extraction_settings
+        self.audit_log_path = router.audit_log_path
+
+    def route(
+        self, text: str, *, history: Sequence[Message] = (), reference: Any = None
+    ) -> str | None:
+        """The name of the extractor ``text`` goes to, or ``None`` when none fits --
+        without extracting. Only for an extractor given a list of extractors."""
+
+        if self._router is None:
+            raise ConfigError("route() chooses between extractors; this one has a single schema.")
+        return self._router.route(text, history=history, reference=reference)
 
     def extract(
         self,
@@ -138,8 +222,15 @@ class Extractor(Generic[M]):
 
         ``trace_id`` binds every log record and span of this call to an id; without
         one, an id bound by the caller is inherited, else a new one is minted.
+
+        Given a list of extractors, the text first goes to the one it fits, and
+        ``prior`` must then be the previous result (it names the extractor it came from).
         """
 
+        if self._router is not None:
+            return self._router.extract(  # type: ignore[return-value]
+                text, history=history, reference=reference, prior=prior, trace_id=trace_id  # type: ignore[arg-type]
+            )
         with traced_call("extraction", logger, trace_id=trace_id, schema=self.schema.name) as (
             tid,
             rec,
@@ -179,8 +270,12 @@ class Extractor(Generic[M]):
         with the extracted data as a JSON object, for
         :class:`~kuhaku.evaluation.StructuredMatchMetric` to score against a
         ``golden_answer`` holding the expected object as JSON. Status, schema and missing
-        fields ride along in ``metadata``."""
+        fields ride along in ``metadata``. Given a list of extractors it answers
+        ``{"schema": <chosen name or null>, "data": ...}`` so one ``golden_answer`` checks
+        the choice (``/schema``) and the values (``/data/...``) together."""
 
+        if self._router is not None:
+            return self._router.evaluate_sample(query)
         return evaluation_sample(query, self.extract(query), answer_data=None)
 
     def preview(
@@ -196,8 +291,14 @@ class Extractor(Generic[M]):
         boundary markers are random per call, so they differ from a real run's.
 
         A replaced ``extract`` step is previewed through its own ``build_prompts(ctx)``;
-        one without it raises :class:`ConfigError`."""
+        one without it raises :class:`ConfigError`, as does an extractor given a list of
+        extractors -- preview the one the text goes to."""
 
+        if self._router is not None:
+            raise ConfigError(
+                "preview() shows one extractor's prompt; call it on the extractor in the "
+                "list that the text goes to (route(text) names it)."
+            )
         ctx = self._context(text, history, reference, prior, "")
         self.pipeline.prepare(ctx)
         step = self.pipeline.get(EXTRACT_STEP)
@@ -247,6 +348,19 @@ class Extractor(Generic[M]):
             trace_id=trace_id,
             prompts=self.prompts,
         )
+
+def _is_extractor_list(schema: Any) -> bool:
+    """Whether ``schema`` is a list of extractors (routing) rather than a field list."""
+
+    if isinstance(schema, str | bytes | Mapping) or not isinstance(schema, Sequence):
+        return False
+    kinds = {isinstance(item, Extractor) for item in schema}
+    if kinds == {True, False}:
+        raise TypeError(
+            "A list given to Extractor is either field names or extractors, not both."
+        )
+    return kinds == {True}
+
 
 def evaluation_sample(
     query: str, result: ExtractionResult[Any], *, answer_data: dict[str, Any] | None

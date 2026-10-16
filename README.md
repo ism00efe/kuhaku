@@ -63,8 +63,9 @@ print(result.data)      # {'product': 'tea', 'quantity': 3}
 That is the whole conversation loop: kuhaku keeps no state, so pass the previous result
 back as `prior=` with each new message, and send `result.question` while there is one.
 A field kuhaku should ask for must be required — one that accepts `None` (`str | None`)
-is optional and never asked for. To tell orders from complaints or small talk, put one
-extractor per kind behind an `ExtractionRouter`.
+is optional and never asked for. To tell orders from complaints or small talk, give it a
+list of extractors, one per kind: `Extractor([order, complaint])` picks the right one for
+each message.
 
 See [Structured extraction](https://github.com/ism00efe/kuhaku/blob/main/docs/extraction.md)
 for routing between schemas, multi-turn slot filling, evidence checks and your own rules.
@@ -107,7 +108,7 @@ model: kuhaku asks before downloading it, and until it is on disk retrieval uses
 ## What it does today
 
 - **Structured extraction** — text to validated fields from a plain field list (or a Pydantic model);
-  a router between schemas, multi-turn slot filling, retries, fallback models, evidence
+  choosing between several kinds of message, multi-turn slot filling, retries, fallback models, evidence
   checks, your own rules, optional PII masking and input guard
 - **Ingestion** — `.txt`, `.md`, `.pdf`; paragraph or structural chunking
 - **Retrieval** — dense (embeddings), sparse (BM25), or both fused with Reciprocal Rank

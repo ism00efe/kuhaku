@@ -10,7 +10,7 @@ from kuhaku.evaluation import (
     EvaluationTarget,
     StructuredMatchMetric,
 )
-from kuhaku.tools.extraction import ExtractionRouter, Extractor
+from kuhaku.tools.extraction import Extractor
 
 from .conftest import Complaint, Order, ScriptedLLM
 
@@ -84,7 +84,7 @@ def test_the_runner_scores_an_extractor_end_to_end(tmp_path):
 
 
 def test_a_router_answer_checks_the_routing_too():
-    router = ExtractionRouter(
+    router = Extractor(
         [Extractor(Order, llm=ScriptedLLM()), Extractor(Complaint, llm=ScriptedLLM({"data": {"topic": "late"}}))],
         llm=ScriptedLLM({"data": {"choice": "Complaint"}}),
     )
