@@ -7,10 +7,10 @@
 
 An AI orchestration framework for Python. `kuhaku.core` is tool-agnostic runtime
 infrastructure — LLM abstraction, configuration, identity, security, observability,
-retry. Tools are built on top of it, and retrieval-augmented generation is the first
-one that ships.
+retry. Tools are built on top of it. Two ship today: retrieval-augmented generation and
+structured extraction.
 
-> **Alpha — 0.1.0.**
+> **Alpha — 0.2.0.**
 
 ---
 
@@ -22,8 +22,13 @@ one that ships.
 - **Evaluation ships with the framework.** A separate, tool-agnostic package with
   retrieval and answer-quality metrics that measures anything implementing the target
   contract.
-- **No switch to leave in the wrong position.** PII sanitization has no flag at all, and
-  access filtering has no global one — tagging a document is what protects it.
+- **Structured extraction that says what is missing.** Free text in, a validated Pydantic
+  model out — and when the text lacks a value, the result says which one instead of
+  inventing it.
+- **Start light.** `pip install kuhaku` pulls nothing heavy, and no default ever downloads
+  a model. A feature's dependencies come when you use it.
+- **No switch to leave in the wrong position.** In RAG, PII sanitization has no flag at
+  all, and access filtering has no global one — tagging a document is what protects it.
 
 ---
 
@@ -33,11 +38,37 @@ one that ships.
 pip install kuhaku
 ```
 
-Point it at a hosted model — no local server needed:
+Point it at a hosted model — no local server needed. Set a key and kuhaku uses it:
 
 ```bash
-export KUHAKU_LLM_PROVIDER=openai      # or: anthropic, vertex, ollama; unset = auto-detect
-export OPENAI_API_KEY=sk-...
+export OPENROUTER_API_KEY=sk-or-...    # free models available; or OPENAI_API_KEY, ...
+```
+
+### Structured extraction
+
+```python
+from pydantic import BaseModel
+from kuhaku import Extractor
+
+class Appointment(BaseModel):
+    department: str
+    day: str
+    time: str
+
+result = Extractor(Appointment).extract("A cardiology appointment tomorrow, please")
+print(result.status)         # NEEDS_CLARIFICATION
+print(result.missing_slots)  # ('/time',)
+```
+
+See [Structured extraction](https://github.com/ism00efe/kuhaku/blob/main/docs/extraction.md)
+for routing between schemas, multi-turn slot filling, evidence checks and your own rules.
+
+### Retrieval-augmented generation
+
+RAG needs a vector store and an embedding library, so it has its own extra:
+
+```bash
+pip install "kuhaku[rag]"
 ```
 
 ```python
@@ -61,19 +92,22 @@ sanitization masked), `answer.abstained` and `answer.trace_id` are on the same o
 When retrieval finds nothing relevant, kuhaku abstains rather than letting the model
 improvise.
 
-Embeddings run locally whichever provider you choose, so the first ingest downloads a
-~490 MB model — see [Installation in detail](#installation-in-detail) before you install
-on a small disk.
+Embeddings run locally whichever provider you choose. Dense retrieval needs a ~490 MB
+model: kuhaku asks before downloading it, and until it is on disk retrieval uses keyword
+(BM25) search alone — see [Installation in detail](#installation-in-detail).
 
 ---
 
 ## What it does today
 
+- **Structured extraction** — text to a validated Pydantic model or a plain field list;
+  a router between schemas, multi-turn slot filling, retries, fallback models, evidence
+  checks, your own rules, optional PII masking and input guard
 - **Ingestion** — `.txt`, `.md`, `.pdf`; paragraph or structural chunking
 - **Retrieval** — dense (embeddings), sparse (BM25), or both fused with Reciprocal Rank
   Fusion; optional cross-encoder re-ranking
 - **Document-level access filtering** — flat tag intersection, enforced before ranking
-- **Four LLM providers** — Ollama, OpenAI, Anthropic, Google Vertex AI
+- **Six LLM providers** — Ollama, OpenAI, Anthropic, Google Vertex AI, Groq, OpenRouter
 - **Security** — PII sanitization, deterministic prompt-injection input guard,
   per-request audit record
 - **Observability** — structured logging with trace-id propagation, OpenTelemetry
@@ -81,12 +115,13 @@ on a small disk.
 - **Resilience** — retry with exponential backoff and circuit breakers on every external
   call
 - **Evaluation** — golden-dataset loader, retrieval metrics (hit rate@k, MRR, nDCG@k,
-  precision, recall) and answer-quality metrics, in-memory or SQLite result stores
+  precision, recall), answer-quality metrics and field-by-field structured-output
+  metrics, in-memory or SQLite result stores
 - **Caching** — query-answer cache keyed by the entitled chunk set, so two entitlements
   never share an entry
 
-1098 tests, no failures, entirely offline — in-memory fakes for the embedder, vector
-store and LLM. No network, no model download, no running LLM server needed to run them.
+The test suite runs entirely offline — in-memory fakes for the embedder, vector store
+and LLM. No network, no model download, no running LLM server needed to run it.
 
 ---
 
@@ -140,15 +175,28 @@ Requires Python 3.11+.
 
 ### What `pip install kuhaku` pulls in
 
-kuhaku depends on `chromadb`, `sentence-transformers` and `scikit-learn`, which together
-resolve to roughly 120 packages. On Linux, about 19 of those are NVIDIA CUDA runtime
-libraries (`nvidia-cublas`, `nvidia-cudnn`, `nccl`, `triton`, …) that PyTorch's default
-wheel depends on — several gigabytes that are dead weight without an NVIDIA GPU.
-Installing the CPU-only PyTorch build first avoids them entirely:
+The base install is light: pydantic, requests, PDF and file-type detection,
+OpenTelemetry and PyJWT. Nothing heavy comes with it. Each feature that needs more has
+its own extra:
+
+| Extra | Adds | For |
+|---|---|---|
+| `kuhaku[rag]` | `chromadb`, `sentence-transformers` (pulls PyTorch) | RAG's vector store and local embeddings |
+| `kuhaku[dense]` | `sentence-transformers` | local embeddings alone |
+| `kuhaku[guard]` | `scikit-learn`, `joblib`, `numpy` | the trained prompt-injection guard model |
+| `kuhaku[otlp]` | the OTLP trace exporter (pulls `grpcio`) | sending traces to a collector |
+| `kuhaku[vertex]` | `google-genai` | Google Vertex AI |
+
+Without the extra, a feature that needs it either asks before installing it (RAG) or
+stops and names the command to run (the others). Nothing is installed silently.
+
+PyTorch's default Linux wheel pulls about 19 NVIDIA CUDA runtime libraries
+(`nvidia-cublas`, `nvidia-cudnn`, `nccl`, `triton`, …) — several gigabytes that are dead
+weight without an NVIDIA GPU. Installing the CPU-only build first avoids them:
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install kuhaku
+pip install "kuhaku[rag]"
 ```
 
 Windows and macOS wheels do not pull separate CUDA packages, so this step is a Linux
@@ -158,7 +206,7 @@ concern.
 
 | Model | When | Size |
 |---|---|---|
-| `intfloat/multilingual-e5-small` (embeddings) | first ingest | ~490 MB |
+| `intfloat/multilingual-e5-small` (embeddings) | dense retrieval, after you approve it | ~490 MB |
 | `qwen2.5:7b-instruct` (LLM) | `ollama pull`, local route only | 4.7 GB |
 | `BAAI/bge-reranker-base` (re-ranker) | only if you enable it | ~1.1 GB |
 
@@ -169,13 +217,13 @@ configuration is Vertex AI for both the LLM and the embeddings
 
 ```bash
 pip install "kuhaku[vertex]"   # only if you are using Google Vertex AI
-pip install "kuhaku[dev]"      # pytest, ruff, mypy, build
+pip install "kuhaku[dev]"      # pytest, ruff, mypy, build, and every optional package
 ```
 
 ### Running the LLM locally
 
-With no provider set, kuhaku auto-selects a running local [Ollama](https://ollama.com)
-server:
+With no provider set, kuhaku continues with the provider you used last; the first time,
+it picks a running local [Ollama](https://ollama.com) server if there is one:
 
 ```bash
 ollama serve
@@ -188,19 +236,20 @@ Point kuhaku at a different one with `KUHAKU_OLLAMA_MODEL`.
 
 ## Defaults
 
-A bare `RAG()` configures nothing and downloads no model. The governing rule: **a default
-may cost CPU and memory, never a download.**
+A bare `RAG()` or `Extractor(...)` configures nothing and downloads no model. The
+governing rule: **a default may cost CPU and memory, never a download.**
 
 | | Default |
 |---|---|
 | Retrieval | `auto` — hybrid (dense + BM25/RRF) when an embedding backend builds, else sparse-only |
-| LLM | `auto` — a reachable Ollama (`qwen2.5:7b-instruct`), else a provider whose API key is set |
+| LLM | `auto` — the provider used last; else a reachable Ollama (`qwen2.5:7b-instruct`), else OpenRouter's free model, else another provider whose API key is set |
 | Embeddings | `intfloat/multilingual-e5-small`; device `auto` — CUDA / MPS / CPU |
 | Vector store | Chroma, collection `default_kb`, temporary directory |
 | Chunking | Paragraph, 500 characters, 80 overlap |
 | `top_k` | 4 |
-| PII sanitization | Always on — no setting disables it |
-| Prompt-injection input guard | Always on — the `RAG` facade exposes no way to disable it |
+| PII sanitization (RAG) | Always on — no setting disables it |
+| Prompt-injection input guard (RAG) | Always on — the `RAG` facade exposes no way to disable it |
+| PII masking, input guard, audit (extraction) | Off — each gets in the way of ordinary use; one setting turns it on for every extraction |
 | Audit log | On — one record per request, whatever the outcome (`RAG(audit_enabled=False)` disables it) |
 | Query cache | On — SQLite, 1 hour TTL |
 | Cross-encoder re-ranker | **Off** — `BAAI/bge-reranker-base` is ~1.1 GB |
@@ -211,18 +260,18 @@ dependencies and announcing any downgrade on the terminal. An explicit value alw
 and `KUHAKU_AUTO=false` disables the probing entirely — see
 [docs/configuration.md](https://github.com/ism00efe/kuhaku/blob/main/docs/configuration.md#auto).
 
-Every setting reads from the environment under a `KUHAKU_` prefix, with RAG settings
-nested under `KUHAKU_RAG__`:
+Every setting reads from the environment under a `KUHAKU_` prefix. Each tool's settings
+carry its own name — `KUHAKU_RAG__` for RAG, `KUHAKU_EXTRACTION__` for extraction:
 
 ```bash
 KUHAKU_RAG__TOP_K=8
 KUHAKU_RAG__RETRIEVAL=dense
-KUHAKU_RAG__RERANK_ENABLED=true
+KUHAKU_EXTRACTION__MAX_RETRIES=2
 ```
 
-Four ecosystem-standard names are also accepted unprefixed, because another library
+Six ecosystem-standard names are also accepted unprefixed, because another library
 reading them means the same thing: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`.
+`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`.
 
 kuhaku never configures logging or reads a `.env` file on its own — both belong to your
 application.
@@ -239,19 +288,22 @@ policy, supply your own messages.
 kuhaku/
 ├── core/          tool-agnostic runtime infrastructure
 │   ├── config          typed, environment-driven Settings
-│   ├── llm             LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI
+│   ├── llm             LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI /
+│   │                   Groq / OpenRouter
+│   ├── resolve         capability resolution: what is usable now, asked before installing
 │   ├── auth            AuthContext and identity primitives
-│   ├── security        prompt-injection input guard, PII sanitization, audit
+│   ├── security        input policy, prompt-injection guard, PII sanitization, audit
 │   ├── observability   structured logging, OpenTelemetry tracing and metrics
 │   └── retry           retry with backoff, circuit breakers
 ├── evaluation/    tool-agnostic evaluation harness
 └── tools/
-    └── rag/       ingestion, chunking, embeddings, vector store, retrieval, fusion,
-                   re-ranking, access filtering, caching
+    ├── rag/         ingestion, chunking, embeddings, vector store, retrieval, fusion,
+    │                re-ranking, access filtering, caching
+    └── extraction/  schemas, extraction pipeline, slot filling, routing, evidence
 ```
 
-**The rule:** a tool may depend on `kuhaku.core`. Core may never depend on a tool. A
-second tool is a new package under `tools/`, never a new field on core.
+**The rule:** a tool may depend on `kuhaku.core`. Core may never depend on a tool. A new
+tool is a new package under `tools/` with its own settings, never a new field on core.
 
 ---
 

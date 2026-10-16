@@ -57,7 +57,7 @@ def test_every_result_carries_the_trace_id_of_its_logs(caplog):
 
     assert result.trace_id == "t-123"
     steps = {getattr(record, "step", None) for record in caplog.records}
-    assert {"extraction", "extraction.extract", "extraction.continuation"} <= steps
+    assert {"extraction", "extraction.extract", "extraction.slot_filling"} <= steps
     summary = next(r for r in caplog.records if getattr(r, "step", None) == "extraction")
     assert summary.outcome == "complete"
     assert summary.schema == "Order"
@@ -70,7 +70,7 @@ def test_an_outer_trace_id_is_inherited():
 
 
 def test_routing_and_extraction_share_one_trace_id(caplog):
-    llm = ScriptedLLM({"schema": "Order"}, GOOD)
+    llm = ScriptedLLM({"data": {"choice": "Order"}}, GOOD)
     router = ExtractionRouter([Extractor(Order, llm=llm)])
 
     with caplog.at_level(logging.INFO, logger="kuhaku.tools.extraction"):

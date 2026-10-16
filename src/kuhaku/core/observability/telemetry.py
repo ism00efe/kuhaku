@@ -14,6 +14,8 @@ Zero-config defaults:
   processor is attached by default* -- nothing a span records is ever exported anywhere:
   no network calls, no background threads. Set ``OTEL_TRACES_EXPORTER=console`` or
   ``otlp`` (standard OTel env vars, not a new ``Settings`` field) to opt into export.
+  ``otlp`` needs the ``kuhaku[otlp]`` extra: the gRPC exporter is not in the base install,
+  since nothing is exported unless asked for.
 * Metrics: an SDK ``MeterProvider`` with a Prometheus exporter is always installed --
   collection is always on, exposition is gated at the embedding application's HTTP
   layer (e.g. an authenticated metrics route), not here, so this preserves
@@ -31,7 +33,6 @@ from collections.abc import Mapping
 
 from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace as otel_trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.sdk.metrics import MeterProvider
@@ -92,6 +93,16 @@ def _configure_tracing(resource: Resource) -> None:
     elif exporter_name == "console":
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     elif exporter_name == "otlp":
+        try:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter,
+            )
+        except ImportError as exc:
+            # Asked for explicitly, so not silently left unexported.
+            raise ImportError(
+                "OTEL_TRACES_EXPORTER=otlp needs the OTLP exporter, which the base install "
+                "leaves out: pip install 'kuhaku[otlp]'."
+            ) from exc
         endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or None
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
     else:

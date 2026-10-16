@@ -1,4 +1,4 @@
-"""The optional steps: continuation, evidence, validation -- and the pipeline holding them."""
+"""The optional steps: slot filling, evidence, validation -- and the pipeline holding them."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from kuhaku.tools.extraction import (
     Step,
     ValidationStep,
 )
-from kuhaku.tools.extraction.steps.continuation import merge
+from kuhaku.tools.extraction.steps.slot_filling import merge
 
 from .conftest import Order, ScriptedLLM
 
@@ -47,7 +47,7 @@ def test_the_extract_step_cannot_be_removed_or_disabled_only_replaced():
     with pytest.raises(ConfigError):
         pipeline.disable("extract")
 
-    replacement = ExtractStep(max_repair_attempts=5)
+    replacement = ExtractStep(max_retries=5)
     pipeline.replace("extract", replacement)
     assert pipeline.get("extract") is replacement
 
@@ -94,7 +94,7 @@ def test_steps_after_a_failed_extract_with_no_data_do_not_run():
     assert not marker.ran
 
 
-# --- continuation ---------------------------------------------------------------------
+# --- slot filling ---------------------------------------------------------------------
 
 
 def test_a_follow_up_completes_the_earlier_turn():
@@ -107,7 +107,7 @@ def test_a_follow_up_completes_the_earlier_turn():
     first = extractor.extract("çay yaz")
     second = extractor.extract("5 kilo", prior=first)
 
-    assert first.status is ExtractionStatus.NEEDS_INPUT
+    assert first.status is ExtractionStatus.NEEDS_CLARIFICATION
     assert second.status is ExtractionStatus.COMPLETE
     assert second.value == Order(product="çay", quantity=5)
     _, user = llm.calls[1]
@@ -120,7 +120,7 @@ def test_prior_as_a_plain_dict_works_too():
     assert result.value == Order(product="çay", quantity=5)
 
 
-def test_without_prior_continuation_is_inert():
+def test_without_prior_slot_filling_is_inert():
     llm = ScriptedLLM({"data": {"product": "tea", "quantity": 5}})
     Extractor(Order, llm=llm).extract("5 tea")
     _, user = llm.calls[0]
@@ -212,9 +212,9 @@ def test_a_passing_rule_leaves_the_result_complete():
     assert Extractor(Order, llm=llm, steps=[ValidationStep(_at_most_100)]).extract("5 tea").ok
 
 
-def test_a_rule_returning_a_repairable_issue_is_a_component_error():
+def test_a_rule_returning_a_retryable_issue_is_a_component_error():
     def bad(order, ctx):
-        return [Issue(IssueKind.REPAIRABLE, "x", "x")]
+        return [Issue(IssueKind.RETRYABLE, "x", "x")]
 
     llm = ScriptedLLM({"data": {"product": "tea", "quantity": 5}})
     with pytest.raises(CustomComponentError):

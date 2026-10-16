@@ -1,8 +1,8 @@
 # Evaluation
 
-`kuhaku.evaluation` measures retrieval and answer quality against a golden dataset. It is
-tool-agnostic: it evaluates a `RAGEngine`, a bare retriever, or anything else that
-implements the target contract.
+`kuhaku.evaluation` measures retrieval, answer and structured-output quality against a
+golden dataset. It is tool-agnostic: it evaluates a `RAGEngine`, an extractor, a bare
+retriever, or anything else that implements the target contract.
 
 Retrieval metrics need no language model. Answer-quality metrics need a judge you supply.
 
@@ -75,6 +75,15 @@ went suspiciously quiet.
 |---|---|---|
 | `AnswerCorrectnessMetric` | `answer_correctness` | `golden_answer` in the dataset |
 | `FaithfulnessMetric` | `faithfulness` | a judge model |
+
+**Structured output:**
+
+| Class | Result keys | Needs |
+|---|---|---|
+| `StructuredMatchMetric` | `field_accuracy`, `exact_match` | `golden_answer` holding the expected object as JSON |
+
+`Extractor` and `ExtractionRouter` answer with JSON, so they can be passed to `run()`
+directly — see [Structured extraction → Measuring it](extraction.md#measuring-it).
 
 The `k` on a metric is independent of the `top_k` you pass to `run()`. Retrieve 10 and
 score recall at 5 if that is the question you are asking.

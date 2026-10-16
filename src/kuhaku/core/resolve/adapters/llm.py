@@ -3,7 +3,11 @@
 Provider names, SDK imports and construction all live here. The ``auto`` order is
 Ollama (safest -- local, free, no data leaves the machine) then, on the monetary/privacy
 axis, the credentialed API providers in the historical order openai -> anthropic ->
-vertex, with groq appended last (§11).
+vertex, with groq last (§11). OpenRouter's default model is free, so it sits right after
+Ollama: no money is spent before a paid provider is.
+
+:data:`BUILDERS` maps every provider name to its builder, so a pinned provider is built
+directly without probing anything.
 """
 
 from __future__ import annotations
@@ -104,6 +108,30 @@ def build_groq(settings):
     )
 
 
+def build_openrouter(settings):
+    from ...llm.openrouter_provider import OpenRouterProvider
+
+    return OpenRouterProvider(
+        api_key=settings.openrouter_api_key or "",
+        model=settings.openrouter_model,
+        base_url=settings.openrouter_base_url,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+        timeout=settings.llm_timeout_seconds,
+        **_resilience_kwargs(settings),
+    )
+
+
+BUILDERS = {
+    "ollama": build_ollama,
+    "openai": build_openai,
+    "anthropic": build_anthropic,
+    "vertex": build_vertex,
+    "groq": build_groq,
+    "openrouter": build_openrouter,
+}
+
+
 class OllamaAdapter:
     kind = "llm"
     packages = frozenset()  # Ollama is a server, not a pip package
@@ -150,6 +178,9 @@ class ApiLLMAdapter:
              "Vertex AI; billed per use; the prompt is sent to Google Cloud", build_vertex),
             ("groq", bool(s.groq_api_key), 13, False,
              "Groq API; free tier; the prompt is sent to Groq", build_groq),
+            ("openrouter", bool(s.openrouter_api_key), 5, False,
+             "OpenRouter API; free models available; the prompt is sent to OpenRouter",
+             build_openrouter),
         ]
         out: list[Candidate] = []
         for cid, has_cred, rank, monetary, note, builder in rows:

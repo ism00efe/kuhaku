@@ -1,4 +1,4 @@
-"""Extractor end to end against a scripted LLM: status, repair, fallback, prompts."""
+"""Extractor end to end against a scripted LLM: status, retry, fallback, prompts."""
 
 from __future__ import annotations
 
@@ -31,20 +31,20 @@ def test_complete_extraction_returns_the_model_instance():
     assert result.issues == ()
 
 
-def test_a_value_absent_from_the_text_is_needs_input_and_not_retried():
+def test_a_value_absent_from_the_text_needs_clarification_and_is_not_retried():
     llm = ScriptedLLM({"data": {"product": "tea", "quantity": None}})
-    result = Extractor(Order, llm=llm, max_repair_attempts=3).extract("tea please")
+    result = Extractor(Order, llm=llm, max_retries=3).extract("tea please")
 
-    assert result.status is ExtractionStatus.NEEDS_INPUT
-    assert result.missing == ("/quantity",)
+    assert result.status is ExtractionStatus.NEEDS_CLARIFICATION
+    assert result.missing_slots == ("/quantity",)
     assert result.value is None
     assert result.data == {"product": "tea", "quantity": None}
     assert len(llm.calls) == 1
 
 
-def test_malformed_output_is_repaired_with_the_problem_fed_back():
+def test_malformed_output_is_retried_with_the_problem_fed_back():
     llm = ScriptedLLM("not json at all", {"data": {"product": "tea", "quantity": "five"}}, GOOD)
-    result = Extractor(Order, llm=llm, max_repair_attempts=2).extract("five tea")
+    result = Extractor(Order, llm=llm, max_retries=2).extract("five tea")
 
     assert result.status is ExtractionStatus.COMPLETE
     assert result.attempts == 3
@@ -55,9 +55,9 @@ def test_malformed_output_is_repaired_with_the_problem_fed_back():
     assert "/quantity" in third_prompt
 
 
-def test_output_still_unusable_after_repairs_is_failed():
+def test_output_still_unusable_after_retries_is_failed():
     llm = ScriptedLLM("nope", "still nope")
-    result = Extractor(Order, llm=llm, max_repair_attempts=1).extract("tea")
+    result = Extractor(Order, llm=llm, max_retries=1).extract("tea")
 
     assert result.status is ExtractionStatus.FAILED
     assert result.data is None
@@ -79,10 +79,10 @@ def test_non_string_text_is_rejected():
         Extractor(Order, llm=ScriptedLLM()).extract(b"tea")  # type: ignore[arg-type]
 
 
-# --- fallback / escalation ------------------------------------------------------------
+# --- fallback / fallback ------------------------------------------------------------
 
 
-def test_unusable_output_escalates_to_the_fallback_model():
+def test_unusable_output_falls_back_to_the_fallback_model():
     cheap = ScriptedLLM("garbage", "garbage again", name="cheap:small")
     strong = ScriptedLLM(GOOD, name="strong:large")
     result = Extractor(Order, llm=cheap, fallback_llms=[strong]).extract("5 tea")
@@ -101,12 +101,12 @@ def test_the_first_model_is_used_when_it_succeeds():
     assert strong.calls == []
 
 
-def test_missing_values_do_not_escalate():
+def test_missing_values_do_not_fall_back():
     strong = ScriptedLLM(name="strong:large")
     llm = ScriptedLLM({"data": {"product": "tea", "quantity": None}})
     result = Extractor(Order, llm=llm, fallback_llms=[strong]).extract("tea")
 
-    assert result.status is ExtractionStatus.NEEDS_INPUT
+    assert result.status is ExtractionStatus.NEEDS_CLARIFICATION
     assert strong.calls == []
 
 
@@ -135,7 +135,7 @@ def test_every_model_failing_is_failed():
 
     assert result.status is ExtractionStatus.FAILED
     assert result.attempts == 4
-    assert all(issue.kind is IssueKind.REPAIRABLE for issue in result.issues)
+    assert all(issue.kind is IssueKind.RETRYABLE for issue in result.issues)
 
 
 # --- prompts --------------------------------------------------------------------------
@@ -206,9 +206,9 @@ def test_without_llm_the_provider_comes_from_core(monkeypatch):
     assert extractor.extract("5 tea").ok
 
 
-def test_prior_without_the_continuation_step_is_refused():
+def test_prior_without_the_slot_filling_step_is_refused():
     extractor = Extractor(Order, llm=ScriptedLLM())
-    extractor.pipeline.disable("continuation")
+    extractor.pipeline.disable("slot_filling")
 
     with pytest.raises(ConfigError):
         extractor.extract("5 kilo", prior={"product": "tea"})

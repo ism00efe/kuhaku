@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from kuhaku.core.config import Settings
 from kuhaku.tools.rag.config import RAGSettings
 
@@ -78,27 +80,31 @@ def test_ragsettings_is_frozen():
         raise AssertionError("RAGSettings should be immutable")
 
 
-# --- RAGSettings.from_settings(): mapping completeness ---------------------------
+# --- RAGSettings.from_env()/from_settings() -------------------------------------
+# These used to go through a nested `Settings.rag` field, i.e. core importing the RAG
+# tool. RAGSettings now reads its own KUHAKU_RAG__* variables; the names are unchanged.
 
-def test_from_settings_passes_through_nested_rag_fields():
-    settings = Settings(_env_file=None, rag=RAGSettings(top_k=8, chunk_size=777))
-    rag_settings = RAGSettings.from_settings(settings)
+
+def test_from_settings_reads_rag_fields_from_the_environment(monkeypatch):
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "8")
+    monkeypatch.setenv("KUHAKU_RAG__CHUNK_SIZE", "777")
+    rag_settings = RAGSettings.from_settings(Settings(_env_file=None))
     assert rag_settings.top_k == 8
     assert rag_settings.chunk_size == 777
 
 
 def test_from_settings_reflects_defaults():
-    settings = Settings(_env_file=None)
-    rag_settings = RAGSettings.from_settings(settings)
-    assert rag_settings.chunking_strategy == settings.rag.chunking_strategy
-    assert rag_settings.embedding_model == settings.rag.embedding_model
-    assert rag_settings.chroma_collection == settings.rag.chroma_collection
+    rag_settings = RAGSettings.from_settings(Settings(_env_file=None))
+    defaults = RAGSettings()
+    assert rag_settings.chunking_strategy == defaults.chunking_strategy
+    assert rag_settings.embedding_model == defaults.embedding_model
+    assert rag_settings.chroma_collection == defaults.chroma_collection
 
 
 def test_from_settings_overlays_vertex_project_and_location_from_settings():
     """vertex_project/vertex_location stay authoritative on Settings (generic Google
     Cloud platform settings) -- from_settings() overlays them onto the derived
-    RAGSettings, since KUHAKU_RAG__* nested env vars have no way to reach them."""
+    RAGSettings."""
 
     settings = Settings(_env_file=None, vertex_project="p", vertex_location="l")
     rag_settings = RAGSettings.from_settings(settings)
@@ -112,30 +118,8 @@ def test_from_settings_overlays_retry_enabled_master_switch():
     assert rag_settings.retry_enabled is False
 
 
-def test_from_settings_passes_through_every_field_not_overlaid_from_settings():
-    """Every RAGSettings field except vertex_project/vertex_location/retry_enabled
-    (deliberately overlaid from Settings itself, see above) must come through unchanged
-    from settings.rag -- guards against a future field silently getting dropped or
-    reset if from_settings() is ever rewritten as manual field-by-field construction."""
-
-    custom_rag = RAGSettings(
-        top_k=11, chunk_size=999, chunking_strategy="structural",
-        embedding_model="custom-model", rerank_enabled=False,
-        cache_ttl_seconds=42, retry_embedding_max_attempts=9,
-    )
-    settings = Settings(_env_file=None, rag=custom_rag)
-    derived = RAGSettings.from_settings(settings)
-
-    overlaid = {"vertex_project", "vertex_location", "retry_enabled"}
-    for f in dataclasses.fields(RAGSettings):
-        if f.name in overlaid:
-            continue
-        assert getattr(derived, f.name) == getattr(custom_rag, f.name), f.name
-
-
 def test_ragsettings_from_settings_result_is_frozen():
-    settings = Settings(_env_file=None)
-    rag_settings = RAGSettings.from_settings(settings)
+    rag_settings = RAGSettings.from_settings(Settings(_env_file=None))
     try:
         rag_settings.top_k = 99  # type: ignore[misc]
     except AttributeError:
@@ -144,60 +128,75 @@ def test_ragsettings_from_settings_result_is_frozen():
         raise AssertionError("RAGSettings should be immutable")
 
 
-# --- Settings.rag: nested configuration loading -----------------------------------
-
-def test_settings_rag_defaults_to_a_ragsettings_instance():
-    settings = Settings(_env_file=None)
-    assert isinstance(settings.rag, RAGSettings)
-    assert settings.rag == RAGSettings()
+def test_from_env_defaults_to_ragsettings_defaults():
+    assert RAGSettings.from_env() == RAGSettings()
 
 
-def test_settings_rag_accepts_a_ragsettings_instance_directly():
-    settings = Settings(_env_file=None, rag=RAGSettings(top_k=11))
-    assert settings.rag.top_k == 11
-
-
-def test_settings_rag_loads_scalar_fields_from_nested_env_vars(monkeypatch):
+def test_from_env_loads_scalar_fields(monkeypatch):
     monkeypatch.setenv("KUHAKU_RAG__TOP_K", "9")
     monkeypatch.setenv("KUHAKU_RAG__RERANK_ENABLED", "false")
-    settings = Settings(_env_file=None)
-    assert settings.rag.top_k == 9
-    assert settings.rag.rerank_enabled is False
+    rag_settings = RAGSettings.from_env()
+    assert rag_settings.top_k == 9
+    assert rag_settings.rerank_enabled is False
 
 
-def test_settings_rag_loads_retrieval_from_nested_env_var(monkeypatch):
-    """KUHAKU_RAG__RETRIEVAL is a plain string field here -- RAGSettings itself does not
-    validate it against dense/sparse/hybrid (RAG.__init__ is the one place that does,
-    the same way for an explicit argument or a settings-derived value -- see
-    kuhaku/__init__.py)."""
+def test_from_env_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("kuhaku_rag__top_k", "7")
+    assert RAGSettings.from_env().top_k == 7
+
+
+def test_from_env_loads_retrieval(monkeypatch):
+    """A plain string here -- RAG.__init__ is the one place that validates it."""
 
     monkeypatch.setenv("KUHAKU_RAG__RETRIEVAL", "sparse")
-    settings = Settings(_env_file=None)
-    assert settings.rag.retrieval == "sparse"
+    assert RAGSettings.from_env().retrieval == "sparse"
 
 
-def test_settings_rag_loads_dict_field_from_nested_env_var(monkeypatch):
+def test_from_env_loads_dict_field_as_json(monkeypatch):
     monkeypatch.setenv("KUHAKU_RAG__DOC_TYPE_PREFIX_MAPPING", '{"log_": "log_sample"}')
-    settings = Settings(_env_file=None)
-    assert settings.rag.doc_type_prefix_mapping == {"log_": "log_sample"}
+    assert RAGSettings.from_env().doc_type_prefix_mapping == {"log_": "log_sample"}
 
 
-def test_settings_rag_nested_env_vars_do_not_affect_generic_fields(monkeypatch):
-    """The "__" nested delimiter must not leak into ordinary flat env var parsing --
-    no top-level Settings field name contains "__"."""
+def test_from_env_reads_a_dotenv_file_and_the_environment_wins(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("KUHAKU_RAG__TOP_K=5\nKUHAKU_RAG__CHUNK_SIZE=600\n", encoding="utf-8")
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "6")
+    rag_settings = RAGSettings.from_env(str(env_file))
+    assert rag_settings.top_k == 6
+    assert rag_settings.chunk_size == 600
 
+
+def test_from_env_rejects_a_bad_value_and_ignores_unknown_names(monkeypatch):
+    monkeypatch.setenv("KUHAKU_RAG__NOT_A_FIELD", "x")
+    assert RAGSettings.from_env() == RAGSettings()
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "many")
+    with pytest.raises(ValueError):
+        RAGSettings.from_env()
+
+
+def test_from_env_overrides_win(monkeypatch):
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "9")
+    assert RAGSettings.from_env(top_k=3).top_k == 3
+
+
+def test_rag_env_vars_do_not_affect_generic_fields(monkeypatch):
     monkeypatch.setenv("KUHAKU_RAG__TOP_K", "9")
     monkeypatch.setenv("KUHAKU_LLM_PROVIDER", "anthropic")
-    settings = Settings(_env_file=None)
-    assert settings.llm_provider == "anthropic"
-    assert settings.rag.top_k == 9
+    assert Settings(_env_file=None).llm_provider == "anthropic"
+    assert RAGSettings.from_env().top_k == 9
+
+
+def test_settings_rag_keyword_is_removed_with_a_migration_message():
+    with pytest.raises(TypeError, match="RAGSettings"):
+        Settings(_env_file=None, rag=RAGSettings(top_k=11))
+    assert not hasattr(Settings(_env_file=None), "rag")
 
 
 # --- Settings must stay generic ---------------------------------------------------
 
 def test_settings_has_no_rag_specific_fields():
-    """RAG fields must live only on Settings.rag, never directly on Settings -- adding a
-    second tool to kuhaku must never require touching this class."""
+    """RAG fields must live only on RAGSettings, never on Settings -- adding a second
+    tool to kuhaku must never require touching this class."""
 
     settings = Settings(_env_file=None)
     rag_only_field_names = {f.name for f in dataclasses.fields(RAGSettings)} - {

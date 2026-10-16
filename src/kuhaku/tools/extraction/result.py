@@ -25,30 +25,36 @@ class ExtractionStatus(str, Enum):
     COMPLETE = "complete"
     """Every required field was extracted and every enabled check passed."""
 
-    NEEDS_INPUT = "needs_input"
+    NEEDS_CLARIFICATION = "needs_clarification"
     """Required values are absent from the text -- ask the user for them."""
 
     INVALID = "invalid"
     """Values were extracted but a check (evidence, a caller's validator) rejected them."""
 
     FAILED = "failed"
-    """No usable structured output, even after the allowed repair attempts."""
+    """No usable structured output, even after the allowed retry attempts."""
 
-    UNROUTED = "unrouted"
+    NO_MATCH = "no_match"
     """An :class:`ExtractionRouter` found no schema that fits the text. Nothing was
     extracted -- what to do with such a text is the caller's decision, not a default."""
 
+    BLOCKED = "blocked"
+    """The input guard refused the text before any model saw it. Nothing was extracted."""
+
 
 class IssueKind(str, Enum):
-    REPAIRABLE = "repairable"
+    RETRYABLE = "retryable"
     """Something the model can fix on another attempt (malformed JSON, a schema
     violation). One still present at the end means the extraction failed."""
 
-    NEEDS_INPUT = "needs_input"
+    NEEDS_CLARIFICATION = "needs_clarification"
     """The information is not in the text; the model cannot fix it, only the user can."""
 
     INVALID = "invalid"
     """A rule was violated by a value the model did extract."""
+
+    BLOCKED = "blocked"
+    """The input guard refused the text; the model was never called."""
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,10 @@ class Provenance(str, Enum):
     UNGROUNDED = "ungrounded"
     """A value is present but its evidence is missing or not found in the source text."""
 
+    MISMATCH = "mismatch"
+    """The quote is in the source text but does not contain the value -- a real passage
+    cited for a value it does not state (e.g. "5 boxes" quoted for 500)."""
+
     MISSING = "missing"
     """No value was extracted for this field."""
 
@@ -85,9 +95,10 @@ class FieldReport:
 # reported as failed even if it also had missing fields, and a rule violation outranks
 # missing input because asking the user for more would not make it valid.
 _STATUS_BY_KIND = (
-    (IssueKind.REPAIRABLE, ExtractionStatus.FAILED),
+    (IssueKind.BLOCKED, ExtractionStatus.BLOCKED),
+    (IssueKind.RETRYABLE, ExtractionStatus.FAILED),
     (IssueKind.INVALID, ExtractionStatus.INVALID),
-    (IssueKind.NEEDS_INPUT, ExtractionStatus.NEEDS_INPUT),
+    (IssueKind.NEEDS_CLARIFICATION, ExtractionStatus.NEEDS_CLARIFICATION),
 )
 
 
@@ -125,11 +136,11 @@ class ExtractionResult(Generic[M]):
         return self.status is ExtractionStatus.COMPLETE
 
     @property
-    def missing(self) -> tuple[str, ...]:
+    def missing_slots(self) -> tuple[str, ...]:
         """JSON Pointers of the required fields the text did not provide."""
 
         return tuple(
             issue.path
             for issue in self.issues
-            if issue.kind is IssueKind.NEEDS_INPUT and issue.path is not None
+            if issue.kind is IssueKind.NEEDS_CLARIFICATION and issue.path is not None
         )

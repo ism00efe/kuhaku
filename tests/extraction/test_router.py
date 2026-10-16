@@ -13,10 +13,16 @@ from kuhaku.tools.extraction import (
     ExtractionSchema,
     ExtractionStatus,
     Extractor,
+    LLMRoute,
     RouteRequest,
 )
 
 from .conftest import Complaint, Order, ScriptedLLM, down
+
+
+def pick(name):
+    """The router LLM's reply: routing is an extraction of one ``choice`` field."""
+    return {"data": {"choice": name}}
 
 
 def _router(router_llm: ScriptedLLM, order_llm=None, complaint_llm=None, **kwargs):
@@ -33,7 +39,7 @@ def _router(router_llm: ScriptedLLM, order_llm=None, complaint_llm=None, **kwarg
 def test_each_schema_is_extracted_by_its_own_provider():
     order_llm = ScriptedLLM({"data": {"product": "tea", "quantity": 5}}, name="cheap:m")
     complaint_llm = ScriptedLLM({"data": {"topic": "late delivery"}}, name="strong:m")
-    router_llm = ScriptedLLM({"schema": "Order"}, {"schema": "Complaint"}, name="router:m")
+    router_llm = ScriptedLLM(pick("Order"), pick("Complaint"), name="router:m")
     router = _router(router_llm, order_llm, complaint_llm)
 
     order = router.extract("5 tea please")
@@ -45,12 +51,12 @@ def test_each_schema_is_extracted_by_its_own_provider():
 
 
 def test_the_llm_route_sees_every_schema_name_and_description():
-    router_llm = ScriptedLLM({"schema": None})
+    router_llm = ScriptedLLM(pick(None))
     _router(router_llm).route("hello")
 
-    _, user = router_llm.calls[0]
-    assert "- Order: A customer placing an order." in user
-    assert "- Complaint: A customer complaining about something." in user
+    system, _ = router_llm.calls[0]
+    assert "- Order: A customer placing an order." in system
+    assert "- Complaint: A customer complaining about something." in system
 
 
 def test_a_rule_in_front_of_the_llm_saves_the_llm_call():
@@ -67,21 +73,57 @@ def test_a_rule_in_front_of_the_llm_saves_the_llm_call():
     assert router_llm.calls == []
 
 
-def test_no_matching_schema_is_unrouted_never_a_default():
-    result = _router(ScriptedLLM({"schema": None})).extract("hello there")
+def test_no_matching_schema_is_no_match_never_a_default():
+    result = _router(ScriptedLLM(pick(None))).extract("hello there")
 
-    assert result.status is ExtractionStatus.UNROUTED
+    assert result.status is ExtractionStatus.NO_MATCH
     assert result.value is None
     assert result.trace_id
 
 
-@pytest.mark.parametrize("reply", ["not json", '{"schema": "Invoice"}'])
-def test_an_unusable_route_reply_defers_and_says_why(reply, caplog):
+@pytest.mark.parametrize("reply", ["not json", pick("Invoice"), pick(["Order"]), pick(3)])
+def test_an_unusable_route_reply_is_retried_then_defers_and_says_why(reply, caplog):
+    router_llm = ScriptedLLM(reply, reply)
     with caplog.at_level(logging.WARNING, logger="kuhaku.tools.extraction.router"):
-        result = _router(ScriptedLLM(reply)).extract("hello")
+        result = _router(router_llm).extract("hello")
 
-    assert result.status is ExtractionStatus.UNROUTED
+    assert result.status is ExtractionStatus.NO_MATCH
+    assert len(router_llm.calls) == 2  # the retry loop asked again
     assert any("deferring" in record.getMessage() for record in caplog.records)
+
+
+def test_a_retried_route_reply_routes():
+    order_llm = ScriptedLLM({"data": {"product": "tea", "quantity": 5}})
+    router = _router(ScriptedLLM(pick(["Order"]), pick("Order")), order_llm)
+    assert router.extract("5 tea").schema_name == "Order"
+
+
+def test_route_fallback_and_instructions():
+    order_llm = ScriptedLLM({"data": {"product": "tea", "quantity": 5}})
+    strong = ScriptedLLM(pick("Order"), name="strong:m")
+    router = _router(
+        ScriptedLLM("x", "x"),
+        order_llm,
+        fallback_llms=[strong],
+        routes=[LLMRoute(instructions="A bare quantity continues an order.")],
+    )
+
+    assert router.extract("5").schema_name == "Order"
+    system, _ = strong.calls[0]
+    assert "A bare quantity continues an order." in system
+
+
+def test_a_crashing_custom_route_is_named():
+    def broken(request):
+        raise KeyError("oops")
+
+    with pytest.raises(CustomComponentError, match="broken"):
+        _router(ScriptedLLM(), routes=[broken]).route("hello")
+
+
+def test_a_custom_route_returning_a_non_string_is_a_component_error():
+    with pytest.raises(CustomComponentError):
+        _router(ScriptedLLM(), routes=[lambda request: ["Order"]]).route("hello")
 
 
 def test_a_route_naming_an_unregistered_schema_is_a_component_error():
@@ -101,7 +143,7 @@ def test_prior_carries_over_only_to_the_same_schema():
         {"data": {"product": None, "quantity": 5}},
     )
     complaint_llm = ScriptedLLM({"data": {"topic": "late"}})
-    router_llm = ScriptedLLM({"schema": "Order"}, {"schema": "Order"}, {"schema": "Complaint"})
+    router_llm = ScriptedLLM(pick("Order"), pick("Order"), pick("Complaint"))
     router = _router(router_llm, order_llm, complaint_llm)
 
     first = router.extract("tea")
@@ -130,7 +172,7 @@ def test_a_router_needs_an_extractor():
 
 
 def test_routes_default_to_the_first_extractors_provider():
-    order_llm = ScriptedLLM({"schema": "Order"}, {"data": {"product": "tea", "quantity": 5}})
+    order_llm = ScriptedLLM(pick("Order"), {"data": {"product": "tea", "quantity": 5}})
     router = ExtractionRouter([Extractor(Order, llm=order_llm, enable_token_tracking=False)])
 
     assert router.llm is order_llm

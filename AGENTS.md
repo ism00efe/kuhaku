@@ -7,21 +7,26 @@ Instructions for coding agents working in this repository. Humans: see
 
 **kuhaku** is an AI orchestration framework for Python. `kuhaku.core` is tool-agnostic
 runtime infrastructure — LLM abstraction, configuration, identity, security,
-observability, retry. Tools are built on top of it. Retrieval-augmented generation is the
-first tool, and it lives in `src/kuhaku/tools/rag/`.
+observability, retry. Tools are built on top of it: retrieval-augmented generation in
+`src/kuhaku/tools/rag/` and structured extraction in `src/kuhaku/tools/extraction/`.
 
-RAG is not the framework. Do not restructure the package as if it were, and do not add
-RAG-shaped fields to core.
+Neither tool is the framework. Do not restructure the package as if one were, and do not
+add tool-shaped fields to core.
 
-Version 0.1.0, Apache-2.0, Python 3.11+. Not yet published to PyPI.
+Version 0.2.0, Apache-2.0, Python 3.11+.
 
 ## The one hard rule
 
 **`kuhaku.core` may never depend on a tool.**
 
-A change that makes `core` import from `tools/`, or that adds a RAG-specific field to a
-core model, is wrong regardless of how convenient it is. A second tool means a new
-`tools/<name>/` package with its own settings dataclass, not a new branch inside core.
+A change that makes `core` import from `tools/`, or that adds a tool-specific field to a
+core model, is wrong regardless of how convenient it is. A new tool means a new
+`tools/<name>/` package with its own settings object reading its own `KUHAKU_<NAME>__`
+variables, not a new branch inside core. `tests/test_core_boundaries.py` enforces it.
+
+A tool reaches core through `with_runtime` (model calls), `traced_call` (a call's
+observability) and `InputPolicy` (input checks) rather than wiring the pieces itself, so
+what core adds later reaches every tool.
 
 Everything else is negotiable. This is not.
 
@@ -29,7 +34,7 @@ Everything else is negotiable. This is not.
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # ~1100 tests, entirely offline
+pytest                      # ~1300 tests, entirely offline
 ruff check .
 mypy src
 ```
@@ -43,15 +48,19 @@ a test pass — use the fakes.
 
 ## Rules that came out of real mistakes
 
-**Do not add a setting without a reader.** A field on `Settings` or `RAGSettings` that
+**Do not add a setting without a reader.** A field on `Settings`, `RAGSettings` or
+`ExtractionSettings` that
 changes nothing is worse than a missing one, because it reads as a working control. If
 you add one, wire it in the same change and add a test that proves it has an effect. This
 repository already carries eighteen such fields from earlier work; do not add a
 nineteenth.
 
-**Security-relevant code has no off switch.** Access filtering, PII sanitization and the
-input guard have no parameter that disables them. If a change would be easier with a
-bypass, change the approach instead.
+**Security that costs nothing is always on; security that costs something is optional.**
+A protection with no real cost to performance or usability runs unconditionally and has
+no switch. A protection that slows things down, needs a download or extra
+infrastructure, or gets in the way of a quick experiment is optional — a throwaway demo
+must not be forced into it. Never add a bypass just because it makes a change easier to
+write.
 
 **Never edit a test expectation to make the suite green.** When an assertion starts
 failing, first establish whether the code or the expectation is wrong. Say which, in your
@@ -74,8 +83,8 @@ by a dependency.
 1. **Every code block must be complete and runnable** — imports included, no reliance on
    a variable defined elsewhere on the page or on another page.
 2. **Document only what works through the public API.** If a capability exists in the
-   package but a `RAG()` caller cannot reach it, say so explicitly rather than describing
-   it as if it worked.
+   package but a caller cannot reach it through `RAG()`, `Extractor` or another exported
+   entry point, say so explicitly rather than describing it as if it worked.
 
 The `README.md` is also the PyPI project page, so links to other files in the repository
 must be absolute GitHub URLs, not relative paths.
@@ -90,7 +99,8 @@ must be absolute GitHub URLs, not relative paths.
   retrieval is on because it costs neither; the cross-encoder re-ranker is off because it
   is roughly a gigabyte. `retrieval`, `llm_provider` and `embedding_device` default to
   `"auto"`, resolved at build time by `core/resolve/` (the registry-driven capability
-  resolver). `"auto"` only ever selects something usable now, never triggers a download
+  resolver). Choosing the LLM checks only credentials and the Ollama endpoint, never the
+  GPU (that probe imports torch), and continues with the provider used last. `"auto"` only ever selects something usable now, never triggers a download
   on its own, and never overrides an explicit value; consent for an install or a
   download is asked separately and never inferred. Adding a new external-dependency
   backend means a new adapter under `core/resolve/adapters/` or

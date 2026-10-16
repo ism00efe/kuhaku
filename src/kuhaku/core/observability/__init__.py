@@ -99,6 +99,25 @@ def instrumented_step(step: str, logger: logging.Logger | None = None, **initial
         STAGE_DURATION.record(time.perf_counter() - start, {"stage": step})
 
 
+@contextmanager
+def traced_call(
+    name: str,
+    logger: logging.Logger | None = None,
+    *,
+    trace_id: str | None = None,
+    **initial_extra: object,
+):
+    """The observability of one call into a tool: a trace id bound for everything
+    inside it, and the call's own span, log record and duration metric. Yields
+    ``(trace_id, recorder)``.
+
+    A tool wraps each public entry point in this instead of combining the pieces
+    itself, so what core adds to a call's observability reaches every tool."""
+
+    with bind_trace_id(trace_id) as tid, instrumented_step(name, logger, **initial_extra) as rec:
+        yield tid, rec
+
+
 __all__ = [
     "JsonFormatter",
     "TraceIdFilter",
@@ -108,6 +127,7 @@ __all__ = [
     "new_trace_id",
     "log_step",
     "instrumented_step",
+    "traced_call",
     # OpenTelemetry tracing
     "get_tracer",
     "get_meter",

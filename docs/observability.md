@@ -96,7 +96,16 @@ export OTEL_SERVICE_NAME=my-service          # default: kuhaku
 ```
 
 `OTEL_TRACES_EXPORTER=console` prints spans to stdout, which is the quickest way to see
-whether instrumentation is reaching you at all.
+whether instrumentation is reaching you at all. `otlp` needs the exporter, which the base
+install leaves out:
+
+```bash
+pip install "kuhaku[otlp]"
+```
+
+Structured extraction adds its own spans: `extraction` for each call,
+`extraction.<step>` for each pipeline step, and `extraction.router` and
+`extraction.route` for routing.
 
 ## Metrics
 
@@ -168,7 +177,7 @@ Tracking failures never affect the answer — they are caught and logged. A cust
 is tracked automatically if it exposes a `last_usage` attribute with `prompt_tokens` and
 `completion_tokens`; one that does not is simply untracked.
 
-## Not in 0.1.0
+## Not in 0.2.0
 
 Several metrics are defined but never emitted, so they will not appear in your scrape:
 model-version and prompt-version gauges, faithfulness and hallucination gauges, replay

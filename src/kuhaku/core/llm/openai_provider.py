@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider:
+    # Subclasses for other OpenAI-compatible services set their own, so the circuit
+    # breaker's messages name the service that is actually down.
+    _service = "openai"
+
     def __init__(
         self,
         api_key: str,
@@ -56,7 +60,7 @@ class OpenAIProvider:
                 failure_threshold=circuit_breaker_failure_threshold,
                 reset_timeout_seconds=circuit_breaker_reset_timeout_seconds,
                 success_threshold=circuit_breaker_success_threshold,
-                name="llm:openai",
+                name=f"llm:{self._service}",
             )
             if circuit_breaker_enabled
             else None

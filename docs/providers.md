@@ -6,10 +6,11 @@ independently and have different consequences for what runs on your machine.
 
 ## Language models
 
-Five providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`, or leave it unset
-(`auto`, the default): kuhaku uses a reachable local Ollama server, falling back to the
-first provider whose credentials are present. See
-[Configuration → Auto](configuration.md#auto).
+Six providers ship with kuhaku. Select one with `KUHAKU_LLM_PROVIDER`, or leave it unset
+(`auto`, the default): kuhaku continues with the provider you used last, and the first
+time it uses a reachable local Ollama server, then OpenRouter's free model, then the
+first other provider whose credentials are present. Choosing checks only credentials and
+the Ollama endpoint. See [Configuration → Auto](configuration.md#auto).
 
 | Provider | Value | Credentials | Default model |
 |---|---|---|---|
@@ -17,10 +18,23 @@ first provider whose credentials are present. See
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-5` |
 | Google Vertex AI | `vertex` | Application Default Credentials | `gemini-2.5-flash` |
-| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| Groq | `groq` | `GROQ_API_KEY` | `openai/gpt-oss-20b` |
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `google/gemma-4-31b-it:free` |
 
-Groq is an OpenAI-compatible endpoint with a free tier; in `auto` it is tried last, after
-every other credentialed provider, because the prompt still leaves your machine.
+Groq and OpenRouter are OpenAI-compatible endpoints. Groq has a free tier and is tried
+last in `auto`. OpenRouter's default model is a free one, so in `auto` it comes right
+after a local Ollama and before every paid provider. Either way the prompt leaves your
+machine.
+
+### OpenRouter
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...
+export KUHAKU_OPENROUTER_MODEL=google/gemma-4-31b-it:free
+```
+
+Any model OpenRouter serves works. Free models are added and withdrawn over time; if the
+default stops answering, pick another one ending in `:free`.
 
 ### Ollama
 
@@ -74,7 +88,7 @@ export GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
 **`KUHAKU_LLM_TEMPERATURE` and `KUHAKU_LLM_MAX_TOKENS` have no effect on this provider.**
-They apply to the other three.
+They apply to the other five.
 
 ### Configuring in code
 
@@ -101,12 +115,12 @@ Two backends. This is the choice that decides whether anything downloads.
 
 | Backend | Value | Runs | Requires |
 |---|---|---|---|
-| sentence-transformers | `sentence-transformer` *(default)* | locally, on your CPU | ~490 MB model download |
+| sentence-transformers | `sentence-transformer` *(default)* | locally, on your CPU | `kuhaku[rag]` and a ~490 MB model download, asked for first |
 | Vertex AI | `vertex` | Google's servers | `kuhaku[vertex]` + a GCP project |
 
 **There is no OpenAI or Anthropic embedding backend.** Setting an API key for the
 language model does not move embeddings off your machine — with `openai` or `anthropic`
-selected, the local embedding model still downloads and still runs.
+selected, the local embedding model still runs locally, once you approve its download.
 
 The only fully hosted configuration is Vertex for both halves:
 

@@ -23,6 +23,7 @@ def _settings(**kw) -> Settings:
     base = dict(
         _env_file=None, llm_provider="auto",
         anthropic_api_key=None, openai_api_key=None, groq_api_key=None,
+        openrouter_api_key=None,
     )
     base.update(kw)
     return Settings(**base)

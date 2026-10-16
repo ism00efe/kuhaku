@@ -182,22 +182,33 @@ placeholders when you translate.
 
 This is not reachable through `RAG(...)`.
 
-## Adding a second tool
+## Adding a tool
 
 The architectural rule: **a tool may depend on `kuhaku.core`; core may never depend on a
-tool.** A second tool is a new package under `kuhaku/tools/<name>/`, with its own
-`<Name>Settings` dataclass and a field for it on `Settings` — never a tool-specific field
-added directly to core.
+tool.** A new tool is a new package under `kuhaku/tools/<name>/` with its own settings
+object, read from its own `KUHAKU_<NAME>__` variables — never a field on core's
+`Settings`, which would make core import the tool. RAG (`RAGSettings`) and structured
+extraction (`ExtractionSettings`) both work this way.
 
 `kuhaku.core` gives a new tool the LLM abstraction, typed configuration, `AuthContext`,
-sanitization, the audit log, observability and retry. `kuhaku.evaluation` measures
-anything that implements the evaluation target contract, not just RAG.
+security, the audit log, observability and retry. Three entry points exist so that what
+core adds later reaches every tool without a change to the tool:
+
+- `kuhaku.core.llm.with_runtime(llm)` wraps a provider in every layer core applies to
+  model calls (today, token accounting).
+- `kuhaku.core.observability.traced_call(name, ...)` opens a call's trace id, span, log
+  record and duration metric.
+- `kuhaku.core.security.InputPolicy` runs core's input checks; its options,
+  `InputSecurity`, nest in the tool's own settings.
+
+`kuhaku.evaluation` measures anything that implements the evaluation target contract,
+not just RAG. Structured extraction is the second tool built this way — its source is a
+worked example.
 
 Three types are exported for exactly this purpose — `Message`, `ToolCall` and
-`ExecutionResult`. They are a vocabulary offered to a second tool; nothing in the RAG
-tool consumes them today.
+`ExecutionResult`. Extraction takes its conversation history as `Message` objects.
 
-## Not in 0.1.0
+## Not in 0.2.0
 
 Query rewriting and contradiction detection ship in the package and can be passed to
 `RAGEngine` directly, but are not wired to the facade and are not recommended for this

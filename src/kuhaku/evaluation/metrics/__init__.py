@@ -19,6 +19,7 @@ from .retrieval import (
     PrecisionAtKMetric,
     RecallAtKMetric,
 )
+from .structured import StructuredMatchMetric
 
 __all__ = [
     "AnswerCorrectnessMetric",
@@ -28,6 +29,7 @@ __all__ = [
     "NDCGAtKMetric",
     "PrecisionAtKMetric",
     "RecallAtKMetric",
+    "StructuredMatchMetric",
     "answer_correctness",
     "hit_rate_at_k",
     "mrr",

@@ -16,9 +16,9 @@ from ..result import Issue, IssueKind
 Validator = Callable[[Any, ExtractionContext], Iterable[Issue] | None]
 """``(value, ctx) -> issues``. ``value`` is the validated schema model instance."""
 
-# REPAIRABLE is excluded: there is no loop back to the model after this step yet, so a
-# validator returning it would silently turn into FAILED instead of a repair.
-_ALLOWED_KINDS = (IssueKind.NEEDS_INPUT, IssueKind.INVALID)
+# RETRYABLE is excluded: there is no loop back to the model after this step yet, so a
+# validator returning it would silently turn into FAILED instead of a retry.
+_ALLOWED_KINDS = (IssueKind.NEEDS_CLARIFICATION, IssueKind.INVALID)
 
 
 class ValidationStep(Step):

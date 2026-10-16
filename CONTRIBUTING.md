@@ -1,6 +1,6 @@
 # Contributing to kuhaku
 
-Thanks for looking. kuhaku is early — version 0.1.0 — so the most useful contributions
+Thanks for looking. kuhaku is early — version 0.2.0 — so the most useful contributions
 right now are bug reports with a reproduction, and questions about anything the
 documentation gets wrong.
 
@@ -23,10 +23,10 @@ needs any of those, it is testing the wrong thing.
 
 **`kuhaku.core` may never depend on a tool.**
 
-`core` is tool-agnostic runtime infrastructure. `tools/rag` is one tool built on top of it.
-A change that makes `core` import from `tools/`, or that adds a RAG-shaped field to a core
-model, will be asked to move. Adding a second tool means a new `tools/<name>` package — not
-a new branch inside core.
+`core` is tool-agnostic runtime infrastructure. `tools/rag` and `tools/extraction` are
+tools built on top of it. A change that makes `core` import from `tools/`, or that adds a
+tool-shaped field to a core model, will be asked to move. Adding a tool means a new
+`tools/<name>` package with its own settings — not a new branch inside core.
 
 Everything else is negotiable. This is not.
 
@@ -38,15 +38,17 @@ that was hit, a constraint from a dependency.
 
 **Do not add a setting without a reader.** A configuration field that changes nothing is
 worse than a missing one, because it reads as a working control. If you add a field to
-`Settings` or `RAGSettings`, wire it in the same change.
+`Settings`, `RAGSettings` or `ExtractionSettings`, wire it in the same change.
 
-**Security-relevant code has no off switch.** Access filtering, sanitization and the input
-guard have no parameter that disables them for internal convenience. If you find yourself
-wanting one, that is the signal to change the approach.
+**Security that costs nothing is always on; security that costs something is optional.**
+A protection with no real cost to performance or usability runs unconditionally. One that
+slows things down, needs a download, or gets in the way of a quick experiment is
+optional. Never add a bypass just because it makes a change easier to write.
 
 **Defaults may cost CPU and memory, never a download.** A bare `RAG()` must not pull a
-model onto someone's machine. That is why hybrid retrieval is on and the cross-encoder
-re-ranker is off.
+model onto someone's machine, and `pip install kuhaku` must not pull anything heavy — a
+feature's dependencies go in its extra. That is why the re-ranker is off and RAG's
+libraries live in `kuhaku[rag]`.
 
 ## Tests
 

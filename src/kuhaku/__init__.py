@@ -29,8 +29,7 @@ from typing import Any
 from .core.auth import AuthContext
 from .core.config import Settings, get_settings
 from .core.exceptions import CapabilityUnavailable, SecurityComponentError
-from .core.llm import build_llm_provider
-from .core.llm.token_tracking import TokenTrackingLLM
+from .core.llm import build_llm_provider, with_runtime
 from .core.models import ExecutionResult, Message, ToolCall
 from .core.policy import enforce_guard_policy, validate_audit_log_path
 from .core.resolve import (
@@ -80,7 +79,7 @@ from .tools.rag.resolve import build_rag_registry, local_candidate_id, model_on_
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 _VALID_RETRIEVAL_MODES = ("dense", "sparse", "hybrid")
 _LOAD_DOCUMENTS_SUFFIXES = (".txt", ".md", ".pdf")
@@ -256,7 +255,7 @@ class RAG:
         # guarantee. A name already claimed by one of the explicit parameters above
         # (`retrieval`, `audit_enabled`, ...) can never reach here at all: Python binds
         # it to that parameter first, so there is no dual-path way to set the same knob.
-        settings_field_names = set(Settings.model_fields) - {"rag"}
+        settings_field_names = set(Settings.model_fields)
         rag_settings_field_names = {f.name for f in dataclasses.fields(RAGSettings)}
         extra_settings_kwargs: dict[str, object] = {}
         extra_rag_kwargs: dict[str, object] = {}
@@ -389,9 +388,7 @@ class RAG:
         llm = build_llm_provider(
             s, registry=registry, env=env, ui=ui, memory=memory, fingerprint=fp
         )
-        if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
-            llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
-        self._llm = llm
+        self._llm = with_runtime(llm, token_tracking=enable_token_tracking)
         self._retriever = self._build_retriever(effective_retrieval, reranker)
         self._cache = self._build_cache(cache)
 

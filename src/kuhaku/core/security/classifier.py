@@ -241,7 +241,13 @@ class LRModelScorer:
     """
 
     def __init__(self, model_path: str) -> None:
-        import joblib
+        try:
+            import joblib
+        except ImportError as exc:
+            raise ImportError(
+                "The trained Stage-1 guard model needs scikit-learn and joblib, which "
+                "the base install leaves out: pip install 'kuhaku[guard]'."
+            ) from exc
 
         pipeline = joblib.load(model_path)
         # Fail fast on an unexpected artifact shape rather than a confusing AttributeError

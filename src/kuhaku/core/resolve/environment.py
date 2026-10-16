@@ -60,10 +60,24 @@ FIELDS_CONSUMED: Mapping[str, frozenset[str]] = {
 }
 
 
-def probe_environment() -> Environment:
-    """Run every cheap probe once and freeze the result."""
+def probe_environment(*, hardware: bool = True) -> Environment:
+    """Run every cheap probe once and freeze the result.
+
+    ``hardware=False`` skips the GPU and VRAM probes (``gpu=None``,
+    ``vram_class="unknown"``). They import torch when it is installed, which takes
+    seconds and memory, and only decisions about running a model locally read them --
+    choosing an LLM backend does not (see ``FIELDS_CONSUMED``)."""
 
     isolated, source = detect_isolation()
+    if not hardware:
+        return Environment(
+            python=f"{sys.version_info.major}.{sys.version_info.minor}",
+            in_isolated_python=isolated,
+            isolation_source=source,
+            gpu=None,
+            vram_class="unknown",
+            os=platform.system().lower(),
+        )
     gpu = gpu_kind()
     return Environment(
         python=f"{sys.version_info.major}.{sys.version_info.minor}",

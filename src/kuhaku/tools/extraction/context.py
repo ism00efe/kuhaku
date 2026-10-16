@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from kuhaku.core.llm.base import LLMProvider
 from kuhaku.core.models import Message
 
+from .prompts import ExtractionPrompts
 from .result import (
     ExtractionResult,
     ExtractionStatus,
@@ -34,6 +35,7 @@ class ExtractionContext:
     reference: Any = None
     prior_data: dict[str, Any] | None = None
     trace_id: str = ""
+    prompts: ExtractionPrompts = field(default_factory=ExtractionPrompts)
 
     # Written during the prepare phase: steps that need something from the model (e.g.
     # evidence) add a system-prompt rule, a top-level response key or a titled block of

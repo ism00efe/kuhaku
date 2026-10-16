@@ -12,13 +12,15 @@ imports nothing from ``kuhaku.tools.rag``.
 
     extractor = Extractor(Order, steps=[EvidenceStep()])
     result = extractor.extract("5 boxes of tea please")
-    result.status, result.value, result.missing, result.fields
+    result.status, result.value, result.missing_slots, result.fields
 """
 
+from .config import ExtractionSettings
 from .context import ExtractionContext
 from .extractor import Extractor
 from .parsing import OutputParseError
 from .pipeline import EXTRACT_STEP, Pipeline, Step
+from .prompts import FIXED_RULES, ExtractionPrompts
 from .result import (
     ExtractionResult,
     ExtractionStatus,
@@ -27,30 +29,36 @@ from .result import (
     IssueKind,
     Provenance,
 )
-from .router import ExtractionRouter, LLMRoute, Route, RouteRequest
+from .router import ExtractionRouter, InputBlocked, LLMRoute, Route, RouteRequest
 from .schema import ExtractionSchema
 from .steps import (
-    CONTINUATION_STEP,
-    ContinuationStep,
+    SECURITY_STEP,
+    SLOT_FILLING_STEP,
     EvidenceStep,
     ExtractStep,
+    SecurityStep,
+    SlotFillingStep,
     ValidationStep,
     Validator,
 )
 
 __all__ = [
-    "CONTINUATION_STEP",
     "EXTRACT_STEP",
-    "ContinuationStep",
+    "FIXED_RULES",
+    "SECURITY_STEP",
+    "SLOT_FILLING_STEP",
     "EvidenceStep",
     "ExtractStep",
     "ExtractionContext",
+    "ExtractionPrompts",
     "ExtractionResult",
     "ExtractionRouter",
     "ExtractionSchema",
+    "ExtractionSettings",
     "ExtractionStatus",
     "Extractor",
     "FieldReport",
+    "InputBlocked",
     "Issue",
     "IssueKind",
     "LLMRoute",
@@ -59,6 +67,8 @@ __all__ = [
     "Provenance",
     "Route",
     "RouteRequest",
+    "SecurityStep",
+    "SlotFillingStep",
     "Step",
     "ValidationStep",
     "Validator",

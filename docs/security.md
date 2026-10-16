@@ -1,9 +1,10 @@
 # Security
 
-Three things run on every request and cannot be turned off by accident: input
+In RAG, three things run on every request and cannot be turned off by accident: input
 sanitization, the prompt-injection input guard, and the framework-owned safety core in
 the system prompt. A fourth, the audit log, is on by default and can be disabled
-deliberately.
+deliberately. Structured extraction makes a different trade-off — see
+[Structured extraction](#structured-extraction) below.
 
 This page describes what each one does and what it does not do. Nothing here is a
 substitute for your own application's controls.
@@ -153,7 +154,26 @@ Two operational facts:
 
 Reading records back is your application's job — the file is plain JSONL.
 
-## Not in 0.1.0
+## Structured extraction
+
+Extraction keeps on what costs nothing: every piece of outside text is fenced with a
+per-request random boundary, and the rules that it is data, not instructions, cannot be
+replaced. PII masking, the input guard and the audit log are off by default, because each
+gets in the way of ordinary use — masking makes an e-mail impossible to extract, the
+guard refuses chat logs with `user:` lines, the audit log writes a file. One setting
+turns each on for every extraction, the router's included:
+
+```bash
+export KUHAKU_EXTRACTION__SECURITY__SANITIZE=true
+export KUHAKU_EXTRACTION__SECURITY__INPUT_GUARD=true
+export KUHAKU_EXTRACTION__AUDIT_LOG_PATH=./logs/extraction_audit.jsonl
+```
+
+The checks are the same core ones RAG uses, reached through
+`kuhaku.core.security.InputPolicy`, so a check added there reaches extraction too. See
+[Structured extraction → Security](extraction.md#security).
+
+## Not in 0.2.0
 
 The package also contains a second-generation guard (`GuardPipeline`) and an output-side
 guard that would check the generated answer for canary leakage, PII egress and
