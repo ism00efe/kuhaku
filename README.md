@@ -57,11 +57,11 @@ from kuhaku import Extractor
 order = Extractor({"product": str, "quantity": float})
 
 result = order.extract("tea please")
-print(result.status)    # NEEDS_CLARIFICATION
+print(result.status)    # ExtractionStatus.NEEDS_CLARIFICATION
 print(result.question)  # Could you also tell me: quantity?  -- send it to the user
 
 result = order.extract("3 boxes", prior=result)  # their reply completes the same order
-print(result.status)    # COMPLETE
+print(result.status)    # ExtractionStatus.COMPLETE
 print(result.data)      # {'product': 'tea', 'quantity': 3}
 ```
 
