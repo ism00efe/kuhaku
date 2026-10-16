@@ -139,7 +139,7 @@ application's use and are not interpreted by kuhaku.
 ## Choosing tag names
 
 kuhaku assigns no meaning to a tag string. `["people_ops"]`, `["level-3"]` and
-`["muhasebe"]` behave identically — the vocabulary is yours. Three constants ship as a
+`["accounting"]` behave identically — the vocabulary is yours. Three constants ship as a
 starting point and nothing more:
 
 ```python

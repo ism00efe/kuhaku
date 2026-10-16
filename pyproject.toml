@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kuhaku"
-version = "0.2.0"
+version = "0.2.1"
 description = "kuhaku: a provider-agnostic AI orchestration framework (LLM abstraction, retrieval, evaluation, observability, security)."
 readme = "README.md"
 requires-python = ">=3.11"

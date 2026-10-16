@@ -41,8 +41,16 @@ pip install kuhaku
 Point it at a hosted model — no local server needed. Set a key and kuhaku uses it:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...    # free models available; or OPENAI_API_KEY, ...
+export OPENAI_API_KEY=sk-...           # macOS / Linux
 ```
+
+```powershell
+$env:OPENAI_API_KEY = "sk-..."         # Windows PowerShell
+```
+
+Or in Python, before kuhaku is used: `os.environ["OPENAI_API_KEY"] = "sk-..."`.
+`ANTHROPIC_API_KEY`, `GROQ_API_KEY` and `OPENROUTER_API_KEY` work the same way — see
+[Providers](https://github.com/ism00efe/kuhaku/blob/main/docs/providers.md).
 
 ### Structured extraction
 
@@ -164,7 +172,7 @@ How it behaves:
   material exists.
 
 Tags are your vocabulary — kuhaku assigns no meaning to a tag string. `["people_ops"]`,
-`["level-3"]` and `["muhasebe"]` behave identically. Three constants ship as a starting
+`["level-3"]` and `["accounting"]` behave identically. Three constants ship as a starting
 point and nothing more:
 
 ```python

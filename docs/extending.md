@@ -169,8 +169,8 @@ from kuhaku.tools.rag.messages import DEFAULT_ENGINE_MESSAGES
 
 messages = replace(
     DEFAULT_ENGINE_MESSAGES,
-    no_chunks="Bu soruya cevap verecek bir kaynak bulamadım.",
-    empty_kb="Bilgi tabanı boş.",
+    no_chunks="Sorry, none of our documents answer that.",
+    empty_kb="No documents have been added yet.",
 )
 
 engine = RAGEngine(my_embedder, my_store, my_llm, messages=messages)

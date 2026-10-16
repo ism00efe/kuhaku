@@ -78,7 +78,7 @@ from .tools.rag.resolve import build_rag_registry, local_candidate_id, model_on_
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 _VALID_RETRIEVAL_MODES = ("dense", "sparse", "hybrid")
 _LOAD_DOCUMENTS_SUFFIXES = (".txt", ".md", ".pdf")
