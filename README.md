@@ -22,8 +22,8 @@ structured extraction.
 - **Evaluation ships with the framework.** A separate, tool-agnostic package with
   retrieval and answer-quality metrics that measures anything implementing the target
   contract.
-- **Structured extraction that says what is missing.** Free text in, a validated Pydantic
-  model out — and when the text lacks a value, the result says which one instead of
+- **Structured extraction that says what is missing.** Free text in, validated fields
+  out — name the fields, nothing else is needed — and when the text lacks a value, the result says which one instead of
   inventing it.
 - **Start light.** `pip install kuhaku` pulls nothing heavy, and no default ever downloads
   a model. A feature's dependencies come when you use it.
@@ -47,17 +47,12 @@ export OPENROUTER_API_KEY=sk-or-...    # free models available; or OPENAI_API_KE
 ### Structured extraction
 
 ```python
-from pydantic import BaseModel
 from kuhaku import Extractor
 
-class Appointment(BaseModel):
-    department: str
-    day: str
-    time: str
-
-result = Extractor(Appointment).extract("A cardiology appointment tomorrow, please")
+result = Extractor(["department", "day", "time"]).extract("A cardiology appointment tomorrow, please")
 print(result.status)         # NEEDS_CLARIFICATION
 print(result.missing_slots)  # ('/time',)
+print(result.data)           # {'department': 'cardiology', 'day': 'tomorrow', 'time': None}
 ```
 
 See [Structured extraction](https://github.com/ism00efe/kuhaku/blob/main/docs/extraction.md)
@@ -100,7 +95,7 @@ model: kuhaku asks before downloading it, and until it is on disk retrieval uses
 
 ## What it does today
 
-- **Structured extraction** — text to a validated Pydantic model or a plain field list;
+- **Structured extraction** — text to validated fields from a plain field list (or a Pydantic model);
   a router between schemas, multi-turn slot filling, retries, fallback models, evidence
   checks, your own rules, optional PII masking and input guard
 - **Ingestion** — `.txt`, `.md`, `.pdf`; paragraph or structural chunking

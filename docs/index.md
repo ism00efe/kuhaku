@@ -45,7 +45,7 @@ spans and the metrics kuhaku emits.
 **[Extending](extending.md)** — replacing the retriever, store, model or user-facing
 text with your own, and the contracts each one has to satisfy.
 
-**[Structured extraction](extraction.md)** — free text to a validated Pydantic model:
+**[Structured extraction](extraction.md)** — free text to validated fields — a list of field names is enough:
 routing between schemas, multi-turn slot filling, evidence checks, your own rules.
 
 **[Evaluation](evaluation.md)** — the golden-dataset format, the retrieval,

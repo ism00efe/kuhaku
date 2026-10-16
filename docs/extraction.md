@@ -1,6 +1,6 @@
 # Structured extraction
 
-Structured extraction turns free text into a validated Pydantic model: an order out of a
+Structured extraction turns free text into validated fields: an order out of a
 chat message, an appointment out of an email, an invoice out of a pasted document. It is
 kuhaku's second tool, built on `kuhaku.core` the same way RAG is, and it lives in
 `kuhaku.tools.extraction`.
@@ -12,38 +12,26 @@ the text contained everything you asked for.
 ## Your first extraction
 
 ```python
-from pydantic import BaseModel
 from kuhaku import Extractor
 
-
-class Appointment(BaseModel):
-    """A message asking for an appointment."""
-
-    department: str
-    day: str
-    time: str
-
-
-result = Extractor(Appointment).extract("I'd like a cardiology appointment tomorrow")
+result = Extractor(["department", "day", "time"]).extract(
+    "I'd like a cardiology appointment tomorrow"
+)
 
 print(result.status)         # ExtractionStatus.NEEDS_CLARIFICATION
 print(result.missing_slots)  # ('/time',)
 print(result.data)           # {'department': 'cardiology', 'day': 'tomorrow', 'time': None}
 ```
 
-The model is chosen the same way as for RAG — see [Providers](providers.md). The class
-is the single source of truth: the JSON Schema the model sees is generated from it, and
-the reply is validated against it.
+A list of names is the whole schema: every field is a required string. The model is
+chosen the same way as for RAG — see [Providers](providers.md).
 
-## Without writing a class
+## Types, optional fields and descriptions
 
-To try something quickly, describe the fields instead:
+Give a field a type, make it optional, or tell the model what it means:
 
 ```python
 from kuhaku import Extractor
-
-# Every field a required string.
-contact = Extractor(["name", "email"]).extract("I'm Ada, ada@example.com")
 
 # A type per field; a type that accepts None makes the field optional.
 person = Extractor({"name": str, "age": int, "note": str | None}).extract("Ada, 36")
@@ -59,12 +47,36 @@ invoice = Extractor(
     description="A supplier invoice.",
 ).extract("2 x tea at 3.50, total 7.00")
 
-print(contact.status, person.status, invoice.status)
+print(person.status, invoice.status)
 ```
 
-`name` and `description` play the role of a class name and docstring. Add `instructions`
-for domain rules the model should follow, such as "copy product names exactly as
-written".
+`name` and `description` say what is being extracted; the router below chooses by them.
+Add `instructions` for domain rules the model should follow, such as "copy product names
+exactly as written".
+
+## With a Pydantic class
+
+If your application already has Pydantic models, or you need what only a class gives —
+pydantic validators, reuse of the model elsewhere — pass the class instead. Its name and
+docstring serve as `name` and `description`, and the JSON Schema the model sees is
+generated from it:
+
+```python
+from pydantic import BaseModel
+from kuhaku import Extractor
+
+
+class Appointment(BaseModel):
+    """A message asking for an appointment."""
+
+    department: str
+    day: str
+    time: str
+
+
+result = Extractor(Appointment).extract("I'd like a cardiology appointment tomorrow")
+print(result.value)  # an Appointment instance once the status is COMPLETE
+```
 
 ## Reading the result
 
@@ -102,17 +114,9 @@ Conversations rarely deliver every value at once. Pass the previous result back 
 `prior=` and the new message fills the gaps — this is **slot filling**:
 
 ```python
-from pydantic import BaseModel
 from kuhaku import Extractor
 
-
-class Appointment(BaseModel):
-    department: str
-    day: str
-    time: str
-
-
-extractor = Extractor(Appointment)
+extractor = Extractor(["department", "day", "time"])
 
 first = extractor.extract("A cardiology appointment tomorrow, please")
 # first.status is NEEDS_CLARIFICATION, first.missing_slots is ('/time',)
@@ -149,32 +153,22 @@ When a message could be one of several things, put an extractor per schema behin
 that schema's extractor:
 
 ```python
-from pydantic import BaseModel
 from kuhaku import ExtractionRouter, Extractor
 
-
-class Appointment(BaseModel):
-    """A message asking for a new appointment."""
-
-    department: str
-    day: str
-
-
-class Cancellation(BaseModel):
-    """A message cancelling an existing appointment."""
-
-    department: str
-    day: str
-
-
-router = ExtractionRouter([Extractor(Appointment), Extractor(Cancellation)])
+appointment = Extractor(
+    ["department", "day"], name="Appointment", description="Asks for a new appointment."
+)
+cancellation = Extractor(
+    ["department", "day"], name="Cancellation", description="Cancels an appointment."
+)
+router = ExtractionRouter([appointment, cancellation])
 
 result = router.extract("Please cancel tomorrow's cardiology appointment")
 print(result.schema_name, result.status)
 ```
 
-The router chooses by each schema's name and description — the class docstring, or
-`description=` — so give every schema one. Choosing a schema is itself an extraction of
+The router chooses by each schema's name and description — `description=`, or a
+class's docstring — so give every schema one. Choosing a schema is itself an extraction of
 a single field, so it gets the same retries, fallback models and security as any other.
 
 When no schema fits, the result is `NO_MATCH`. The router never falls back to a default
@@ -184,27 +178,17 @@ Routes are a plain list, tried in order; the first that names a schema wins. A c
 keyword rule in front of the model saves a model call when the answer is obvious:
 
 ```python
-from pydantic import BaseModel
 from kuhaku import ExtractionRouter, Extractor
-
-
-class Appointment(BaseModel):
-    """A message asking for a new appointment."""
-
-    department: str
-
-
-class Cancellation(BaseModel):
-    """A message cancelling an existing appointment."""
-
-    department: str
 
 
 def cancel_keyword(request):
     return "Cancellation" if "cancel" in request.text.lower() else None
 
 
-router = ExtractionRouter([Extractor(Appointment), Extractor(Cancellation)])
+router = ExtractionRouter([
+    Extractor(["department"], name="Appointment", description="Asks for a new appointment."),
+    Extractor(["department"], name="Cancellation", description="Cancels an appointment."),
+])
 router.routes.insert(0, cancel_keyword)
 
 print(router.route("cancel my cardiology appointment"))  # Cancellation
@@ -232,31 +216,9 @@ An extraction runs as a pipeline of named steps, in order:
 Optional steps are passed as `steps=` and run after the defaults:
 
 ```python
-from pydantic import BaseModel
-from kuhaku.tools.extraction import (
-    EvidenceStep,
-    Extractor,
-    Issue,
-    IssueKind,
-    ValidationStep,
-)
+from kuhaku.tools.extraction import EvidenceStep, Extractor
 
-
-class Order(BaseModel):
-    product: str
-    quantity: float
-
-
-def at_most_100(order, ctx):
-    if order.quantity > 100:
-        return [Issue(IssueKind.INVALID, "too_many", "at most 100 per order", "/quantity")]
-    return []
-
-
-extractor = Extractor(
-    Order,
-    steps=[EvidenceStep(on_ungrounded="invalid"), ValidationStep(at_most_100)],
-)
+extractor = Extractor({"product": str, "quantity": float}, steps=[EvidenceStep()])
 result = extractor.extract("5 boxes of tea")
 print(result.status, result.fields)
 ```
@@ -269,9 +231,24 @@ quote, or a quote not in the text) or `MISSING`. With `on_ungrounded="invalid"` 
 not grounded makes the result `INVALID`; the default only reports it. A value written in a
 form the text does not use — a date for "tomorrow" — is `MISMATCH`.
 
-**Your rules.** A rule receives the validated model instance and the extraction context,
-and returns issues: `IssueKind.INVALID` for a value that breaks a rule,
-`IssueKind.NEEDS_CLARIFICATION` for something only the user can supply.
+**Your rules.** For a check the schema cannot express — a catalog lookup, a limit — write
+a function and pass it to `ValidationStep`. It receives the extracted values and the
+extraction context, and returns issues: `IssueKind.INVALID` for a value that breaks a
+rule, `IssueKind.NEEDS_CLARIFICATION` for something only the user can supply.
+
+```python
+from kuhaku.tools.extraction import Extractor, Issue, IssueKind, ValidationStep
+
+
+def at_most_100(order, ctx):
+    if order.quantity > 100:
+        return [Issue(IssueKind.INVALID, "too_many", "at most 100 per order", "/quantity")]
+    return []
+
+
+extractor = Extractor({"product": str, "quantity": float}, steps=[ValidationStep(at_most_100)])
+print(extractor.extract("500 boxes of tea").status)
+```
 
 The pipeline can be rearranged after construction:
 
