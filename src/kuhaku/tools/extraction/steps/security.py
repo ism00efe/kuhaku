@@ -14,7 +14,7 @@ It works in the prepare phase, so it acts before the model is called and
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from typing import Any
 
@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 class SecurityStep(Step):
-    """Refuses the source text when an input check says so (status ``BLOCKED``, the model
-    is never called), then masks the source text, the history, the reference, the
+    """Refuses the extraction when an input check says so of the source text, the
+    history, the reference or the earlier turn's values (status ``BLOCKED``, the model
+    is never called), and masks the source text, the history, the reference, the
     earlier turn's values and any block another step already contributed.
 
     With masking on, the model sees placeholders such as ``[EMAIL]`` and extracts those.
@@ -59,14 +60,23 @@ class SecurityStep(Step):
         if self.options.sanitize:
             ctx.metadata["redactions"] = policy.redactions()
 
-        reason = policy.screen(ctx.text)
-        if reason is None:
+        # History, reference and earlier values reach the model as well, so each is
+        # screened like the source text. Message contents are screened one by one: the
+        # rendered "role: content" lines would trip the guard's chat-log pattern.
+        parts: list[tuple[str, str]] = [("the text", ctx.text)]
+        parts += [("the history", message.content) for message in ctx.history]
+        parts += [("the reference", text) for text in _strings(ctx.reference)]
+        parts += [("the earlier values", text) for text in _strings(ctx.prior_data)]
+        for part, text in parts:
+            reason = policy.screen(text)
+            if reason is None:
+                continue
+            logger.warning("extraction input blocked", extra={"reason": reason, "part": part})
+            ctx.issues.append(
+                Issue(IssueKind.BLOCKED, reason, f"the input guard refused {part} ({reason})")
+            )
+            ctx.stop()
             return
-        logger.warning("extraction input blocked", extra={"reason": reason})
-        ctx.issues.append(
-            Issue(IssueKind.BLOCKED, reason, f"the input guard refused the text ({reason})")
-        )
-        ctx.stop()
 
 
 def _map_strings(node: Any, fn: Callable[[str], str]) -> Any:
@@ -77,3 +87,14 @@ def _map_strings(node: Any, fn: Callable[[str], str]) -> Any:
     if isinstance(node, list | tuple):
         return type(node)(_map_strings(value, fn) for value in node)
     return node
+
+
+def _strings(node: Any) -> Iterator[str]:
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list | tuple):
+        for value in node:
+            yield from _strings(value)

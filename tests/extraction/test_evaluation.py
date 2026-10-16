@@ -90,3 +90,10 @@ def test_a_router_answer_checks_the_routing_too():
     )
     sample = router.evaluate_sample("it was late")
     assert json.loads(sample.answer) == {"schema": "Complaint", "data": {"topic": "late"}}
+
+
+def test_an_extra_list_item_is_not_an_exact_match():
+    golden = {"lines": [{"item": "tea"}]}
+    scores = StructuredMatchMetric().evaluate(_sample({"lines": [{"item": "tea"}, {"item": "cake"}]}, golden))
+    assert scores == {"field_accuracy": 1.0, "exact_match": 0.0}
+    assert StructuredMatchMetric().evaluate(_sample(golden, golden))["exact_match"] == 1.0

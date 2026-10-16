@@ -224,3 +224,25 @@ def test_a_rule_returning_a_retryable_issue_is_a_component_error():
 def test_a_non_callable_rule_is_refused():
     with pytest.raises(CustomComponentError):
         ValidationStep("not a function")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("text", "quantity"),
+    [("1.500 boxes of tea", 1500), ("1,500 boxes of tea", 1500), ("1 500 boxes of tea", 1500),
+     ("2,5 boxes of tea", 2.5), ("1.500,5 boxes of tea", 1500.5), ("-3 boxes of tea", -3)],
+)
+def test_evidence_accepts_a_number_in_its_local_form(text, quantity):
+    quote = text.removesuffix(" of tea")
+    llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": quantity}, "evidence": {"/product": "tea", "/quantity": quote}}
+    )
+    result = Extractor(Order, llm=llm, steps=[EvidenceStep()]).extract(text)
+    assert result.fields["/quantity"].provenance is Provenance.SOURCE
+
+
+def test_evidence_does_not_read_a_grouped_number_as_a_decimal():
+    llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": 1.5}, "evidence": {"/product": "tea", "/quantity": "1.500 boxes"}}
+    )
+    result = Extractor(Order, llm=llm, steps=[EvidenceStep()]).extract("1.500 boxes of tea")
+    assert result.fields["/quantity"].provenance is Provenance.MISMATCH

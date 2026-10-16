@@ -78,7 +78,7 @@ having to inspect the extracted values:
 | `INVALID` | Values were extracted, but a check (evidence, your rules) rejected them |
 | `FAILED` | The model gave no usable output, even after the allowed retries |
 | `NO_MATCH` | A router found no schema that fits the text |
-| `BLOCKED` | The input guard refused the text; no model saw it |
+| `BLOCKED` | The input guard refused the input; no model saw it |
 
 The other fields:
 
@@ -395,7 +395,8 @@ use:
   model sees them. A schema that asks for an e-mail or a phone number then gets the
   placeholder. What was masked — labels and counts, never values — is in
   `result.metadata["redactions"]`.
-- **Input guard** (`input_guard`) — a text matching a known prompt-injection pattern is
+- **Input guard** (`input_guard`) — when the text, the history, the reference or the
+  earlier turn's values match a known prompt-injection pattern, the extraction is
   refused with status `BLOCKED`, and no model is called. It also refuses chat logs with
   `user:` lines and texts that only quote such a phrase, and its patterns are English.
 
@@ -468,7 +469,7 @@ print(summary)  # {"field_accuracy": ..., "exact_match": ...}
 ```
 
 `field_accuracy` is the share of the expected values the extraction got right;
-`exact_match` is 1 only when all of them are right. Strings are compared ignoring case
+`exact_match` is 1 only when all of them are right and no list has extra items. Strings are compared ignoring case
 and surrounding spaces, numbers by value. A router answers with
 `{"schema": ..., "data": ...}`, so one golden answer checks the routing and the values
 together. See [Evaluation](evaluation.md) for the runner and the dataset format.

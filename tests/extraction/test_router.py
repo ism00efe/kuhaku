@@ -177,3 +177,9 @@ def test_routes_default_to_the_first_extractors_provider():
 
     assert router.llm is order_llm
     assert router.extract("5 tea").ok
+
+
+def test_router_refuses_a_bare_dict_as_prior():
+    router = _router(ScriptedLLM())  # any call fails the test
+    with pytest.raises(TypeError, match="ExtractionResult"):
+        router.extract("5 tea", prior={"product": "tea"})

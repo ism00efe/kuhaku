@@ -46,8 +46,8 @@ class Extractor(Generic[M]):
     :class:`~kuhaku.tools.extraction.prompts.ExtractionPrompts` or a dict such as
     ``{"rules": "..."}``; :meth:`preview` shows the exact prompt for a text.
 
-    The default pipeline is ``extract`` followed by ``slot_filling`` (which does nothing
-    unless ``prior`` is passed). Optional steps are passed as ``steps`` (appended after
+    The default pipeline is ``security`` (which does nothing with every check off), then
+    ``extract``, then ``slot_filling`` (which does nothing unless ``prior`` is passed). Optional steps are passed as ``steps`` (appended after
     those) or composed afterwards through :attr:`pipeline` --
     ``add(..., before=/after=)``, ``remove``, ``replace``, ``enable``/``disable``.
 

@@ -192,3 +192,31 @@ def test_with_every_check_off_the_text_reaches_the_model_unchanged():
     result = Extractor(Order, llm=llm).extract("5 tea, mail ada@example.com")
     assert "ada@example.com" in llm.calls[0][1]
     assert "redactions" not in result.metadata
+
+
+@pytest.mark.parametrize(
+    ("part", "kwargs"),
+    [
+        ("history", {"history": [Message(role="user", content=INJECTION)]}),
+        ("reference", {"reference": {"note": [INJECTION]}}),
+        ("earlier values", {"prior": {"product": INJECTION, "quantity": None}}),
+    ],
+)
+def test_input_guard_screens_everything_the_model_would_see(part, kwargs):
+    llm = ScriptedLLM()  # any call fails the test
+    guarded = Extractor(Order, llm=llm, steps=[SecurityStep(InputSecurity(input_guard=True))])
+    result = guarded.extract("5 tea", **kwargs)
+
+    assert result.status is ExtractionStatus.BLOCKED
+    assert part in result.issues[0].message
+    assert llm.calls == []
+
+
+def test_input_guard_lets_an_ordinary_conversation_through():
+    guarded = Extractor(Order, llm=ScriptedLLM(GOOD), steps=[SecurityStep(InputSecurity(input_guard=True))])
+    result = guarded.extract(
+        "5 of them",
+        history=[Message(role="user", content="I want tea"), Message(role="assistant", content="How many?")],
+        reference={"cart": ["sugar"]},
+    )
+    assert result.status is ExtractionStatus.COMPLETE

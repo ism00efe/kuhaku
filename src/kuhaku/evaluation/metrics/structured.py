@@ -21,7 +21,8 @@ class StructuredMatchMetric(BaseMetric):
 
     - ``field_accuracy``: share of the label's leaf values (by JSON Pointer) the answer
       has equal. A label value of null matches an absent or null answer value.
-    - ``exact_match``: 1.0 when every label leaf matches, else 0.0.
+    - ``exact_match``: 1.0 when every label leaf matches and every list the label has is
+      as long in the answer, else 0.0 -- an extra, invented list item is a miss.
 
     Answer keys the label does not have are not counted -- the label says what matters.
     Strings compare after stripping and case-folding unless ``normalize_strings=False``;
@@ -49,9 +50,13 @@ class StructuredMatchMetric(BaseMetric):
         matched = sum(
             1 for path, value in expected.items() if self._equal(value, got.get(path))
         )
+        answer_lengths = dict(_list_lengths(answer))
+        same_lengths = all(
+            answer_lengths.get(path) == length for path, length in _list_lengths(golden)
+        )
         return {
             "field_accuracy": matched / len(expected),
-            "exact_match": 1.0 if matched == len(expected) else 0.0,
+            "exact_match": 1.0 if matched == len(expected) and same_lengths else 0.0,
         }
 
     def _equal(self, expected: Any, got: Any) -> bool:
@@ -83,3 +88,15 @@ def _leaves(node: Any, path: str = "") -> Iterator[tuple[str, Any]]:
             yield from _leaves(child, f"{path}/{index}")
     else:
         yield path, node
+
+
+def _list_lengths(node: Any, path: str = "") -> Iterator[tuple[str, int]]:
+    if isinstance(node, dict):
+        for key, child in node.items():
+            yield from _list_lengths(
+                child, f"{path}/{str(key).replace('~', '~0').replace('/', '~1')}"
+            )
+    elif isinstance(node, list):
+        yield path, len(node)
+        for index, child in enumerate(node):
+            yield from _list_lengths(child, f"{path}/{index}")

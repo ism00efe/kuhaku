@@ -228,6 +228,12 @@ class ExtractionRouter:
 
         Routing and extraction share one ``trace_id``."""
 
+        if prior is not None and not isinstance(prior, ExtractionResult):
+            raise TypeError(
+                f"prior must be the ExtractionResult of the earlier turn, got "
+                f"{type(prior).__name__}: the router carries it over only when the text "
+                f"routes to the schema it came from, which a bare dict does not name."
+            )
         with traced_call("extraction.router", logger, trace_id=trace_id) as (tid, _rec):
             try:
                 name = self.route(text, history=history, reference=reference)

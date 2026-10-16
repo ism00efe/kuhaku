@@ -107,10 +107,20 @@ def _states(quote: str, value: Any) -> bool:
 
 
 def _number_forms(value: float) -> set[str]:
-    if float(value).is_integer():
-        return {str(int(value))}
-    plain = repr(float(value))
-    return {plain, plain.replace(".", ",")}
+    """The ways ``value`` is commonly written: ``1500`` also as ``1.500``, ``1,500`` and
+    ``1 500``; ``2.5`` also as ``2,5`` -- the dot and the comma swap roles by locale."""
+
+    number = float(value)
+    whole, _, fraction = repr(abs(number)).partition(".")
+    if number.is_integer():
+        whole, fraction = str(abs(int(number))), ""
+    sign = "-" if number < 0 else ""
+    grouped = f"{int(whole):,}" if whole.isdigit() else whole
+    forms = set()
+    for thousands, decimal in (("", "."), (",", "."), (".", ","), (" ", ","), ("", ",")):
+        head = grouped.replace(",", thousands)
+        forms.add(sign + head + (decimal + fraction if fraction else ""))
+    return forms
 
 
 def _leaves(node: Any, loc: tuple[Any, ...] = ()) -> Iterator[tuple[tuple[Any, ...], Any]]:
