@@ -81,6 +81,12 @@ class ExtractionPrompts:
         'Put the name of the one that fits in "choice", exactly as listed, or null when '
         "none of them fits."
     )
+    route_earlier: str = (
+        'The reference material\'s "earlier" lists, by schema name, what this '
+        "conversation has already given each schema. A source text that completes, "
+        "adds to or corrects one of them -- even a bare quantity or a single word -- "
+        "belongs to that schema."
+    )
 
     def __post_init__(self) -> None:
         for item in fields(self):

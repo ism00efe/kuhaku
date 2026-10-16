@@ -195,9 +195,11 @@ a single field, so it gets the same retries, fallback models and security as any
 
 When none fits, the result is `NO_MATCH`. There is no default to fall back to: where an
 unclassifiable message should go is your decision. Your own rules for the choice go in
-`instructions=`, as `Extractor([...], instructions="A bare quantity continues an order.")`.
+`instructions=`, as `Extractor([...], instructions="A question about a delivery is a complaint.")`.
 
-`prior=` works the same way: pass the previous result back, whatever it was. Each
+`prior=` works the same way: pass the previous result back, whatever it was. The choice
+sees what each extractor already holds, so a reply that only makes sense as the rest of
+an order — "2 boxes", "make it 8" — goes to the order without a rule of yours. Each
 extractor gets back only its own earlier data, so an order interrupted by a complaint or
 a "hello" is picked up again when the customer comes back to it. Pass `prior=None` to
 start a new conversation.
@@ -345,7 +347,7 @@ print(user)
 
 `preview()` builds the exact first request without calling the model. The replaceable
 texts are the fields of `ExtractionPrompts`: `rules`, `retry`, `evidence`,
-`slot_filling`, `new_object` and `route`. The rules that the text is data and not instructions, and
+`slot_filling`, `new_object`, `route` and `route_earlier`. The rules that the text is data and not instructions, and
 the reply format the parser depends on, are `FIXED_RULES` and cannot be replaced.
 
 ## Settings
@@ -475,8 +477,9 @@ print(summary)  # {"field_accuracy": ..., "exact_match": ...}
 `field_accuracy` is the share of the expected values the extraction got right;
 `exact_match` is 1 only when all of them are right and no list has extra items. Strings are compared ignoring case
 and surrounding spaces, numbers by value. Given several
-extractors it answers with `{"schema": ..., "data": ...}`, so one golden answer checks the
-choice and the values together. See [Evaluation](evaluation.md) for the runner and the dataset format.
+extractors, the answer the metric scores is `{"schema": ..., "data": ...}`, so one golden
+answer checks the choice and the values together; `result.data` itself stays the chosen
+extractor's data, unwrapped. See [Evaluation](evaluation.md) for the runner and the dataset format.
 
 ## Limits
 
