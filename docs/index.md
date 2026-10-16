@@ -6,14 +6,9 @@ retry. Tools are built on top of it. Two ship today: retrieval-augmented generat
 structured extraction.
 
 > **Alpha — 0.2.0.**
->
-> **0.2.0 is not on PyPI yet** (PyPI still has 0.1.0, without structured extraction).
-> Until it is, install from GitHub — `"kuhaku @ git+https://github.com/ism00efe/kuhaku"`,
-> or with an extra, `"kuhaku[rag] @ git+https://github.com/ism00efe/kuhaku"`. The
-> `pip install kuhaku...` commands on this page work once 0.2.0 is released.
 
 ```bash
-pip install "kuhaku[rag] @ git+https://github.com/ism00efe/kuhaku"   # pip install "kuhaku[rag]" once released
+pip install "kuhaku[rag]"
 ```
 
 ```python
