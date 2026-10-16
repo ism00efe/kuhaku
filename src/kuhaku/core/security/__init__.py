@@ -26,10 +26,13 @@ from .guard import (
     GuardPipeline,
     inspect_query,
 )
+from .input_policy import InputPolicy, InputSecurity
 from .normalizer import NormalizationResult, normalize
 from .output_guard import SAFE_FALLBACK, OutputGuardResult, evaluate_output
 
 __all__ = [
+    "InputPolicy",
+    "InputSecurity",
     "inspect_query",
     "REFUSAL_MESSAGE",
     # Prompt Injection Guard v2

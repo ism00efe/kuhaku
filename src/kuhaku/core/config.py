@@ -8,31 +8,29 @@ required to run the local Ollama default.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-if TYPE_CHECKING:
-    from kuhaku.tools.rag.config import RAGSettings
-
-
-def _default_rag_settings() -> RAGSettings:
-    """Deferred import, not a module-level one -- see the ``model_rebuild()`` call at
-    the bottom of this file for why."""
-
-    from kuhaku.tools.rag.config import RAGSettings
-
-    return RAGSettings()
+# Fields that used to exist, mapped to what to do instead. Settings ignores unknown
+# environment variables (extra="ignore"), which is right for the environment but would
+# make `Settings(rag=...)` silently do nothing -- a removed keyword fails loudly instead.
+_REMOVED_FIELDS: dict[str, str] = {
+    "rag": (
+        "Settings no longer carries tool settings (kuhaku.core may not import a tool). "
+        "Build kuhaku.tools.rag.RAGSettings instead -- RAGSettings.from_env() reads the "
+        "same KUHAKU_RAG__* variables -- and pass it as RAG(rag_settings=...)."
+    ),
+}
 
 
 class Settings(BaseSettings):
     """Generic, cross-tool application settings loaded from the environment / an
-    optional ``.env`` file. RAG-specific configuration lives on :attr:`rag`
-    (:class:`~kuhaku.tools.rag.config.RAGSettings`), not here -- see that class's
-    docstring. Adding a second tool to kuhaku means giving it its own
-    ``<tool>Settings`` + a ``Settings`` field the same way, never adding tool-specific
-    fields directly on this class.
+    optional ``.env`` file. Tool settings never live here: each tool owns its own
+    settings object read from its own ``KUHAKU_<TOOL>__*`` variables (RAG's is
+    :class:`~kuhaku.tools.rag.config.RAGSettings`), because ``kuhaku.core`` may never
+    import a tool.
 
     No dotenv file is read by default (kuhaku must not assume a current working
     directory) -- pass ``env_file`` to :func:`load_settings`/:func:`get_settings`, or
@@ -51,27 +49,33 @@ class Settings(BaseSettings):
         # code by field name -- Settings(vertex_project="p") -- would be silently
         # ignored rather than rejected.
         populate_by_name=True,
-        # Enables nested env vars for `rag`. Combined with env_prefix above, the
-        # working names carry both: KUHAKU_RAG__TOP_K=8, KUHAKU_RAG__RERANK_ENABLED=true.
-        # No top-level field name here contains "__", so the delimiter never leaks
-        # into ordinary flat env var parsing.
-        env_nested_delimiter="__",
     )
 
+    def __init__(self, **values: Any) -> None:
+        for name, advice in _REMOVED_FIELDS.items():
+            if name in values:
+                raise TypeError(f"Settings({name}=...) was removed. {advice}")
+        super().__init__(**values)
+
     # --- LLM provider ---------------------------------------------------------
-    # "auto" (the default) is resolved at build time by kuhaku.core.resolve: a reachable
-    # local Ollama server wins, otherwise the first provider whose credentials are
-    # present (openai -> anthropic -> vertex -> groq). When several are usable and no
-    # terminal is attached, the safest is chosen and the skipped decision is announced
-    # prominently; when nothing is usable, RAG() raises CapabilityUnavailable at
-    # construction. A concrete value here is absolute. KUHAKU_AUTO=false pins it to the
-    # documented baseline ("ollama") with no probing.
-    llm_provider: str = Field(default="auto")  # auto | ollama | anthropic | openai | vertex | groq
+    # "auto" (the default) is resolved at build time by kuhaku.core.resolve from the
+    # credentials that are set and which models a local Ollama has pulled -- nothing else
+    # about the machine is probed. The provider used last (remembered in
+    # .kuhaku/decisions.json, explicit choices included) wins and is announced;
+    # otherwise a provider whose key is set (the free OpenRouter first, then openai ->
+    # anthropic -> vertex -> groq), and only without one a local Ollama with a pulled
+    # model. A concrete value is absolute and built directly. KUHAKU_AUTO=false pins
+    # "auto" to the documented baseline ("ollama", which then needs ollama_model).
+    # auto | ollama | openrouter | anthropic | openai | vertex | groq
+    llm_provider: str = Field(default="auto")
     llm_temperature: float = Field(default=0.1)
     llm_max_tokens: int = Field(default=1024)
 
     ollama_base_url: str = Field(default="http://localhost:11434")
-    ollama_model: str = Field(default="qwen2.5:7b-instruct")
+    # Unset: one of the models already pulled on the server (asked in a terminal when
+    # there are several). kuhaku never names a model of its own -- it would have to be
+    # downloaded, and a fixed name goes stale.
+    ollama_model: str | None = Field(default=None)
 
     anthropic_api_key: str | None = Field(
         default=None,
@@ -94,8 +98,17 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("KUHAKU_GROQ_API_KEY", "GROQ_API_KEY"),
     )
-    groq_model: str = Field(default="llama-3.3-70b-versatile")
+    groq_model: str = Field(default="openai/gpt-oss-20b")
     groq_base_url: str = Field(default="https://api.groq.com/openai/v1")
+
+    # OpenRouter: OpenAI-compatible gateway. The default model is a free one; free models
+    # come and go on OpenRouter, so this may need updating.
+    openrouter_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("KUHAKU_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    )
+    openrouter_model: str = Field(default="google/gemma-4-31b-it:free")
+    openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1")
 
     # Google Vertex AI (optional, requires the `vertex` extra).
     # Auth is via Application Default Credentials (gcloud/service account), not an API
@@ -200,16 +213,6 @@ class Settings(BaseSettings):
     # eval_prompt_version) lives on RAGSettings.
     llm_model_version: str = Field(default="qwen2.5:7b-instruct-q4_k_m")
 
-    # --- RAG configuration -------------------------------------------------------------
-    # All RAG-specific settings (corpus/chunking/retrieval/re-ranking/caching/
-    # contradiction-detection, the vector store, RAG-owned retry sites, and RAG
-    # model/prompt versioning) live on RAGSettings, not here -- see
-    # kuhaku.tools.rag.config.RAGSettings. Supports nested env vars, which carry the
-    # KUHAKU_ prefix like every other field: KUHAKU_RAG__TOP_K=8,
-    # KUHAKU_RAG__RERANK_ENABLED=false,
-    # KUHAKU_RAG__DOC_TYPE_PREFIX_MAPPING='{"log_": "log_sample"}'.
-    rag: RAGSettings = Field(default_factory=_default_rag_settings)
-
 
 # Bootstrap-only fields -- must always come from .env/the environment, never from
 # app_config, since they are secrets that have no business being duplicated into a
@@ -218,6 +221,7 @@ _BOOTSTRAP_KEYS = frozenset(
     {
         "anthropic_api_key",
         "openai_api_key",
+        "openrouter_api_key",
         "ollama_base_url",
     }
 )
@@ -286,15 +290,3 @@ def get_settings(
 
     return load_settings(app_config_loader, env_file)
 
-
-# Resolve the forward-referenced `rag: "RAGSettings"` annotation now that Settings is
-# fully defined. This import cannot move to the top of the file: kuhaku.tools.rag's
-# package __init__ transitively imports kuhaku.core.llm, which imports Settings from
-# this very module -- doing that import before the `class Settings` statement above has
-# executed would be a circular import (ImportError: cannot import name 'Settings' from
-# partially initialized module). Importing here, after Settings already exists in this
-# module's namespace, breaks the cycle; model_rebuild() then lets pydantic finish
-# building Settings' schema against the now-resolvable RAGSettings type.
-from kuhaku.tools.rag.config import RAGSettings  # noqa: E402
-
-Settings.model_rebuild()

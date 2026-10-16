@@ -41,7 +41,7 @@ def _settings(**overrides) -> Settings:
 
 # --- factory ----------------------------------------------------------------
 def test_factory_builds_ollama():
-    provider = build_llm_provider(_settings(llm_provider="ollama"))
+    provider = build_llm_provider(_settings(llm_provider="ollama", ollama_model="m"))
     assert isinstance(provider, OllamaProvider)
     assert provider.name.startswith("ollama:")
 
@@ -62,7 +62,7 @@ def test_factory_unknown_provider_raises():
 
 
 def test_provider_selection_is_case_insensitive():
-    assert isinstance(build_llm_provider(_settings(llm_provider="OLLAMA")), OllamaProvider)
+    assert isinstance(build_llm_provider(_settings(llm_provider="OLLAMA", ollama_model="m")), OllamaProvider)
 
 
 # --- missing credentials ----------------------------------------------------
@@ -540,6 +540,7 @@ def test_circuit_recovers_after_reset_timeout(monkeypatch):
 def test_factory_wires_resilience_settings_through_to_provider():
     settings = _settings(
         llm_provider="ollama",
+        ollama_model="m",
         llm_timeout_seconds=7,
         circuit_breaker_enabled=False,
     )

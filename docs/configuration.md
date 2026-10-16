@@ -1,7 +1,9 @@
 # Configuration
 
 Every setting is optional. `RAG()` with no arguments works, and the rule for what runs by
-default is: **a default may cost CPU and memory, never a download.**
+default is: **a default may cost CPU and memory, never a download.** This page covers
+core and RAG settings; the extraction tool's are in
+[Structured extraction](extraction.md#settings).
 
 There are three ways to configure kuhaku, in increasing order of precedence:
 
@@ -62,15 +64,20 @@ Set with `KUHAKU_` + the field name in upper case, e.g. `KUHAKU_LLM_PROVIDER=ope
 
 | Setting | Default | Notes |
 |---|---|---|
-| `llm_provider` | `auto` | `auto`, `ollama`, `openai`, `anthropic`, `vertex` — see "Auto" below |
+| `llm_provider` | `auto` | `auto`, `ollama`, `openai`, `anthropic`, `vertex`, `groq`, `openrouter` — see "Auto" below |
 | `llm_temperature` | `0.1` | ignored by the `vertex` provider |
 | `llm_max_tokens` | `1024` | ignored by the `vertex` provider |
 | `llm_timeout_seconds` | `120` | per request, all providers |
 | `ollama_base_url` | `http://localhost:11434` | |
-| `ollama_model` | `qwen2.5:7b-instruct` | |
+| `ollama_model` | — | unset: one of the models pulled on the server (asked in a terminal when there are several) |
 | `openai_api_key` | — | also accepted unprefixed as `OPENAI_API_KEY` |
 | `openai_model` | `gpt-4o-mini` | |
 | `openai_base_url` | `https://api.openai.com/v1` | point at an OpenAI-compatible server |
+| `groq_api_key` | — | also accepted as `GROQ_API_KEY` |
+| `groq_model` | `openai/gpt-oss-20b` | |
+| `openrouter_api_key` | — | also accepted as `OPENROUTER_API_KEY` |
+| `openrouter_model` | `google/gemma-4-31b-it:free` | a free model; free models come and go |
+| `openrouter_base_url` | `https://openrouter.ai/api/v1` | |
 | `anthropic_api_key` | — | also accepted as `ANTHROPIC_API_KEY` |
 | `anthropic_model` | `claude-sonnet-5` | |
 | `vertex_project` | — | also accepted as `GOOGLE_CLOUD_PROJECT` |
@@ -87,10 +94,10 @@ Set with `KUHAKU_` + the field name in upper case, e.g. `KUHAKU_LLM_PROVIDER=ope
 | `circuit_breaker_reset_timeout_seconds` | `60.0` | |
 | `circuit_breaker_success_threshold` | `1` | probes needed to close again |
 
-Four names are accepted **without** the `KUHAKU_` prefix, because another library reading
-them means the same thing: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_CLOUD_PROJECT`,
-`GOOGLE_CLOUD_LOCATION`. Everything else is kuhaku's own vocabulary and carries the
-prefix.
+Six names are accepted **without** the `KUHAKU_` prefix, because another library reading
+them means the same thing: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`,
+`OPENROUTER_API_KEY`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`. Everything else is
+kuhaku's own vocabulary and carries the prefix.
 
 ## RAG settings
 
@@ -146,13 +153,15 @@ default:
 
 | Setting | Baseline | `auto` resolves to |
 |---|---|---|
-| `llm_provider` | `ollama` | a reachable local Ollama server, else the first provider whose credentials are set (`openai` → `anthropic` → `vertex` → `groq`); if none, a required build raises `CapabilityUnavailable` |
+| `llm_provider` | `ollama` | the provider used last (remembered, and announced), else a provider whose credentials are set (`openrouter` → `openai` → `anthropic` → `vertex` → `groq`), else a reachable local Ollama server with a model pulled — with several models, a terminal is asked and the answer remembered; without a terminal the most recently pulled one is used and announced; if none, a required build raises `CapabilityUnavailable`. Only credentials and the Ollama server's model list are checked — never the GPU |
 | `embedding_device` | `cpu` | `cuda` (NVIDIA) or `mps` (Apple Silicon) when torch reports one, else `cpu` |
 | `retrieval` | `hybrid` | `hybrid` when the embedding package is installed **and** the model is already on disk, else `sparse` (BM25 only — no embeddings, no torch, no model download) |
 
 Rules:
 
-- **Your explicit value is absolute.** `RAG(retrieval="hybrid")` /
+- **Your explicit value is absolute.** A pinned `llm_provider` is built directly, with no
+  probing, and becomes the "used last" one for later `auto` runs.
+  `RAG(retrieval="hybrid")` /
   `KUHAKU_RAG__RETRIEVAL=hybrid` pins it. An explicit `dense`/`hybrid` with no usable
   embedder raises `ConsentRequired` (interactive: it asks to install/download first) —
   never a silent downgrade.
@@ -194,9 +203,10 @@ coverage — check for the warning on startup.
 
 ```python
 from kuhaku import Settings, get_settings
+from kuhaku.tools.rag import RAGSettings
 
 settings = get_settings()
-print(settings.llm_provider, settings.rag.top_k)
+print(settings.llm_provider, RAGSettings.from_settings(settings).top_k)
 
 explicit = Settings(llm_provider="openai", openai_api_key="sk-...")
 print(explicit.llm_provider)
@@ -205,7 +215,7 @@ print(explicit.llm_provider)
 `get_settings()` is cached on its arguments. Call `get_settings.cache_clear()` after
 changing environment variables in the same process.
 
-## Fields that exist but are not wired in 0.1.0
+## Fields that exist but are not wired in 0.2.0
 
 These appear on `Settings` and `RAGSettings` and can be set without error, but nothing
 reads them on any path a `RAG()` caller can reach. They are listed here so that no one —

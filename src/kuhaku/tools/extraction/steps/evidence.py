@@ -23,11 +23,16 @@ class EvidenceStep(Step):
 
     The check is deterministic -- a normalized substring match against the source
     text -- because asking the model whether its own quote is real would only repeat
-    the claim being checked.
+    the claim being checked. A real quote must also contain the value it is cited for
+    (a string as written, a number in its usual digit forms), otherwise the value is
+    ``MISMATCH``; booleans are not checked against the quote, they are never written
+    out. A value the schema expects in a form the text does not use (a date written
+    "tomorrow") is reported as ``MISMATCH`` too -- it is not stated as such.
 
     ``on_ungrounded="report"`` (default) only fills ``result.fields``.
-    ``on_ungrounded="invalid"`` additionally turns every ungrounded value into an
-    ``INVALID`` issue, so a result is ``COMPLETE`` only when all values are grounded.
+    ``on_ungrounded="invalid"`` additionally turns every ungrounded or mismatched value
+    into an ``INVALID`` issue, so a result is ``COMPLETE`` only when all values are
+    grounded.
     """
 
     name = "evidence"
@@ -40,11 +45,7 @@ class EvidenceStep(Step):
         self.on_ungrounded = on_ungrounded
 
     def prepare(self, ctx: ExtractionContext) -> None:
-        ctx.instructions.append(
-            'For every non-null value in "data", add an entry to "evidence": the key is '
-            "the value's JSON Pointer (for example /items/0/name) and the value is the "
-            "passage of the source text it came from, copied exactly."
-        )
+        ctx.instructions.append(ctx.prompts.evidence)
         ctx.response_fields["evidence"] = (
             "an object mapping each JSON Pointer to a passage copied exactly from the source text"
         )
@@ -63,26 +64,63 @@ class EvidenceStep(Step):
                 continue
             quote = evidence.get(path)
             quote = quote if isinstance(quote, str) and quote.strip() else None
-            if quote is not None and _normalize(quote) in source:
+            quoted = quote is not None and _normalize(quote) in source
+            if quote is not None and quoted and _states(quote, value):
                 ctx.fields[path] = FieldReport(path, Provenance.SOURCE, quote)
                 continue
             if ctx.prior_data is not None and _lookup(ctx.prior_data, loc) == value:
                 ctx.fields[path] = FieldReport(path, Provenance.PRIOR)
                 continue
-            ctx.fields[path] = FieldReport(path, Provenance.UNGROUNDED, quote)
+            provenance = Provenance.MISMATCH if quoted else Provenance.UNGROUNDED
+            ctx.fields[path] = FieldReport(path, provenance, quote)
             if self.on_ungrounded == "invalid":
+                problem = (
+                    "the quoted passage does not contain the value"
+                    if quoted
+                    else "no supporting passage found in the source text"
+                )
                 ctx.issues.append(
-                    Issue(
-                        IssueKind.INVALID,
-                        "ungrounded",
-                        f"{path}: no supporting passage found in the source text",
-                        path,
-                    )
+                    Issue(IssueKind.INVALID, provenance.value, f"{path}: {problem}", path)
                 )
 
 
 def _normalize(text: str) -> str:
-    return _WHITESPACE.sub(" ", unicodedata.normalize("NFKC", text)).strip().casefold()
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    # casefold() turns "İ" into "i" + a combining dot and leaves "ı" alone, so Turkish
+    # text written in capitals never matched its lower-case form. All four i's fold to
+    # one letter; matching only needs both sides folded the same way.
+    folded = folded.replace("\u0307", "").replace("\u0131", "i")
+    return _WHITESPACE.sub(" ", folded).strip()
+
+
+def _states(quote: str, value: Any) -> bool:
+    """Whether ``quote`` contains ``value`` as written."""
+
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int | float):
+        text = _normalize(quote)
+        return any(
+            re.search(rf"(?<!\d){re.escape(form)}(?!\d)", text) for form in _number_forms(value)
+        )
+    return _normalize(str(value)) in _normalize(quote)
+
+
+def _number_forms(value: float) -> set[str]:
+    """The ways ``value`` is commonly written: ``1500`` also as ``1.500``, ``1,500`` and
+    ``1 500``; ``2.5`` also as ``2,5`` -- the dot and the comma swap roles by locale."""
+
+    number = float(value)
+    whole, _, fraction = repr(abs(number)).partition(".")
+    if number.is_integer():
+        whole, fraction = str(abs(int(number))), ""
+    sign = "-" if number < 0 else ""
+    grouped = f"{int(whole):,}" if whole.isdigit() else whole
+    forms = set()
+    for thousands, decimal in (("", "."), (",", "."), (".", ","), (" ", ","), ("", ",")):
+        head = grouped.replace(",", thousands)
+        forms.add(sign + head + (decimal + fraction if fraction else ""))
+    return forms
 
 
 def _leaves(node: Any, loc: tuple[Any, ...] = ()) -> Iterator[tuple[tuple[Any, ...], Any]]:

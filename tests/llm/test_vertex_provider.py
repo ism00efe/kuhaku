@@ -380,20 +380,18 @@ def test_rag_does_not_double_wrap_already_token_tracked_provider(monkeypatch, fa
 
 
 # --- RAG construction: Settings vs. RAGSettings (settings-separation) --------------
-def test_rag_derives_rag_settings_from_settings_rag_field(fake_genai_client):
-    """No explicit rag_settings -- RAG.__init__ derives one from settings.rag (plus the
-    vertex_project/vertex_location/retry_enabled overlay, see RAGSettings.from_settings;
-    vertex_project/location must be set on Settings itself, not settings.rag, for that
-    overlay to apply)."""
+def test_rag_derives_rag_settings_from_the_environment(fake_genai_client, monkeypatch):
+    """No explicit rag_settings -- RAG.__init__ builds one from KUHAKU_RAG__* (plus the
+    vertex_project/vertex_location/retry_enabled overlay from Settings, see
+    RAGSettings.from_settings). Used to come from a nested `Settings.rag` field."""
 
     from kuhaku import RAG
     from kuhaku.core.config import Settings
-    from kuhaku.tools.rag.config import RAGSettings
 
-    custom_rag = RAGSettings(embedding_provider="vertex", top_k=11)
+    monkeypatch.setenv("KUHAKU_RAG__EMBEDDING_PROVIDER", "vertex")
+    monkeypatch.setenv("KUHAKU_RAG__TOP_K", "11")
     settings = Settings(
-        _env_file=None, llm_provider="vertex",
-        vertex_project="p", vertex_location="l", rag=custom_rag,
+        _env_file=None, llm_provider="vertex", vertex_project="p", vertex_location="l",
     )
 
     rag = RAG(settings=settings)
@@ -405,7 +403,7 @@ def test_rag_derives_rag_settings_from_settings_rag_field(fake_genai_client):
 
 def test_rag_uses_explicit_rag_settings_verbatim_when_given(fake_genai_client, tmp_path):
     """An explicitly-passed rag_settings is used as-is -- it is not re-derived from or
-    merged with settings.rag. chroma_persist_dir must be pre-set here, since RAG.__init__
+    merged with the KUHAKU_RAG__* environment. chroma_persist_dir must be pre-set here, since RAG.__init__
     still fills in a fresh temp directory (its usual zero-config behavior) whenever the
     resolved RAGSettings' own chroma_persist_dir is unset -- that is the one case where
     even an explicitly-passed rag_settings is not used completely verbatim."""

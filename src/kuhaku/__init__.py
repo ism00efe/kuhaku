@@ -1,10 +1,13 @@
 """kuhaku — generic, tool-agnostic runtime infrastructure (``kuhaku.core``), a
 generic evaluation harness (``kuhaku.evaluation``), and RAG as one tool built on top
-of both (``kuhaku.tools.rag``).
+of both (``kuhaku.tools.rag``), plus structured extraction as a second tool
+(``kuhaku.tools.extraction``).
 
-This top-level module re-exports two things: the generic core primitives
-(:class:`Settings`, :func:`build_llm_provider`, :class:`Message`/:class:`ToolCall`/
-:class:`ExecutionResult`) any tool built on kuhaku can use, and :class:`RAG` --
+This top-level module re-exports three things: the extraction entry points
+(:class:`Extractor`, :class:`ExtractionRouter` and their schema/result types), the
+generic core primitives (:class:`Settings`, :func:`build_llm_provider`,
+:class:`Message`/:class:`ToolCall`/:class:`ExecutionResult`) any tool built on kuhaku
+can use, and :class:`RAG` --
 a thin, opinionated wrapper around :class:`~kuhaku.tools.rag.engine.RAGEngine` for
 callers who don't need the full composition-root control the individual RAG building
 blocks offer (see ``kuhaku.tools.rag`` for those). Every knob :class:`RAG` takes is
@@ -26,8 +29,7 @@ from typing import Any
 from .core.auth import AuthContext
 from .core.config import Settings, get_settings
 from .core.exceptions import CapabilityUnavailable, SecurityComponentError
-from .core.llm import build_llm_provider
-from .core.llm.token_tracking import TokenTrackingLLM
+from .core.llm import build_llm_provider, with_runtime
 from .core.models import ExecutionResult, Message, ToolCall
 from .core.policy import enforce_guard_policy, validate_audit_log_path
 from .core.resolve import (
@@ -43,6 +45,13 @@ from .core.resolve import (
 )
 from .core.resolve.adapters.llm import register_llm_adapters
 from .core.sanitization import Redaction
+from .tools.extraction import (
+    ExtractionResult,
+    ExtractionRouter,
+    ExtractionSchema,
+    ExtractionStatus,
+    Extractor,
+)
 from .tools.rag import (
     ACCESS_TAG_INTERNAL,
     ACCESS_TAG_PUBLIC,
@@ -70,7 +79,7 @@ from .tools.rag.resolve import build_rag_registry, local_candidate_id, model_on_
 
 logger = logging.getLogger(__name__)
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 _VALID_RETRIEVAL_MODES = ("dense", "sparse", "hybrid")
 _LOAD_DOCUMENTS_SUFFIXES = (".txt", ".md", ".pdf")
@@ -246,7 +255,7 @@ class RAG:
         # guarantee. A name already claimed by one of the explicit parameters above
         # (`retrieval`, `audit_enabled`, ...) can never reach here at all: Python binds
         # it to that parameter first, so there is no dual-path way to set the same knob.
-        settings_field_names = set(Settings.model_fields) - {"rag"}
+        settings_field_names = set(Settings.model_fields)
         rag_settings_field_names = {f.name for f in dataclasses.fields(RAGSettings)}
         extra_settings_kwargs: dict[str, object] = {}
         extra_rag_kwargs: dict[str, object] = {}
@@ -379,9 +388,7 @@ class RAG:
         llm = build_llm_provider(
             s, registry=registry, env=env, ui=ui, memory=memory, fingerprint=fp
         )
-        if enable_token_tracking and not isinstance(llm, TokenTrackingLLM):
-            llm = TokenTrackingLLM(llm, provider=s.llm_provider.strip().lower())
-        self._llm = llm
+        self._llm = with_runtime(llm, token_tracking=enable_token_tracking)
         self._retriever = self._build_retriever(effective_retrieval, reranker)
         self._cache = self._build_cache(cache)
 
@@ -787,6 +794,13 @@ class RAG:
 __all__ = [
     "__version__",
     "RAG",
+    # Structured extraction, the second tool -- the entry points only; steps, routes
+    # and the pipeline stay in kuhaku.tools.extraction.
+    "Extractor",
+    "ExtractionRouter",
+    "ExtractionSchema",
+    "ExtractionResult",
+    "ExtractionStatus",
     # Generic core primitives, re-exported for callers that build a non-RAG tool on
     # kuhaku without reaching into `kuhaku.core` directly.
     "Settings",

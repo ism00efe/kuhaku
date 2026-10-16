@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Structured extraction (`kuhaku.tools.extraction`), kuhaku's second tool.** Free text
+  to a validated Pydantic model, or to a plain field description (`["name", "email"]`,
+  `{"age": int}`) when no class is wanted. `Extractor(...).extract(text)` returns a status
+  (`COMPLETE`, `NEEDS_CLARIFICATION`, `INVALID`, `FAILED`, `NO_MATCH`, `BLOCKED`),
+  `missing_slots`, the issues found and per-field evidence. A pipeline of named steps —
+  `security`, `extract`, `slot_filling`, and the optional `EvidenceStep` and
+  `ValidationStep` — that can be added to, removed, replaced, enabled and disabled.
+  Multi-turn slot filling through `prior=`, with `history=` and `reference=` for
+  resolving what a message refers to. Retries with the problem fed back
+  (`max_retries`) and fallback models (`fallback_llms`). `ExtractionRouter` chooses the
+  schema a text belongs to — itself an extraction — behind a list of routes a keyword
+  rule can sit in front of; no default schema. Every prompt text is replaceable through
+  `ExtractionPrompts` except the fixed safety and format rules, and `preview()` shows a
+  request without sending it. Shared `ExtractionSettings` (`KUHAKU_EXTRACTION__*`):
+  `max_retries`, `audit_log_path`, and `security` (PII masking and the input guard, both
+  off by default), applied to every extraction, the router's included. Extractors and
+  routers are evaluation targets.
+- `result.missing_fields` (name and description of each missing field) and
+  `result.question`, a ready question asking for them, built without a model call; its
+  wording is `ExtractionSettings.clarification_question`. An empty text is answered
+  without a model call.
+- `StructuredMatchMetric` in `kuhaku.evaluation`: `field_accuracy` and `exact_match` of a
+  JSON answer against a JSON `golden_answer`.
+- **OpenRouter** as an LLM provider (`openrouter`, `OPENROUTER_API_KEY`), defaulting to a
+  free model. In `auto` it comes before every paid provider.
+- `kuhaku.core.llm.with_runtime`, `kuhaku.core.observability.traced_call` and
+  `kuhaku.core.security.InputPolicy` / `InputSecurity`: the entry points a tool uses for
+  model calls, a call's observability and input checks, so what core adds reaches every
+  tool. RAG's facade uses `with_runtime`; extraction uses all three.
+- Extras `rag`, `dense`, `guard` and `otlp` (see Changed).
+
 - **Capability resolution (`kuhaku.core.resolve`).** A registry-driven resolver replaces
   the earlier `kuhaku.core.capabilities` / `kuhaku.tools.rag.capabilities` modules. Each
   decision point — LLM backend, embedding backend, store, retrieval mode — goes through
@@ -40,6 +71,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The base install is light.** `chromadb` and `sentence-transformers` (and with it
+  PyTorch) moved to `kuhaku[rag]` (`kuhaku[dense]` for embeddings alone);
+  `scikit-learn`, `joblib` and `numpy` to `kuhaku[guard]`; the OTLP trace exporter (and
+  `grpcio`) to `kuhaku[otlp]`, imported only when `OTEL_TRACES_EXPORTER=otlp`.
+- **`llm_provider="auto"` continues with the provider used last**, announcing it, and an
+  explicitly chosen provider is recorded as the last used. Choosing an LLM checks only
+  credentials and the Ollama server's model list — the GPU probe, which imports torch,
+  no longer runs for it. A pinned provider is built directly, with no probing.
+- **In `auto`, a set API key now comes before a local Ollama**, and Ollama runs a model
+  already pulled on it: with several, a terminal is asked once (the answer is
+  remembered), without one the most recently pulled is used and announced. A server
+  with no chat model pulled is not usable. `ollama_model` no longer defaults to
+  `qwen2.5:7b-instruct`; set it to pin one model.
+- **BREAKING: `Settings.rag` is gone.** RAG's settings are tool-owned:
+  `RAGSettings.from_env()` reads the same `KUHAKU_RAG__*` variables;
+  `RAGSettings.from_settings(settings)` adds the vertex/retry overlay and is what `RAG()`
+  builds. `Settings(rag=...)` raises `TypeError` saying so. `kuhaku.core` no longer
+  imports a tool.
+- Groq's default model is now `openai/gpt-oss-20b`; `llama-3.3-70b-versatile` is no
+  longer served by Groq.
+- `GROQ_API_KEY` and `OPENROUTER_API_KEY` are accepted unprefixed, like `OPENAI_API_KEY`.
 - **`RAG(...)` and `build_llm_provider(...)` now fail at construction** for a required
   capability that cannot be satisfied, or for anything explicitly requested that needs an
   unapproved install/download — previously this surfaced at the first `ask()`/`ingest()`
@@ -79,6 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also available on its own as `enforce_guard_policy` for exactly this split.
 
 ### Fixed
+
+- Groq's circuit breaker reported itself as `llm:openai`; each OpenAI-compatible provider
+  now names its own.
 
 - Add PEP 561 `py.typed` marker in `kuhaku` and declare it in `[tool.setuptools.package-data]`.
 - Declare `prometheus-client>=0.20` as a direct runtime dependency in `pyproject.toml`.

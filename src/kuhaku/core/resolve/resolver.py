@@ -119,8 +119,9 @@ def _question(kind: str, ready: list[Candidate]) -> str:
 
 def _remembered_message(kind: str, candidate: Candidate) -> str:
     return (
-        f"remembered: {kind} = {candidate.label} -- reset with "
-        f"`memory.reset({kind!r})` or delete .kuhaku/decisions.json"
+        f"{kind} is not set explicitly; using {candidate.label}, the last one used. "
+        f"Set it explicitly, or reset with `memory.reset({kind!r})` / delete "
+        f".kuhaku/decisions.json"
     )
 
 

@@ -179,7 +179,7 @@ class MyRetriever:
 
 See [Extending](extending.md) for the full retriever contract.
 
-## Not in 0.1.0
+## Not in 0.2.0
 
 `kuhaku.core.auth` also contains `AuthorizationPolicy`, `ConfigAuthorizationPolicy`,
 `APIKeyAuthProvider`, `JWTAuthProvider` and `AuthProviderRegistry`. They are not wired

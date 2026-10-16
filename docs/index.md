@@ -2,13 +2,13 @@
 
 An AI orchestration framework for Python. `kuhaku.core` is tool-agnostic runtime
 infrastructure — LLM abstraction, configuration, identity, security, observability,
-retry. Tools are built on top of it, and retrieval-augmented generation is the first one
-that ships.
+retry. Tools are built on top of it. Two ship today: retrieval-augmented generation and
+structured extraction.
 
-> **Alpha — 0.1.0.**
+> **Alpha — 0.2.0.**
 
 ```bash
-pip install kuhaku
+pip install "kuhaku[rag]"
 ```
 
 ```python
@@ -36,7 +36,7 @@ to see it, how the decision is made, and the two ways tags silently fail to matc
 **[Security](security.md)** — PII sanitization, the prompt-injection input guard, the
 layers of the system prompt, and the audit log.
 
-**[Providers](providers.md)** — the four language models and the two embedding backends,
+**[Providers](providers.md)** — the six language models and the two embedding backends,
 and which combination avoids a local download.
 
 **[Observability](observability.md)** — trace ids, structured logging, OpenTelemetry
@@ -45,15 +45,19 @@ spans and the metrics kuhaku emits.
 **[Extending](extending.md)** — replacing the retriever, store, model or user-facing
 text with your own, and the contracts each one has to satisfy.
 
-**[Evaluation](evaluation.md)** — the golden-dataset format, the retrieval and
-answer-quality metrics, and how to measure something other than RAG.
+**[Structured extraction](extraction.md)** — free text to validated fields — a list of field names is enough:
+routing between schemas, multi-turn slot filling, evidence checks, your own rules.
+
+**[Evaluation](evaluation.md)** — the golden-dataset format, the retrieval,
+answer-quality and structured-output metrics, and how to measure something other than
+RAG.
 
 ## How these docs are written
 
 Every code block is complete: the imports are there, and nothing depends on a variable
 defined on another page. Copy any of them and it runs.
 
-Where something does not work through the public `RAG` API, the page says so instead of
+Where something does not work through the public API, the page says so instead of
 staying quiet — including for features the package contains. A control you can set that
 changes nothing is worse than a missing one, because it reads as working.
 
@@ -63,19 +67,22 @@ changes nothing is worse than a missing one, because it reads as working.
 kuhaku/
 ├── core/          tool-agnostic runtime infrastructure
 │   ├── config          typed, environment-driven Settings
-│   ├── llm             LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI
+│   ├── llm             LLMProvider + Ollama / OpenAI / Anthropic / Vertex AI /
+│   │                   Groq / OpenRouter
+│   ├── resolve         capability resolution: what is usable now, asked before installing
 │   ├── auth            AuthContext and identity primitives
-│   ├── security        input guard, PII sanitization, audit
+│   ├── security        input policy, input guard, PII sanitization, audit
 │   ├── observability   structured logging, OpenTelemetry tracing and metrics
 │   └── retry           retry with backoff, circuit breakers
 ├── evaluation/    tool-agnostic evaluation harness
 └── tools/
-    └── rag/       ingestion, chunking, embeddings, vector store, retrieval, fusion,
-                   re-ranking, access filtering, caching
+    ├── rag/         ingestion, chunking, embeddings, vector store, retrieval, fusion,
+    │                re-ranking, access filtering, caching
+    └── extraction/  schemas, extraction pipeline, slot filling, routing, evidence
 ```
 
-**The rule:** a tool may depend on `kuhaku.core`. Core may never depend on a tool. A
-second tool is a new package under `tools/`, never a new field on core.
+**The rule:** a tool may depend on `kuhaku.core`. Core may never depend on a tool. A new
+tool is a new package under `tools/` with its own settings, never a new field on core.
 
 ## Links
 

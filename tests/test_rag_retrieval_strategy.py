@@ -30,14 +30,15 @@ class _RawScoreRetriever:
         return self._items[:top_k]
 
 
-def _stub_rag(**overrides) -> SimpleNamespace:
+def _stub_rag(*, rag: RAGSettings | None = None, **overrides) -> SimpleNamespace:
     """A bare object with just the attributes `_build_retriever` reads -- avoids
-    constructing a full `RAG()` (real embedding model, Chroma store, etc.)."""
+    constructing a full `RAG()` (real embedding model, Chroma store, etc.). ``rag``
+    used to be passed through as `Settings(rag=...)`; RAGSettings is tool-owned now."""
 
     settings = Settings(_env_file=None, **overrides)
     return SimpleNamespace(
         _settings=settings,
-        _rag_settings=RAGSettings.from_settings(settings),
+        _rag_settings=rag if rag is not None else RAGSettings.from_settings(settings),
         _embedder=FakeEmbeddings(),
         _store=FakeVectorStore(),
         _chunker=None,

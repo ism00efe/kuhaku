@@ -6,24 +6,38 @@ sites) -- excluding generic, cross-tool concerns (LLM provider, auth, the HTTP A
 logging, ...) that stay on :class:`~kuhaku.core.config.Settings`.
 
 Every field has a sensible default, so ``RAGSettings()`` is usable standalone -- no
-``Settings`` instance required. ``Settings.rag`` (a nested field, see ``core/config.py``)
-is the kuhaku-wide default instance, populated from the environment via
-``KUHAKU_RAG__<FIELD>``-prefixed variables (e.g. ``KUHAKU_RAG__TOP_K=8``); :meth:`RAGSettings.from_settings`
-additionally overlays the handful of fields that stay authoritative on ``Settings`` itself
-(``vertex_project``, ``vertex_location``, the ``retry_enabled`` master switch) for callers
-that only have a full ``Settings`` instance to hand.
+``Settings`` instance required, and nothing read from the environment.
+:meth:`RAGSettings.from_env` reads the tool's own ``KUHAKU_RAG__<FIELD>`` variables
+(``KUHAKU_RAG__TOP_K=8``, ``KUHAKU_RAG__DOC_TYPE_PREFIX_MAPPING='{"log_": "x"}'``);
+:meth:`RAGSettings.from_settings` is ``from_env()`` plus the fields that stay
+authoritative on core's ``Settings`` (``vertex_project``, ``vertex_location``, the
+``retry_enabled`` master switch) and is what ``RAG()`` builds when not handed a
+``rag_settings``.
+
+This object used to be nested on core's ``Settings`` as ``Settings.rag``. It is a
+tool-owned settings object now, like every tool's: ``kuhaku.core`` may never import a
+tool, so the tool reads its own environment. The variable names did not change.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import os
 from dataclasses import field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic.dataclasses import dataclass
 
 if TYPE_CHECKING:
     from kuhaku.core.config import Settings
+
+#: Environment-variable prefix for RAG settings -- the names that worked while these
+#: settings were nested on ``Settings`` (``KUHAKU_`` + ``RAG`` + the ``__`` delimiter).
+RAG_ENV_PREFIX = "KUHAKU_RAG__"
+
+# Fields whose environment value is JSON rather than a scalar.
+_JSON_FIELDS = frozenset({"doc_type_prefix_mapping"})
 
 
 @dataclass(frozen=True)
@@ -133,20 +147,46 @@ class RAGSettings:
     retry_reranker_backoff_max_seconds: float = 5.0
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> RAGSettings:
-        """Project the RAG-relevant settings out of a full :class:`Settings` instance.
+    def from_env(cls, env_file: str | None = None, **overrides: Any) -> RAGSettings:
+        """Build from ``KUHAKU_RAG__<FIELD>`` variables (case-insensitive), then
+        ``overrides``.
 
-        ``settings.rag`` already carries every RAG-owned field (populated from defaults
-        and/or ``KUHAKU_RAG__*`` environment variables); this overlays the three fields that
-        remain authoritative on ``Settings`` itself -- ``vertex_project``,
-        ``vertex_location`` (generic Google Cloud platform settings, also needed by the
-        Vertex embedding provider) and ``retry_enabled`` (the cross-subsystem master
-        retry switch) -- so a caller holding only ``settings.rag`` in isolation would not
-        see a ``Settings``-level override of any of those three.
+        ``env_file``, when given, is a dotenv file read first; the process environment
+        wins over it, as for ``Settings``. Values are coerced to each field's type
+        (``"8"`` -> ``8``, ``"true"`` -> ``True``); a mapping field takes JSON. A bad
+        value raises; an unknown ``KUHAKU_RAG__`` name is ignored -- both as when these
+        variables were read through ``Settings``.
         """
 
-        return dataclasses.replace(
-            settings.rag,
+        raw: dict[str, str] = {}
+        if env_file is not None:
+            from dotenv import dotenv_values
+
+            raw.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
+        raw.update(os.environ)
+
+        names = {f.name for f in dataclasses.fields(cls)}
+        prefix = RAG_ENV_PREFIX.lower()
+        values: dict[str, Any] = {}
+        for key, value in raw.items():
+            if not key.lower().startswith(prefix):
+                continue
+            name = key[len(prefix):].lower()
+            if name in names:
+                values[name] = json.loads(value) if name in _JSON_FIELDS else value
+        values.update(overrides)
+        return cls(**values)
+
+    @classmethod
+    def from_settings(cls, settings: Settings, *, env_file: str | None = None) -> RAGSettings:
+        """:meth:`from_env` with the three fields that remain authoritative on
+        :class:`Settings` overlaid from ``settings`` -- ``vertex_project``,
+        ``vertex_location`` (generic Google Cloud platform settings, also needed by the
+        Vertex embedding provider) and ``retry_enabled`` (the cross-subsystem master
+        retry switch)."""
+
+        return cls.from_env(
+            env_file,
             vertex_project=settings.vertex_project,
             vertex_location=settings.vertex_location,
             retry_enabled=settings.retry_enabled,

@@ -37,6 +37,7 @@ nav:
   - Providers: providers.md
   - Observability: observability.md
   - Extending: extending.md
+  - Structured extraction: extraction.md
   - Evaluation: evaluation.md
 
 markdown_extensions:

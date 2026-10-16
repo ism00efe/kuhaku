@@ -11,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 from .result import Issue, IssueKind
 
 # Codes of the issues schema validation produces. A step that re-validates ``ctx.data``
-# (continuation, after merging earlier turns in) drops these first so the same problem
+# (slot filling, after merging earlier turns in) drops these first so the same problem
 # is never reported twice.
 SCHEMA_ISSUE_CODES = frozenset({"missing", "schema_error"})
 
@@ -34,7 +34,7 @@ def parse_json_object(raw: str) -> dict[str, Any]:
 
     Tolerates a code fence or stray prose around the object even though the prompt
     forbids both: providers without native JSON mode add them often enough that
-    rejecting outright would spend a repair attempt on formatting alone.
+    rejecting outright would spend a retry attempt on formatting alone.
     """
 
     text = raw.strip()
@@ -46,12 +46,16 @@ def parse_json_object(raw: str) -> dict[str, Any]:
 
     try:
         parsed = json.loads(text)
+    except RecursionError:
+        raise OutputParseError("the reply is nested too deeply") from None
     except json.JSONDecodeError:
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:
             raise OutputParseError("the reply contains no JSON object") from None
         try:
             parsed = json.loads(text[start : end + 1])
+        except RecursionError:
+            raise OutputParseError("the reply is nested too deeply") from None
         except json.JSONDecodeError as exc:
             raise OutputParseError(f"the reply is not valid JSON ({exc.msg})") from None
 
@@ -85,7 +89,7 @@ def issues_from_validation_error(exc: ValidationError) -> tuple[list[Issue], lis
 
     A value is "missing" when the key is absent or the model answered null for a field
     that does not accept null -- the prompt tells it to use null for values the text
-    does not contain, so a repair attempt cannot conjure them up. Every other error is
+    does not contain, so a retry attempt cannot conjure them up. Every other error is
     something the model got wrong and may fix.
     """
 
@@ -95,10 +99,10 @@ def issues_from_validation_error(exc: ValidationError) -> tuple[list[Issue], lis
         path = json_pointer(error["loc"])
         if error["type"] == "missing" or error.get("input", ...) is None:
             missing.append(
-                Issue(IssueKind.NEEDS_INPUT, "missing", f"{path or '/'}: not in the text", path)
+                Issue(IssueKind.NEEDS_CLARIFICATION, "missing", f"{path or '/'}: not in the text", path)
             )
         else:
             errors.append(
-                Issue(IssueKind.REPAIRABLE, "schema_error", f"{path or '/'}: {error['msg']}", path)
+                Issue(IssueKind.RETRYABLE, "schema_error", f"{path or '/'}: {error['msg']}", path)
             )
     return missing, errors

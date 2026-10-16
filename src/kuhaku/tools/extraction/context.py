@@ -15,14 +15,18 @@ from pydantic import BaseModel
 from kuhaku.core.llm.base import LLMProvider
 from kuhaku.core.models import Message
 
+from .prompts import ExtractionPrompts
 from .result import (
     ExtractionResult,
     ExtractionStatus,
     FieldReport,
     Issue,
+    IssueKind,
+    MissingField,
+    clarification_question,
     status_from_issues,
 )
-from .schema import ExtractionSchema
+from .schema import ExtractionSchema, describe_path
 
 
 @dataclass
@@ -33,6 +37,8 @@ class ExtractionContext:
     history: Sequence[Message] = ()
     reference: Any = None
     prior_data: dict[str, Any] | None = None
+    trace_id: str = ""
+    prompts: ExtractionPrompts = field(default_factory=ExtractionPrompts)
 
     # Written during the prepare phase: steps that need something from the model (e.g.
     # evidence) add a system-prompt rule, a top-level response key or a titled block of
@@ -58,8 +64,21 @@ class ExtractionContext:
 
         self.stopped = True
 
-    def to_result(self) -> ExtractionResult[Any]:
+    def to_result(self, question_template: str = "") -> ExtractionResult[Any]:
+        """The result of this extraction. ``question_template`` (its ``{fields}``
+        placeholder filled in) becomes ``result.question`` when values are missing."""
+
         status = status_from_issues(self.issues)
+        missing = tuple(
+            MissingField(issue.path, *describe_path(self.schema.model, issue.path))
+            for issue in self.issues
+            if issue.kind is IssueKind.NEEDS_CLARIFICATION and issue.path is not None
+        )
+        question = (
+            clarification_question(question_template, missing)
+            if status is ExtractionStatus.NEEDS_CLARIFICATION and question_template
+            else None
+        )
         return ExtractionResult(
             status=status,
             schema_name=self.schema.name,
@@ -69,4 +88,7 @@ class ExtractionContext:
             fields=dict(self.fields),
             attempts=self.attempts,
             metadata=dict(self.metadata),
+            trace_id=self.trace_id,
+            missing_fields=missing,
+            question=question,
         )

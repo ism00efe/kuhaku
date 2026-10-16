@@ -16,6 +16,8 @@ _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 class GroqProvider(OpenAIProvider):
+    _service = "groq"
+
     def __init__(
         self,
         api_key: str,
@@ -29,8 +31,6 @@ class GroqProvider(OpenAIProvider):
         if not model or not model.strip():
             raise LLMError("GROQ_MODEL is not set but LLM_PROVIDER=groq.")
         super().__init__(api_key, model, base_url=base_url, **kwargs)
-        if self._circuit_breaker is not None:
-            self._circuit_breaker.name = "llm:groq"
 
     @property
     def name(self) -> str:

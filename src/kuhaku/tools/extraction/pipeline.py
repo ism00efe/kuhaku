@@ -1,7 +1,10 @@
 """Composable extraction pipeline.
 
-Every stage around the core extraction -- evidence checking, caller validators, and
-later sanitization, the input guard, routing, audit -- is a :class:`Step`. A pipeline is
+Every stage around the core extraction -- PII masking, the input guard, evidence
+checking, caller validators -- is a :class:`Step`. Two things are not. The audit log
+records the whole call, including a pipeline that raised, so it lives on the
+:class:`Extractor` (``audit_log_path``). Routing is not a step either: it
+picks which extractor (and so which pipeline) runs, see :mod:`.router`. A pipeline is
 an ordered list of named steps that can be added, removed, replaced, enabled or
 disabled. The one step that cannot be removed or disabled is ``extract``: without it
 there is nothing to check. It can still be *replaced* by another step of the same name.
@@ -10,18 +13,26 @@ A run has two phases. ``prepare`` runs for every enabled step first, so a step p
 after ``extract`` (evidence, for instance) can still ask the model for something before
 the model is called. ``run`` then executes in order and stops early once a step calls
 :meth:`ExtractionContext.stop`.
+
+A step that raises anything other than a kuhaku or provider error is a bug in that
+step; it surfaces as :class:`CustomComponentError` naming the step and phase.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from kuhaku.core.exceptions import ConfigError
+from kuhaku.core.exceptions import ConfigError, CustomComponentError, KuhakuError
+from kuhaku.core.llm.base import LLMError
+from kuhaku.core.observability import instrumented_step
 
 from .context import ExtractionContext
 
 EXTRACT_STEP = "extract"
+
+logger = logging.getLogger(__name__)
 
 
 class Step:
@@ -115,16 +126,29 @@ class Pipeline:
 
     # --- execution --------------------------------------------------------------------
 
+    def prepare(self, ctx: ExtractionContext) -> None:
+        """Run only the prepare phase -- what a preview of the prompt needs."""
+
+        for step in self._active():
+            _guarded(step, "prepare", ctx)
+
     def run(self, ctx: ExtractionContext) -> None:
-        active = [entry.step for entry in self._entries if entry.enabled]
+        active = self._active()
         for step in active:
-            step.prepare(ctx)
+            _guarded(step, "prepare", ctx)
         for step in active:
             if ctx.stopped:
                 break
-            step.run(ctx)
+            # Prefixed so these stages never share a STAGE_DURATION label with another
+            # tool's stage of the same name.
+            with instrumented_step(f"extraction.{step.name}", logger) as rec:
+                _guarded(step, "run", ctx)
+                rec.set(issue_count=len(ctx.issues))
 
     # --- internals --------------------------------------------------------------------
+
+    def _active(self) -> list[Step]:
+        return [entry.step for entry in self._entries if entry.enabled]
 
     def _check_new(self, step: Step) -> None:
         if not isinstance(step, Step):
@@ -152,3 +176,14 @@ class Pipeline:
 
     def _entry(self, name: str) -> _Entry:
         return self._entries[self._index(name)]
+
+
+def _guarded(step: Step, phase: str, ctx: ExtractionContext) -> None:
+    try:
+        getattr(step, phase)(ctx)
+    except (KuhakuError, LLMError):
+        raise
+    except Exception as exc:
+        raise CustomComponentError(
+            f"Step '{step.name}' ({type(step).__name__}) raised during {phase}: {exc}"
+        ) from exc

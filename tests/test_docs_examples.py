@@ -67,6 +67,13 @@ def _block_id(block: DocBlock) -> str:
     return f"{block.path.name}:{block.line}"
 
 
+class _EmptyExtractionLLM:
+    name = "fake:docs"
+
+    def generate(self, system: str, user: str) -> str:
+        return '{"data": {}}'
+
+
 @pytest.fixture
 def docs_offline_environment(monkeypatch, tmp_path):
     """Wires kuhaku.RAG() to run entirely offline, the same way tests/test_rag_facade.py
@@ -98,6 +105,13 @@ def docs_offline_environment(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(kuhaku, "build_llm_provider", lambda s, **_k: FakeLLM())
     monkeypatch.setattr(kuhaku, "QueryAnswerCache", lambda *a, **k: FakeCache())
+    # Extraction examples build their model through the extraction tool's own import of
+    # build_llm_provider. The fake answers with an empty object -- valid JSON every
+    # schema accepts the shape of -- so an example runs to a real result offline.
+    monkeypatch.setattr(
+        "kuhaku.tools.extraction.extractor.build_llm_provider",
+        lambda s, **_k: _EmptyExtractionLLM(),
+    )
 
     tmp_dir_counter = iter(range(1_000_000))
 
