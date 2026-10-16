@@ -50,6 +50,10 @@ invoice = Extractor(
 print(person.status, invoice.status)
 ```
 
+A required field the text lacks is reported as missing and asked for (see
+[Asking for what is missing](#asking-for-what-is-missing)); an optional one is left `None`
+and never asked for. Make a field optional only when the conversation can do without it.
+
 `name` and `description` say what is being extracted; the router below chooses by them.
 Add `instructions` for domain rules the model should follow, such as "copy product names
 exactly as written".

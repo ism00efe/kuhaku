@@ -22,9 +22,9 @@ structured extraction.
 - **Evaluation ships with the framework.** A separate, tool-agnostic package with
   retrieval and answer-quality metrics that measures anything implementing the target
   contract.
-- **Structured extraction that says what is missing.** Free text in, validated fields
-  out — name the fields, nothing else is needed — and when the text lacks a value, the result says which one instead of
-  inventing it.
+- **Structured extraction that asks for what is missing.** Name the fields and kuhaku
+  pulls them out of free text. A value the text lacks is never invented: the result says
+  which one is missing and gives you a question to ask for it.
 - **Start light.** `pip install kuhaku` pulls nothing heavy, and no default ever downloads
   a model. A feature's dependencies come when you use it.
 - **No switch to leave in the wrong position.** In RAG, PII sanitization has no flag at
@@ -49,11 +49,22 @@ export OPENROUTER_API_KEY=sk-or-...    # free models available; or OPENAI_API_KE
 ```python
 from kuhaku import Extractor
 
-result = Extractor(["department", "day", "time"]).extract("A cardiology appointment tomorrow, please")
-print(result.status)         # NEEDS_CLARIFICATION
-print(result.missing_slots)  # ('/time',)
-print(result.data)           # {'department': 'cardiology', 'day': 'tomorrow', 'time': None}
+order = Extractor({"product": str, "quantity": float})
+
+result = order.extract("tea please")
+print(result.status)    # NEEDS_CLARIFICATION
+print(result.question)  # Could you also tell me: quantity?  -- send it to the user
+
+result = order.extract("3 boxes", prior=result)  # their reply completes the same order
+print(result.status)    # COMPLETE
+print(result.data)      # {'product': 'tea', 'quantity': 3}
 ```
+
+That is the whole conversation loop: kuhaku keeps no state, so pass the previous result
+back as `prior=` with each new message, and send `result.question` while there is one.
+A field kuhaku should ask for must be required — one that accepts `None` (`str | None`)
+is optional and never asked for. To tell orders from complaints or small talk, put one
+extractor per kind behind an `ExtractionRouter`.
 
 See [Structured extraction](https://github.com/ism00efe/kuhaku/blob/main/docs/extraction.md)
 for routing between schemas, multi-turn slot filling, evidence checks and your own rules.
