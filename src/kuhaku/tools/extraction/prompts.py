@@ -67,7 +67,14 @@ class ExtractionPrompts:
     )
     slot_filling: str = (
         "Values already extracted in earlier turns (repeat or change them only if the "
-        "source text does; use null for anything the source text does not mention)"
+        "source text does; use null for anything the source text does not mention; a "
+        "list is always the whole list, so when the source text adds, changes or removes "
+        "items, reply with the full updated list)"
+    )
+    new_object: str = (
+        "true when the source text starts a new, separate item of what is being "
+        "extracted instead of completing or changing the one the earlier values belong "
+        "to; otherwise false"
     )
     route: str = (
         "The schemas the source text may belong to:\n{schemas}\n\n"

@@ -127,6 +127,42 @@ def test_without_prior_slot_filling_is_inert():
     assert "earlier turns" not in user
 
 
+def test_a_new_object_after_a_finished_one_carries_nothing_over():
+    llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": 3}},
+        {"data": {"product": "coffee", "quantity": None}, "new": True},
+    )
+    extractor = Extractor(Order, llm=llm)
+
+    first = extractor.extract("3 boxes of tea")
+    second = extractor.extract("I'd like coffee", prior=first)
+
+    assert second.status is ExtractionStatus.NEEDS_CLARIFICATION
+    assert second.data == {"product": "coffee", "quantity": None}
+    assert second.missing_slots == ("/quantity",)
+    _, user = llm.calls[1]
+    assert '"new"' in user
+
+
+def test_a_correction_of_a_finished_object_keeps_the_rest():
+    llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": 3}},
+        {"data": {"product": None, "quantity": 4}, "new": False},
+    )
+    extractor = Extractor(Order, llm=llm)
+
+    second = extractor.extract("make it 4", prior=extractor.extract("3 boxes of tea"))
+
+    assert second.value == Order(product="tea", quantity=4)
+
+
+def test_without_prior_the_model_is_not_asked_about_a_new_object():
+    llm = ScriptedLLM({"data": {"product": "tea", "quantity": 5}})
+    Extractor(Order, llm=llm).extract("5 tea")
+    _, user = llm.calls[0]
+    assert '"new"' not in user
+
+
 def test_merge_rules():
     assert merge({"a": 1, "b": 2}, {"a": None, "b": 3}) == {"a": 1, "b": 3}
     assert merge({"x": {"y": 1, "z": 2}}, {"x": {"z": 9}}) == {"x": {"y": 1, "z": 9}}

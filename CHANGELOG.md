@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `result.question`, a ready question asking for them, built without a model call; its
   wording is `ExtractionSettings.clarification_question`. An empty text is answered
   without a model call.
+- With `prior=`, the model says in the same reply whether a message starts a new object;
+  then nothing is carried over, so a finished extraction no longer leaks its values into
+  the next one. A list is always the whole list (the model repeats the items it keeps).
+  The wording is `ExtractionPrompts.new_object`.
 - `StructuredMatchMetric` in `kuhaku.evaluation`: `field_accuracy` and `exact_match` of a
   JSON answer against a JSON `golden_answer`.
 - **OpenRouter** as an LLM provider (`openrouter`, `OPENROUTER_API_KEY`), defaulting to a

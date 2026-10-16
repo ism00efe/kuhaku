@@ -233,3 +233,20 @@ def test_an_interrupted_order_is_picked_up_after_a_complaint_and_a_greeting():
     assert result.value == Order(product="tea", quantity=5)
     # The complaint's data stays aside for when the conversation comes back to it.
     assert result.metadata["earlier"] == {"Complaint": {"topic": "late"}}
+
+
+def test_a_second_order_after_a_complaint_does_not_inherit_the_first():
+    order_llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": 3}},
+        {"data": {"product": "coffee", "quantity": None}, "new": True},
+    )
+    complaint_llm = ScriptedLLM({"data": {"topic": "late"}})
+    router_llm = ScriptedLLM(pick("Order"), pick("Complaint"), pick("Order"))
+    router = _router(router_llm, order_llm, complaint_llm)
+
+    result = None
+    for message in ["3 boxes of tea", "it was late", "coffee please"]:
+        result = router.extract(message, prior=result)
+
+    assert result.status is ExtractionStatus.NEEDS_CLARIFICATION
+    assert result.data == {"product": "coffee", "quantity": None}

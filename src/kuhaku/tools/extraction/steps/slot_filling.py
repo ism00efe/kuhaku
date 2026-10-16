@@ -13,6 +13,7 @@ from ..pipeline import Step
 from ..prompts import render
 
 SLOT_FILLING_STEP = "slot_filling"
+NEW_OBJECT_KEY = "new"
 
 
 class SlotFillingStep(Step):
@@ -22,6 +23,13 @@ class SlotFillingStep(Step):
     known, and afterwards the two are merged: a non-null value from this turn wins,
     a null keeps the earlier value. So "5 kilo" after "çay yaz" completes the earlier
     extraction instead of starting a new one with no product.
+
+    The model also says, in the same reply, whether the text starts a new, separate
+    object instead of continuing the earlier one ("coffee please" after a finished tea
+    order). Then nothing is carried over: the new object is extracted on its own and
+    asked about on its own, so a finished extraction never leaks its values into the
+    next. A list is always the whole list -- the model repeats the earlier items it
+    keeps -- so a list from this turn replaces the earlier one.
 
     The tool keeps no state between calls -- the caller passes the previous result
     back in, the same way the conversation history is passed. Inert when no ``prior``
@@ -41,9 +49,15 @@ class SlotFillingStep(Step):
         if ctx.prior_data:
             ctx.prior_data = drop_invalid(ctx.schema.model, ctx.prior_data)
             ctx.prompt_blocks.append((ctx.prompts.slot_filling, render(ctx.prior_data)))
+            ctx.response_fields[NEW_OBJECT_KEY] = ctx.prompts.new_object
 
     def run(self, ctx: ExtractionContext) -> None:
         if not ctx.prior_data or ctx.data is None:
+            return
+        if (ctx.response or {}).get(NEW_OBJECT_KEY) is True:
+            # A new object: what the extract step validated stands on its own, and no
+            # later step may treat the earlier values as this object's.
+            ctx.prior_data = None
             return
         ctx.data = merge(ctx.prior_data, ctx.data)
         ctx.issues[:] = [issue for issue in ctx.issues if issue.code not in SCHEMA_ISSUE_CODES]

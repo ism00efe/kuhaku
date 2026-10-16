@@ -55,6 +55,7 @@ def test_retry_evidence_and_slot_filling_texts_are_replaceable():
         "retry": "ÖNCEKİ: {previous_output} SORUN: {problems}",
         "evidence": "KANIT VER",
         "slot_filling": "ÖNCEKİ TURLAR",
+        "new_object": "YENİ Mİ",
     }
     Extractor(Order, llm=llm, steps=[EvidenceStep()], prompts=prompts).extract(
         "5 kilo", prior={"product": "çay"}
@@ -63,6 +64,7 @@ def test_retry_evidence_and_slot_filling_texts_are_replaceable():
     first_system, first_user = llm.calls[0]
     assert "KANIT VER" in first_system
     assert "ÖNCEKİ TURLAR" in first_user
+    assert '"new": YENİ Mİ' in first_user
     _, retry_user = llm.calls[1]
     assert "ÖNCEKİ: broken SORUN: - " in retry_user
 

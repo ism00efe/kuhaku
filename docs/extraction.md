@@ -143,6 +143,15 @@ A value from this message wins; a field this message leaves out keeps its earlie
 value. kuhaku keeps no state between calls — you hand the previous result back, the same
 way you hand back the conversation.
 
+So pass the previous result with every message, finished or not. The model also says
+whether a message starts a new, separate one — "and a dentist appointment on Friday"
+after a booked cardiology one — and then nothing is carried over: the new one is
+extracted and asked about on its own. A message that corrects a finished one ("make it
+4 pm") keeps everything else.
+
+A list is always the whole list: when a message adds, changes or removes items, the
+model replies with the full updated list, and it replaces the earlier one.
+
 Two more inputs help the model resolve what a message refers to without being extracted
 from themselves:
 
@@ -225,7 +234,7 @@ An extraction runs as a pipeline of named steps, in order:
 |---|---|---|
 | `security` | core's input checks — see [Security](#security) | yes, every check off |
 | `extract` | asks the model, parses and validates the reply, retries | yes, required |
-| `slot_filling` | merges the reply into `prior=` | yes, inert without `prior=` |
+| `slot_filling` | merges the reply into `prior=`, unless it starts a new one | yes, inert without `prior=` |
 | `evidence` | checks each value against a quote from the text | no |
 | `validate` | runs your own rules | no |
 
@@ -336,7 +345,7 @@ print(user)
 
 `preview()` builds the exact first request without calling the model. The replaceable
 texts are the fields of `ExtractionPrompts`: `rules`, `retry`, `evidence`,
-`slot_filling` and `route`. The rules that the text is data and not instructions, and
+`slot_filling`, `new_object` and `route`. The rules that the text is data and not instructions, and
 the reply format the parser depends on, are `FIXED_RULES` and cannot be replaced.
 
 ## Settings
