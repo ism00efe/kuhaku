@@ -193,14 +193,20 @@ class Extractor(Generic[M]):
         self.audit_log_path = router.audit_log_path
 
     def route(
-        self, text: str, *, history: Sequence[Message] = (), reference: Any = None
+        self,
+        text: str,
+        *,
+        history: Sequence[Message] = (),
+        reference: Any = None,
+        prior: ExtractionResult[Any] | None = None,
     ) -> str | None:
         """The name of the extractor ``text`` goes to, or ``None`` when none fits --
-        without extracting. Only for an extractor given a list of extractors."""
+        without extracting. Only for an extractor given a list of extractors. ``prior``
+        is the previous result, as for :meth:`extract`."""
 
         if self._router is None:
             raise ConfigError("route() chooses between extractors; this one has a single schema.")
-        return self._router.route(text, history=history, reference=reference)
+        return self._router.route(text, history=history, reference=reference, prior=prior)
 
     def extract(
         self,

@@ -10,6 +10,7 @@ from kuhaku.core.exceptions import ConfigError, CustomComponentError
 from kuhaku.core.llm.base import LLMUnavailableError
 from kuhaku.tools.extraction import (
     EvidenceStep,
+    ExtractionResult,
     ExtractionSchema,
     ExtractionStatus,
     Extractor,
@@ -233,6 +234,42 @@ def test_an_interrupted_order_is_picked_up_after_a_complaint_and_a_greeting():
     assert result.value == Order(product="tea", quantity=5)
     # The complaint's data stays aside for when the conversation comes back to it.
     assert result.metadata["earlier"] == {"Complaint": {"topic": "late"}}
+
+
+def test_the_choice_sees_what_each_extractor_already_holds():
+    order_llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": None}},
+        {"data": {"product": None, "quantity": 2}},
+    )
+    router_llm = ScriptedLLM(pick("Order"), pick("Order"))
+    router = _router(router_llm, order_llm)
+
+    first = router.extract("tea please")
+    second = router.extract("2 boxes", prior=first)
+
+    _, first_user = router_llm.calls[0]
+    assert '"earlier"' not in first_user  # nothing held yet: no rule, no block
+    system, user = router_llm.calls[1]
+    assert "already given each schema" in system
+    assert '"earlier"' in user and '"tea"' in user
+    assert second.value == Order(product="tea", quantity=2)
+
+
+def test_route_takes_prior_and_custom_routes_get_earlier():
+    seen = []
+
+    def remember(request):
+        seen.append(dict(request.earlier))
+        return "Order"
+
+    router = _router(ScriptedLLM(), routes=[remember])
+    prior = ExtractionResult(
+        status=ExtractionStatus.NEEDS_CLARIFICATION,
+        schema_name="Order",
+        data={"product": "tea", "quantity": None},
+    )
+    assert router.route("2 boxes", prior=prior) == "Order"
+    assert seen == [{"Order": {"product": "tea", "quantity": None}}]
 
 
 def test_a_second_order_after_a_complaint_does_not_inherit_the_first():

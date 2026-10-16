@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from kuhaku.core.exceptions import ConfigError, CustomComponentError, KuhakuError
@@ -70,6 +70,8 @@ class RouteRequest:
     reference: Any = None
     fallback_llms: Sequence[LLMProvider] = ()
     extraction_settings: ExtractionSettings | None = None
+    earlier: Mapping[str, dict[str, Any]] = field(default_factory=dict)
+    """What the conversation has already given each extractor, by schema name."""
 
 
 Route = Callable[[RouteRequest], "str | None"]
@@ -85,8 +87,12 @@ class LLMRoute:
     that is still unusable after that defers (``None``) and is logged; a provider
     failure on every provider raises :class:`LLMUnavailableError`.
 
-    ``instructions`` are the caller's routing rules ("a message with only a quantity
-    continues the previous order"), added after the framework's rules. ``prompts``
+    When ``request.earlier`` holds what the conversation already gave the extractors,
+    it is shown to the model as reference data with the ``route_earlier`` rule, so a
+    reply that only completes or corrects one of them goes to it.
+
+    ``instructions`` are the caller's routing rules ("a question about a delivery is a
+    complaint"), added after the framework's rules. ``prompts``
     replaces default prompt texts, as for :class:`Extractor`; its ``route`` text is
     the one listing the schemas.
     """
@@ -111,6 +117,14 @@ class LLMRoute:
             for schema in request.schemas
         )
         rules = fill(self.prompts.route, schemas=catalogue)
+        reference = request.reference
+        if request.earlier:
+            # What each schema already holds is what tells "2 boxes" apart from small
+            # talk; it is the conversation's data, so it is fenced like any reference.
+            rules = f"{rules}\n\n{self.prompts.route_earlier}"
+            reference = {"earlier": dict(request.earlier)}
+            if request.reference is not None:
+                reference["caller_reference"] = request.reference
         if self.instructions:
             rules = f"{rules}\n\n{self.instructions}"
         chooser: Extractor[Any] = Extractor(
@@ -127,7 +141,7 @@ class LLMRoute:
             extraction_settings=(request.extraction_settings or ExtractionSettings())
             .model_copy(update={"audit_log_path": None}),
         )
-        result = chooser.extract(request.text, history=request.history, reference=request.reference)
+        result = chooser.extract(request.text, history=request.history, reference=reference)
         if result.status is ExtractionStatus.BLOCKED:
             raise InputBlocked(result.issues)
         if result.status is not ExtractionStatus.COMPLETE or result.value is None:
@@ -193,12 +207,27 @@ class Router:
             self.fallback_llms = [with_runtime(fallback) for fallback in fallback_llms]
 
     def route(
-        self, text: str, *, history: Sequence[Message] = (), reference: Any = None
+        self,
+        text: str,
+        *,
+        history: Sequence[Message] = (),
+        reference: Any = None,
+        prior: ExtractionResult[Any] | None = None,
     ) -> str | None:
         if not isinstance(text, str):
             # Checked here, not left to a route: a route would report it as its own bug.
             raise TypeError(f"text must be a str, got {type(text).__name__}.")
+        return self._route(text, history, reference, _earlier(prior))
+
+    def _route(
+        self,
+        text: str,
+        history: Sequence[Message],
+        reference: Any,
+        earlier: Mapping[str, dict[str, Any]],
+    ) -> str | None:
         request = RouteRequest(
+            earlier=dict(earlier),
             text=text,
             schemas=tuple(e.schema for e in self.extractors.values()),
             llm=self.llm,
@@ -241,22 +270,14 @@ class Router:
 
         Routing and extraction share one ``trace_id``."""
 
-        if prior is not None and not isinstance(prior, ExtractionResult):
-            raise TypeError(
-                f"prior must be the ExtractionResult of the earlier turn, got "
-                f"{type(prior).__name__}: it is carried over only when the text "
-                f"routes to the schema it came from, which a bare dict does not name."
-            )
-        # What each extractor left behind so far, by name; kuhaku keeps no state, so it
-        # rides along in the results the caller hands back.
-        earlier: dict[str, dict[str, Any]] = {}
-        if prior is not None:
-            earlier.update(prior.metadata.get(EARLIER_KEY) or {})
-            if prior.schema_name and prior.data is not None:
-                earlier[prior.schema_name] = prior.data
+        if not isinstance(text, str):
+            raise TypeError(f"text must be a str, got {type(text).__name__}.")
+        earlier = _earlier(prior)
         with traced_call("extraction.router", logger, trace_id=trace_id) as (tid, _rec):
             try:
-                name = self.route(text, history=history, reference=reference)
+                # The choice sees what each extractor already holds, so a reply that
+                # only makes sense as the rest of an order goes to the order.
+                name = self._route(text, history, reference, earlier)
             except InputBlocked as blocked:
                 self._audit(text, tid, ExtractionStatus.BLOCKED)
                 return ExtractionResult(
@@ -301,6 +322,24 @@ class Router:
         result = self.extract(query)
         answer = {"schema": result.schema_name or None, "data": result.data}
         return evaluation_sample(query, result, answer_data=answer)
+
+
+def _earlier(prior: ExtractionResult[Any] | None) -> dict[str, dict[str, Any]]:
+    """What each extractor left behind so far, by name. kuhaku keeps no state, so it
+    rides along in the results the caller hands back."""
+
+    if prior is not None and not isinstance(prior, ExtractionResult):
+        raise TypeError(
+            f"prior must be the ExtractionResult of the earlier turn, got "
+            f"{type(prior).__name__}: it is carried over only when the text "
+            f"routes to the schema it came from, which a bare dict does not name."
+        )
+    earlier: dict[str, dict[str, Any]] = {}
+    if prior is not None:
+        earlier.update(prior.metadata.get(EARLIER_KEY) or {})
+        if prior.schema_name and prior.data is not None:
+            earlier[prior.schema_name] = prior.data
+    return earlier
 
 
 def _call_route(route: Route, request: RouteRequest) -> object:

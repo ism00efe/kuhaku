@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then nothing is carried over, so a finished extraction no longer leaks its values into
   the next one. A list is always the whole list (the model repeats the items it keeps).
   The wording is `ExtractionPrompts.new_object`.
+- With `Extractor([...])` and `prior=`, choosing the extractor sees what each one already
+  holds, so a bare "2 boxes" after an order goes to the order without a routing rule.
+  `route()` takes `prior=` too; custom routes get it as `RouteRequest.earlier`. The
+  wording is `ExtractionPrompts.route_earlier`.
 - `StructuredMatchMetric` in `kuhaku.evaluation`: `field_accuracy` and `exact_match` of a
   JSON answer against a JSON `golden_answer`.
 - **OpenRouter** as an LLM provider (`openrouter`, `OPENROUTER_API_KEY`), defaulting to a
