@@ -97,7 +97,8 @@ required field missing (or what `prior=` already holds), and `NO_MATCH` from a r
 
 The other fields:
 
-- `value` — an instance of your model, set only when the status is `COMPLETE`.
+- `value` — the extracted values as an object (`result.value.time`), set only when the
+  status is `COMPLETE`; with a Pydantic class, an instance of it.
 - `data` — the model's last output as a plain dict, kept even when it did not validate,
   so you can show what was understood so far.
 - `missing_slots` — JSON Pointers of the required fields the text did not provide.
