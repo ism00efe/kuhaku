@@ -67,6 +67,7 @@ print(result.data)      # {'product': 'tea', 'quantity': 3}
 
 That is the whole conversation loop: kuhaku keeps no state, so pass the previous result
 back as `prior=` with each new message, and send `result.question` while there is one.
+A message that starts a new order carries nothing over from the finished one.
 A field kuhaku should ask for must be required — one that accepts `None` (`str | None`)
 is optional and never asked for. To tell orders from complaints or small talk, give it a
 list of extractors, one per kind: `Extractor([order, complaint])` picks the right one for
