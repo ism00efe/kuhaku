@@ -11,6 +11,11 @@ retry. Tools are built on top of it. Two ship today: retrieval-augmented generat
 structured extraction.
 
 > **Alpha — 0.2.0.**
+>
+> **0.2.0 is not on PyPI yet** (PyPI still has 0.1.0, without structured extraction).
+> Until it is, install from GitHub — `"kuhaku @ git+https://github.com/ism00efe/kuhaku"`,
+> or with an extra, `"kuhaku[rag] @ git+https://github.com/ism00efe/kuhaku"`. The
+> `pip install kuhaku...` commands on this page work once 0.2.0 is released.
 
 ---
 
@@ -35,7 +40,7 @@ structured extraction.
 ## Quickstart
 
 ```bash
-pip install kuhaku
+pip install "kuhaku @ git+https://github.com/ism00efe/kuhaku"   # pip install kuhaku once 0.2.0 is on PyPI
 ```
 
 Point it at a hosted model — no local server needed. Set a key and kuhaku uses it:
@@ -75,7 +80,7 @@ for routing between schemas, multi-turn slot filling, evidence checks and your o
 RAG needs a vector store and an embedding library, so it has its own extra:
 
 ```bash
-pip install "kuhaku[rag]"
+pip install "kuhaku[rag] @ git+https://github.com/ism00efe/kuhaku"   # pip install "kuhaku[rag]" once released
 ```
 
 ```python

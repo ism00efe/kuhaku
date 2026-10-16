@@ -6,8 +6,13 @@ structured data out of text instead, see [Structured extraction](extraction.md).
 
 ## Install
 
+> **0.2.0 is not on PyPI yet** (PyPI still has 0.1.0, without structured extraction).
+> Until it is, install from GitHub — `"kuhaku @ git+https://github.com/ism00efe/kuhaku"`,
+> or with an extra, `"kuhaku[rag] @ git+https://github.com/ism00efe/kuhaku"`. The
+> `pip install kuhaku...` commands on this page work once 0.2.0 is released.
+
 ```bash
-pip install "kuhaku[rag]"
+pip install "kuhaku[rag] @ git+https://github.com/ism00efe/kuhaku"   # pip install "kuhaku[rag]" once released
 ```
 
 Requires Python 3.11 or newer. `pip install kuhaku` alone is light; the `rag` extra adds
