@@ -4,7 +4,7 @@ of both (``kuhaku.tools.rag``), plus structured extraction as a second tool
 (``kuhaku.tools.extraction``).
 
 This top-level module re-exports three things: the extraction entry points
-(:class:`Extractor`, :class:`ExtractionRouter` and their schema/result types), the
+(:class:`Extractor` and its schema/result types), the
 generic core primitives (:class:`Settings`, :func:`build_llm_provider`,
 :class:`Message`/:class:`ToolCall`/:class:`ExecutionResult`) any tool built on kuhaku
 can use, and :class:`RAG` --
@@ -47,7 +47,6 @@ from .core.resolve.adapters.llm import register_llm_adapters
 from .core.sanitization import Redaction
 from .tools.extraction import (
     ExtractionResult,
-    ExtractionRouter,
     ExtractionSchema,
     ExtractionStatus,
     Extractor,
@@ -797,7 +796,6 @@ __all__ = [
     # Structured extraction, the second tool -- the entry points only; steps, routes
     # and the pipeline stay in kuhaku.tools.extraction.
     "Extractor",
-    "ExtractionRouter",
     "ExtractionSchema",
     "ExtractionResult",
     "ExtractionStatus",

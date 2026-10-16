@@ -161,7 +161,7 @@ per-request random boundary, and the rules that it is data, not instructions, ca
 replaced. PII masking, the input guard and the audit log are off by default, because each
 gets in the way of ordinary use — masking makes an e-mail impossible to extract, the
 guard refuses chat logs with `user:` lines, the audit log writes a file. One setting
-turns each on for every extraction, the router's included:
+turns each on for every extraction, the choice between several extractors included:
 
 ```bash
 export KUHAKU_EXTRACTION__SECURITY__SANITIZE=true

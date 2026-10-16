@@ -12,7 +12,6 @@ from kuhaku.core.models import Message
 from kuhaku.core.security import InputSecurity
 from kuhaku.tools.extraction import (
     EXTRACT_STEP,
-    ExtractionRouter,
     ExtractionSettings,
     ExtractionStatus,
     Extractor,
@@ -116,7 +115,7 @@ def test_router_follows_the_shared_settings_guard(tmp_path, monkeypatch):
     log = tmp_path / "audit.jsonl"
     monkeypatch.setenv("KUHAKU_EXTRACTION__SECURITY__INPUT_GUARD", "true")
     llm = ScriptedLLM()
-    router = ExtractionRouter(
+    router = Extractor(
         [Extractor(Order, llm=llm), Extractor(Complaint, llm=llm)],
         audit_log_path=str(log),
     )
@@ -132,7 +131,7 @@ def test_router_follows_the_shared_settings_guard(tmp_path, monkeypatch):
 def test_shared_sanitize_covers_the_routing_call_and_the_extraction(monkeypatch):
     monkeypatch.setenv("KUHAKU_EXTRACTION__SECURITY__SANITIZE", "true")
     llm = ScriptedLLM({"data": {"choice": "Order"}}, GOOD)
-    router = ExtractionRouter([Extractor(Order, llm=llm), Extractor(Complaint, llm=llm)])
+    router = Extractor([Extractor(Order, llm=llm), Extractor(Complaint, llm=llm)])
 
     router.extract("5 tea for ada@example.com")
 
@@ -144,7 +143,7 @@ def test_shared_sanitize_covers_the_routing_call_and_the_extraction(monkeypatch)
 def test_settings_given_in_code_reach_the_router_through_its_extractors():
     shared = ExtractionSettings(security=InputSecurity(input_guard=True))
     llm = ScriptedLLM()
-    router = ExtractionRouter(
+    router = Extractor(
         [
             Extractor(Order, llm=llm, extraction_settings=shared),
             Extractor(Complaint, llm=llm, extraction_settings=shared),

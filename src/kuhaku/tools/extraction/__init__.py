@@ -27,7 +27,7 @@ from .result import (
     MissingField,
     Provenance,
 )
-from .router import ExtractionRouter, InputBlocked, LLMRoute, Route, RouteRequest
+from .router import InputBlocked, LLMRoute, Route, RouteRequest
 from .schema import ExtractionSchema
 from .steps import (
     SECURITY_STEP,
@@ -50,7 +50,6 @@ __all__ = [
     "ExtractionContext",
     "ExtractionPrompts",
     "ExtractionResult",
-    "ExtractionRouter",
     "ExtractionSchema",
     "ExtractionSettings",
     "ExtractionStatus",

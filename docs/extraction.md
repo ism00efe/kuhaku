@@ -50,7 +50,12 @@ invoice = Extractor(
 print(person.status, invoice.status)
 ```
 
-`name` and `description` say what is being extracted; the router below chooses by them.
+A required field the text lacks is reported as missing and asked for (see
+[Asking for what is missing](#asking-for-what-is-missing)); an optional one is left `None`
+and never asked for. Make a field optional only when the conversation can do without it.
+
+`name` and `description` say what is being extracted; with [several kinds of
+message](#several-kinds-of-message), the choice between them is made by these.
 Add `instructions` for domain rules the model should follow, such as "copy product names
 exactly as written".
 
@@ -89,11 +94,11 @@ having to inspect the extracted values:
 | `NEEDS_CLARIFICATION` | Required values are not in the text — ask the user for them |
 | `INVALID` | Values were extracted, but a check (evidence, your rules) rejected them |
 | `FAILED` | The model gave no usable output, even after the allowed retries |
-| `NO_MATCH` | A router found no schema that fits the text |
+| `NO_MATCH` | Given several extractors, none fits the text |
 | `BLOCKED` | The input guard refused the input; no model saw it |
 
 An empty or blank text is answered without a model call: `NEEDS_CLARIFICATION` with every
-required field missing (or what `prior=` already holds), and `NO_MATCH` from a router.
+required field missing (or what `prior=` already holds), and `NO_MATCH` when choosing between several extractors.
 
 The other fields:
 
@@ -155,14 +160,13 @@ print(result.status)
 `history` is earlier conversation turns; `reference` is any data you already hold, such
 as the current cart. Both are shown to the model as data, never as instructions.
 
-## Routing between schemas
+## Several kinds of message
 
-When a message could be one of several things, put an extractor per schema behind an
-`ExtractionRouter`. It first decides which schema the text belongs to, then extracts with
-that schema's extractor:
+When a message could be one of several things, give `Extractor` a list of extractors,
+one per kind. It first decides which one the text belongs to, then extracts with it:
 
 ```python
-from kuhaku import ExtractionRouter, Extractor
+from kuhaku import Extractor
 
 appointment = Extractor(
     ["department", "day"], name="Appointment", description="Asks for a new appointment."
@@ -170,45 +174,48 @@ appointment = Extractor(
 cancellation = Extractor(
     ["department", "day"], name="Cancellation", description="Cancels an appointment."
 )
-router = ExtractionRouter([appointment, cancellation])
+assistant = Extractor([appointment, cancellation])
 
-result = router.extract("Please cancel tomorrow's cardiology appointment")
+result = assistant.extract("Please cancel tomorrow's cardiology appointment")
 print(result.schema_name, result.status)
 ```
 
-The router chooses by each schema's name and description — `description=`, or a
+The choice is made by each extractor's name and description — `description=`, or a
 class's docstring — so give every schema one. Choosing a schema is itself an extraction of
 a single field, so it gets the same retries, fallback models and security as any other.
 
-When no schema fits, the result is `NO_MATCH`. The router never falls back to a default
-schema: where an unclassifiable message should go is your decision.
+When none fits, the result is `NO_MATCH`. There is no default to fall back to: where an
+unclassifiable message should go is your decision. Your own rules for the choice go in
+`instructions=`, as `Extractor([...], instructions="A bare quantity continues an order.")`.
 
-Routes are a plain list, tried in order; the first that names a schema wins. A cheap
+`prior=` works the same way: pass the previous result back, whatever it was. Each
+extractor gets back only its own earlier data, so an order interrupted by a complaint or
+a "hello" is picked up again when the customer comes back to it. Pass `prior=None` to
+start a new conversation.
+
+The choice is made by `routes`, a plain list tried in order; the first that names an
+extractor wins. A cheap
 keyword rule in front of the model saves a model call when the answer is obvious:
 
 ```python
-from kuhaku import ExtractionRouter, Extractor
+from kuhaku import Extractor
 
 
 def cancel_keyword(request):
     return "Cancellation" if "cancel" in request.text.lower() else None
 
 
-router = ExtractionRouter([
+assistant = Extractor([
     Extractor(["department"], name="Appointment", description="Asks for a new appointment."),
     Extractor(["department"], name="Cancellation", description="Cancels an appointment."),
 ])
-router.routes.insert(0, cancel_keyword)
+assistant.routes.insert(0, cancel_keyword)
 
-print(router.route("cancel my cardiology appointment"))  # Cancellation
+print(assistant.route("cancel my cardiology appointment"))  # Cancellation
 ```
 
-A route returns a schema name, or `None` to let the next route decide. Your own routing
-rules for the model go in `LLMRoute(instructions="...")`, passed as
-`ExtractionRouter(..., routes=[LLMRoute(instructions=...)])`.
-
-`prior=` works through a router too; it is carried over only when the new message routes
-to the same schema, so a follow-up that changes topic starts fresh.
+A route returns an extractor's name, or `None` to let the next route decide. `route(text)`
+makes the choice without extracting.
 
 ## Steps
 
@@ -335,7 +342,8 @@ the reply format the parser depends on, are `FIXED_RULES` and cannot be replaced
 ## Settings
 
 Every extractor shares one set of settings, read from `KUHAKU_EXTRACTION__` environment
-variables. Set something once and every extraction — the router's own included — follows
+variables. Set something once and every extraction — the choice between several
+extractors included — follows
 it:
 
 | Setting | Variable | Default |
@@ -351,16 +359,16 @@ gets its own; an argument passed to `Extractor` wins over both:
 
 ```python
 from kuhaku.core.security import InputSecurity
-from kuhaku.tools.extraction import ExtractionRouter, ExtractionSettings, Extractor
+from kuhaku.tools.extraction import ExtractionSettings, Extractor
 
 shared = ExtractionSettings(max_retries=2, security=InputSecurity(input_guard=True))
 
 orders = Extractor({"product": str}, name="Order", extraction_settings=shared)
 complaints = Extractor({"topic": str}, name="Complaint", extraction_settings=shared)
-router = ExtractionRouter([orders, complaints])  # uses the first extractor's settings
+assistant = Extractor([orders, complaints])  # uses the first extractor's settings
 
 one_off = Extractor({"product": str}, extraction_settings=shared, max_retries=0)
-print(router.extraction_settings.security, one_off.pipeline)
+print(assistant.extraction_settings.security, one_off.pipeline)
 ```
 
 These settings belong to the extraction tool, not to core's `Settings` — kuhaku's core
@@ -388,8 +396,8 @@ use:
   `user:` lines and texts that only quote such a phrase, and its patterns are English.
 
 Both come from core's `InputPolicy`, the same checks every kuhaku tool can use; turn them
-on through the settings above. With the guard on, a router refuses the text before its
-own model call too.
+on through the settings above. With the guard on, choosing between several
+extractors refuses the text before its own model call too.
 
 ## Audit log
 
@@ -408,8 +416,8 @@ print(log.read_text(encoding="utf-8"))
 
 One JSON line per `extract()` call, whatever the outcome — including a call that raised.
 A record holds the trace id, a hash of the text and a PII-masked excerpt, the schema, the
-status, the issue codes and the provider; never the raw text. A router given
-`audit_log_path` also records the outcomes it ends itself (`BLOCKED`, `NO_MATCH`).
+status, the issue codes and the provider; never the raw text. Choosing between
+several extractors also records the outcomes it ends itself (`BLOCKED`, `NO_MATCH`).
 
 ## Observability
 
@@ -431,7 +439,7 @@ print(result.trace_id)  # req-1234
 
 ## Measuring it
 
-An `Extractor` and an `ExtractionRouter` are evaluation targets. Score them with
+An `Extractor` is an evaluation target, given one schema or several. Score them with
 `StructuredMatchMetric` against a golden dataset whose `golden_answer` is the expected
 object as JSON:
 
@@ -457,9 +465,9 @@ print(summary)  # {"field_accuracy": ..., "exact_match": ...}
 
 `field_accuracy` is the share of the expected values the extraction got right;
 `exact_match` is 1 only when all of them are right and no list has extra items. Strings are compared ignoring case
-and surrounding spaces, numbers by value. A router answers with
-`{"schema": ..., "data": ...}`, so one golden answer checks the routing and the values
-together. See [Evaluation](evaluation.md) for the runner and the dataset format.
+and surrounding spaces, numbers by value. Given several
+extractors it answers with `{"schema": ..., "data": ...}`, so one golden answer checks the
+choice and the values together. See [Evaluation](evaluation.md) for the runner and the dataset format.
 
 ## Limits
 

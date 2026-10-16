@@ -1,4 +1,4 @@
-"""ExtractionRouter: picking a schema, then extracting with that schema's own provider."""
+"""Extractor([...]): picking a schema, then extracting with that schema's own provider."""
 
 from __future__ import annotations
 
@@ -9,11 +9,10 @@ import pytest
 from kuhaku.core.exceptions import ConfigError, CustomComponentError
 from kuhaku.core.llm.base import LLMUnavailableError
 from kuhaku.tools.extraction import (
-    ExtractionRouter,
+    EvidenceStep,
     ExtractionSchema,
     ExtractionStatus,
     Extractor,
-    LLMRoute,
     RouteRequest,
 )
 
@@ -25,8 +24,8 @@ def pick(name):
     return {"data": {"choice": name}}
 
 
-def _router(router_llm: ScriptedLLM, order_llm=None, complaint_llm=None, **kwargs):
-    return ExtractionRouter(
+def _router(router_llm: ScriptedLLM, order_llm=None, complaint_llm=None, routes=None, **kwargs):
+    router = Extractor(
         [
             Extractor(Order, llm=order_llm or ScriptedLLM(name="order:m")),
             Extractor(Complaint, llm=complaint_llm or ScriptedLLM(name="complaint:m")),
@@ -34,6 +33,9 @@ def _router(router_llm: ScriptedLLM, order_llm=None, complaint_llm=None, **kwarg
         llm=router_llm,
         **kwargs,
     )
+    if routes is not None:
+        router.routes[:] = routes
+    return router
 
 
 def test_each_schema_is_extracted_by_its_own_provider():
@@ -105,7 +107,7 @@ def test_route_fallback_and_instructions():
         ScriptedLLM("x", "x"),
         order_llm,
         fallback_llms=[strong],
-        routes=[LLMRoute(instructions="A bare quantity continues an order.")],
+        instructions="A bare quantity continues an order.",
     )
 
     assert router.extract("5").schema_name == "Order"
@@ -158,7 +160,7 @@ def test_prior_carries_over_only_to_the_same_schema():
 
 def test_duplicate_schema_names_are_refused():
     with pytest.raises(ConfigError):
-        ExtractionRouter(
+        Extractor(
             [
                 Extractor(Order, llm=ScriptedLLM()),
                 Extractor(ExtractionSchema(Complaint, name="Order"), llm=ScriptedLLM()),
@@ -166,14 +168,32 @@ def test_duplicate_schema_names_are_refused():
         )
 
 
-def test_a_router_needs_an_extractor():
+def test_an_empty_list_is_refused():
+    with pytest.raises(TypeError):
+        Extractor([])
+
+
+def test_a_list_mixing_field_names_and_extractors_is_refused():
+    with pytest.raises(TypeError, match="not both"):
+        Extractor(["product", Extractor(Order, llm=ScriptedLLM())])
+
+
+def test_options_of_one_extractor_are_refused_on_a_list():
+    with pytest.raises(ConfigError, match="belong on the extractors"):
+        Extractor([Extractor(Order, llm=ScriptedLLM())], steps=[EvidenceStep()])
+
+
+def test_one_schema_has_no_route_and_a_list_has_no_preview():
+    single = Extractor(Order, llm=ScriptedLLM())
     with pytest.raises(ConfigError):
-        ExtractionRouter([])
+        single.route("5 tea")
+    with pytest.raises(ConfigError):
+        Extractor([single], llm=ScriptedLLM()).preview("5 tea")
 
 
 def test_routes_default_to_the_first_extractors_provider():
     order_llm = ScriptedLLM(pick("Order"), {"data": {"product": "tea", "quantity": 5}})
-    router = ExtractionRouter([Extractor(Order, llm=order_llm, enable_token_tracking=False)])
+    router = Extractor([Extractor(Order, llm=order_llm, enable_token_tracking=False)])
 
     assert router.llm is order_llm
     assert router.extract("5 tea").ok
@@ -194,3 +214,22 @@ def test_a_non_str_text_is_the_callers_type_error():
     router = _router(ScriptedLLM())
     with pytest.raises(TypeError, match="text must be a str"):
         router.extract(None)
+
+
+def test_an_interrupted_order_is_picked_up_after_a_complaint_and_a_greeting():
+    order_llm = ScriptedLLM(
+        {"data": {"product": "tea", "quantity": None}},
+        {"data": {"product": None, "quantity": 5}},
+    )
+    complaint_llm = ScriptedLLM({"data": {"topic": "late"}})
+    router_llm = ScriptedLLM(pick("Order"), pick("Complaint"), pick(None), pick("Order"))
+    router = _router(router_llm, order_llm, complaint_llm)
+
+    result = None
+    for message in ["tea", "it was late", "hello", "5 kilo"]:
+        result = router.extract(message, prior=result)
+
+    assert result.schema_name == "Order"
+    assert result.value == Order(product="tea", quantity=5)
+    # The complaint's data stays aside for when the conversation comes back to it.
+    assert result.metadata["earlier"] == {"Complaint": {"topic": "late"}}

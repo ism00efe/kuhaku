@@ -1,6 +1,7 @@
 """Choosing which schema a text belongs to, before extracting it.
 
-An :class:`ExtractionRouter` holds several :class:`Extractor` objects and a chain of
+``Extractor([order, complaint])`` -- an :class:`Extractor` given a list of extractors --
+routes through the :class:`Router` here. It holds the extractors and a chain of
 routes. Each route looks at the text and returns a schema name or ``None`` ("not my
 call"); the first name wins. Routes are plain callables, so a cheap keyword rule can
 sit in front of the LLM route, the LLM route can be dropped entirely, or replaced.
@@ -24,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from kuhaku.core.exceptions import ConfigError, CustomComponentError, KuhakuError
@@ -46,11 +47,14 @@ logger = logging.getLogger(__name__)
 
 CHOICE_FIELD = "choice"
 
+# Where a result keeps the data the other extractors left behind (see Router.extract).
+EARLIER_KEY = "earlier"
+
 
 class InputBlocked(KuhakuError):
     """A route's own model call was refused by the input guard. ``issues`` holds why.
-    :meth:`ExtractionRouter.extract` turns it into a ``BLOCKED`` result; it reaches the
-    caller only from :meth:`ExtractionRouter.route`."""
+    :meth:`Router.extract` turns it into a ``BLOCKED`` result; it reaches the
+    caller only from :meth:`Extractor.route`."""
 
     def __init__(self, issues: Sequence[Issue]) -> None:
         self.issues = tuple(issues)
@@ -138,8 +142,9 @@ class LLMRoute:
         return choice
 
 
-class ExtractionRouter:
-    """Routes a text to one of several extractors, then extracts with it.
+class Router:
+    """Routes a text to one of several extractors, then extracts with it. Built by
+    :class:`Extractor` when it is given a list of extractors; not used directly.
 
     ``routes`` defaults to ``[LLMRoute()]``. It is a plain list on the instance --
     ``router.routes.insert(0, keyword_rule)`` puts a rule in front of the LLM,
@@ -163,7 +168,7 @@ class ExtractionRouter:
         extraction_settings: ExtractionSettings | None = None,
     ) -> None:
         if not extractors:
-            raise ConfigError("ExtractionRouter needs at least one Extractor.")
+            raise ConfigError("Routing needs at least one Extractor.")
         self.extraction_settings = extraction_settings or extractors[0].extraction_settings
         if audit_log_path is None:
             audit_log_path = self.extraction_settings.audit_log_path
@@ -226,19 +231,29 @@ class ExtractionRouter:
         prior: ExtractionResult[Any] | None = None,
         trace_id: str | None = None,
     ) -> ExtractionResult[Any]:
-        """Route, then extract. ``prior`` is carried over only when the text routes to
-        the same schema it came from -- a follow-up that changes topic starts fresh.
-        That check needs the schema name, which is why ``prior`` here is a result and
-        not a bare ``data`` dict as :meth:`Extractor.extract` also accepts.
+        """Route, then extract. ``prior`` is the previous result, whatever it was: the
+        data each extractor left behind travels in results under
+        ``metadata["earlier"]``, so an order interrupted by a complaint or a greeting is
+        picked up again when the conversation comes back to it, and only the data of the
+        extractor the text goes to is carried in. That needs the schema names, which is
+        why ``prior`` here is a result and not a bare ``data`` dict as
+        :meth:`Extractor.extract` also accepts.
 
         Routing and extraction share one ``trace_id``."""
 
         if prior is not None and not isinstance(prior, ExtractionResult):
             raise TypeError(
                 f"prior must be the ExtractionResult of the earlier turn, got "
-                f"{type(prior).__name__}: the router carries it over only when the text "
+                f"{type(prior).__name__}: it is carried over only when the text "
                 f"routes to the schema it came from, which a bare dict does not name."
             )
+        # What each extractor left behind so far, by name; kuhaku keeps no state, so it
+        # rides along in the results the caller hands back.
+        earlier: dict[str, dict[str, Any]] = {}
+        if prior is not None:
+            earlier.update(prior.metadata.get(EARLIER_KEY) or {})
+            if prior.schema_name and prior.data is not None:
+                earlier[prior.schema_name] = prior.data
         with traced_call("extraction.router", logger, trace_id=trace_id) as (tid, _rec):
             try:
                 name = self.route(text, history=history, reference=reference)
@@ -249,16 +264,21 @@ class ExtractionRouter:
                     schema_name="",
                     issues=blocked.issues,
                     trace_id=tid,
+                    metadata={EARLIER_KEY: earlier},
                 )
             if name is None:
                 self._audit(text, tid, ExtractionStatus.NO_MATCH)
                 return ExtractionResult(
-                    status=ExtractionStatus.NO_MATCH, schema_name="", trace_id=tid
+                    status=ExtractionStatus.NO_MATCH,
+                    schema_name="",
+                    trace_id=tid,
+                    metadata={EARLIER_KEY: earlier},
                 )
-            carried = prior if prior is not None and prior.schema_name == name else None
-            return self.extractors[name].extract(
+            carried = earlier.pop(name, None)
+            result = self.extractors[name].extract(
                 text, history=history, reference=reference, prior=carried
             )
+            return replace(result, metadata={**result.metadata, EARLIER_KEY: earlier})
 
     def _audit(self, text: str, trace_id: str, status: ExtractionStatus) -> None:
         if self.audit_log_path is None:

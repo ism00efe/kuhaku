@@ -82,7 +82,7 @@ went suspiciously quiet.
 |---|---|---|
 | `StructuredMatchMetric` | `field_accuracy`, `exact_match` | `golden_answer` holding the expected object as JSON |
 
-`Extractor` and `ExtractionRouter` answer with JSON, so they can be passed to `run()`
+`Extractor` answers with JSON, so they can be passed to `run()`
 directly — see [Structured extraction → Measuring it](extraction.md#measuring-it).
 
 The `k` on a metric is independent of the `top_k` you pass to `run()`. Retrieve 10 and

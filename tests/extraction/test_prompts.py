@@ -9,9 +9,7 @@ from kuhaku.tools.extraction import (
     FIXED_RULES,
     EvidenceStep,
     ExtractionPrompts,
-    ExtractionRouter,
     Extractor,
-    LLMRoute,
 )
 
 from .conftest import Complaint, Order, ScriptedLLM
@@ -71,10 +69,10 @@ def test_retry_evidence_and_slot_filling_texts_are_replaceable():
 
 def test_route_text_is_replaceable():
     router_llm = ScriptedLLM({"data": {"choice": "Order"}})
-    router = ExtractionRouter(
+    router = Extractor(
         [Extractor(Order, llm=ScriptedLLM(GOOD)), Extractor(Complaint, llm=ScriptedLLM())],
         llm=router_llm,
-        routes=[LLMRoute(prompts={"route": "ŞEMALAR:\n{schemas}"})],
+        prompts={"route": "ŞEMALAR:\n{schemas}"},
     )
     router.extract("5 tea")
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 from kuhaku.tools.extraction import (
-    ExtractionRouter,
     ExtractionSettings,
     ExtractionStatus,
     Extractor,
@@ -58,7 +57,7 @@ def test_the_routing_call_is_not_audited_as_an_extraction(monkeypatch, tmp_path)
     log = tmp_path / "audit.jsonl"
     monkeypatch.setenv("KUHAKU_EXTRACTION__AUDIT_LOG_PATH", str(log))
     llm = ScriptedLLM({"data": {"choice": "Order"}}, GOOD)
-    router = ExtractionRouter([Extractor(Order, llm=llm), Extractor(Complaint, llm=llm)])
+    router = Extractor([Extractor(Order, llm=llm), Extractor(Complaint, llm=llm)])
 
     router.extract("5 tea")
 

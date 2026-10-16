@@ -18,14 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ValidationStep` — that can be added to, removed, replaced, enabled and disabled.
   Multi-turn slot filling through `prior=`, with `history=` and `reference=` for
   resolving what a message refers to. Retries with the problem fed back
-  (`max_retries`) and fallback models (`fallback_llms`). `ExtractionRouter` chooses the
-  schema a text belongs to — itself an extraction — behind a list of routes a keyword
-  rule can sit in front of; no default schema. Every prompt text is replaceable through
+  (`max_retries`) and fallback models (`fallback_llms`). `Extractor([...])` — a list of
+  extractors — chooses the one a text belongs to (itself an extraction) behind a list of
+  routes a keyword rule can sit in front of; no default. Every prompt text is replaceable through
   `ExtractionPrompts` except the fixed safety and format rules, and `preview()` shows a
   request without sending it. Shared `ExtractionSettings` (`KUHAKU_EXTRACTION__*`):
   `max_retries`, `audit_log_path`, and `security` (PII masking and the input guard, both
-  off by default), applied to every extraction, the router's included. Extractors and
-  routers are evaluation targets.
+  off by default), applied to every extraction, the choice between extractors included. Extractors
+  are evaluation targets.
 - `result.missing_fields` (name and description of each missing field) and
   `result.question`, a ready question asking for them, built without a model call; its
   wording is `ExtractionSettings.clarification_question`. An empty text is answered
