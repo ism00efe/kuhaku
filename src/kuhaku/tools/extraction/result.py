@@ -111,6 +111,18 @@ def status_from_issues(issues: Iterable[Issue]) -> ExtractionStatus:
 
 
 @dataclass(frozen=True)
+class MissingField:
+    """A required field the text did not provide, as the schema describes it."""
+
+    path: str
+    """JSON Pointer, e.g. ``/lines/1/quantity``."""
+    name: str
+    """The field's own name, e.g. ``quantity``."""
+    description: str | None = None
+    """The schema's description of the field, when it has one."""
+
+
+@dataclass(frozen=True)
 class ExtractionResult(Generic[M]):
     """What :meth:`Extractor.extract` returns.
 
@@ -119,6 +131,12 @@ class ExtractionResult(Generic[M]):
     show what was understood so far or carry it into a follow-up turn. ``fields`` is
     empty unless the evidence step is enabled. ``trace_id`` is the id every log record
     and span of this extraction carries, to find them again.
+
+    ``missing_fields`` names each field in :attr:`missing_slots` with the schema's
+    description of it, and ``question`` -- set only when the status is
+    ``NEEDS_CLARIFICATION`` -- is a ready question asking for them, built from those
+    descriptions (the name when a field has none) without a model call. Its wording is
+    ``ExtractionSettings.clarification_question``.
     """
 
     status: ExtractionStatus
@@ -130,6 +148,8 @@ class ExtractionResult(Generic[M]):
     attempts: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     trace_id: str = ""
+    missing_fields: tuple[MissingField, ...] = ()
+    question: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -144,3 +164,11 @@ class ExtractionResult(Generic[M]):
             for issue in self.issues
             if issue.kind is IssueKind.NEEDS_CLARIFICATION and issue.path is not None
         )
+
+
+def clarification_question(template: str, missing: Iterable[MissingField]) -> str | None:
+    """``template`` with ``{fields}`` replaced by the missing fields' descriptions (or
+    names), in order and without repeats; ``None`` when nothing is missing."""
+
+    asked = list(dict.fromkeys(item.description or item.name for item in missing))
+    return template.replace("{fields}", ", ".join(asked)) if asked else None

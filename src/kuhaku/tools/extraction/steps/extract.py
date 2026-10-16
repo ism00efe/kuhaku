@@ -83,6 +83,17 @@ class ExtractStep(Step):
         return system, user
 
     def run(self, ctx: ExtractionContext) -> None:
+        if not ctx.text.strip():
+            # An empty text contains no values -- what the model would answer, known
+            # without paying for a call.
+            data: dict[str, Any] = {
+                field.alias or name: None for name, field in ctx.schema.model.model_fields.items()
+            }
+            value, missing, errors = validate_data(ctx.schema.model, data)
+            ctx.response, ctx.data, ctx.value = {"data": data}, data, value
+            ctx.issues.extend(errors + missing)
+            return
+
         system, user = self.build_prompts(ctx)
 
         providers = [ctx.llm, *self.fallbacks]

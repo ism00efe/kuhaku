@@ -33,6 +33,12 @@ class ExtractionSettings(BaseSettings):
     audit_log_path: str | None = None
     """Where audit records go. Unset means no audit log -- it writes a file."""
 
+    clarification_question: str = "Could you also tell me: {fields}?"
+    """The wording of ``result.question`` -- ``{fields}`` becomes the missing fields'
+    descriptions (or names), comma-separated. Write it in your users' language, e.g.
+    ``KUHAKU_EXTRACTION__CLARIFICATION_QUESTION="Şunu da yazar mısınız: {fields}?"``;
+    an empty string turns the question off."""
+
     security: InputSecurity = Field(default_factory=InputSecurity)
     """Core's input checks (:class:`~kuhaku.core.security.input_policy.InputSecurity`),
     run by :class:`SecurityStep` on every extraction. A check core adds shows up here

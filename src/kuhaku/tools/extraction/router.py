@@ -99,7 +99,9 @@ class LLMRoute:
         self.prompts = as_prompts(prompts)
 
     def __call__(self, request: RouteRequest) -> str | None:
-        names = tuple(schema.name for schema in request.schemas)
+        if not request.text.strip():
+            return None  # an empty text fits no schema; no model call needed to know
+        names =tuple(schema.name for schema in request.schemas)
         catalogue = "\n".join(
             f"- {schema.name}: {schema.description or '(no description)'}"
             for schema in request.schemas
@@ -188,6 +190,9 @@ class ExtractionRouter:
     def route(
         self, text: str, *, history: Sequence[Message] = (), reference: Any = None
     ) -> str | None:
+        if not isinstance(text, str):
+            # Checked here, not left to a route: a route would report it as its own bug.
+            raise TypeError(f"text must be a str, got {type(text).__name__}.")
         request = RouteRequest(
             text=text,
             schemas=tuple(e.schema for e in self.extractors.values()),

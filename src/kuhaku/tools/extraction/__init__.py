@@ -24,6 +24,7 @@ from .result import (
     FieldReport,
     Issue,
     IssueKind,
+    MissingField,
     Provenance,
 )
 from .router import ExtractionRouter, InputBlocked, LLMRoute, Route, RouteRequest
@@ -59,6 +60,7 @@ __all__ = [
     "Issue",
     "IssueKind",
     "LLMRoute",
+    "MissingField",
     "OutputParseError",
     "Pipeline",
     "Provenance",

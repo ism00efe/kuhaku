@@ -120,6 +120,40 @@ def model_from_fields(fields: FieldSpec, name: str) -> type[BaseModel]:
     return create_model(_class_name(name), **definitions)  # type: ignore[call-overload,no-any-return]
 
 
+def describe_path(model: type[BaseModel], path: str) -> tuple[str, str | None]:
+    """``(field name, description)`` of the field a JSON Pointer such as
+    ``/lines/1/price`` points at; list indexes are stepped over. The description is
+    ``None`` when the field has none, or the path leaves the model."""
+
+    parts = [part.replace("~1", "/").replace("~0", "~") for part in path.split("/")[1:]]
+    name, description = (parts[-1] if parts else ""), None
+    current: type[BaseModel] | None = model
+    for part in parts:
+        if part.isdigit():
+            continue
+        fields = current.model_fields if current is not None else {}
+        info = fields.get(part) or next(
+            (f for f in fields.values() if f.alias == part), None
+        )
+        if info is None:
+            return name, None
+        name, description = part, info.description
+        current = _model_in(info.annotation)
+    return name, description
+
+
+def _model_in(annotation: Any) -> type[BaseModel] | None:
+    """The model class inside ``annotation`` -- itself, or inside list[...] / X | None."""
+
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for arg in typing.get_args(annotation):
+        found = _model_in(arg)
+        if found is not None:
+            return found
+    return None
+
+
 def _annotation(spec: Any, nested_name: str) -> Any:
     if isinstance(spec, Mapping):
         return model_from_fields(spec, nested_name)

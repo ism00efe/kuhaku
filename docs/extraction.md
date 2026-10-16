@@ -92,12 +92,19 @@ having to inspect the extracted values:
 | `NO_MATCH` | A router found no schema that fits the text |
 | `BLOCKED` | The input guard refused the input; no model saw it |
 
+An empty or blank text is answered without a model call: `NEEDS_CLARIFICATION` with every
+required field missing (or what `prior=` already holds), and `NO_MATCH` from a router.
+
 The other fields:
 
 - `value` — an instance of your model, set only when the status is `COMPLETE`.
 - `data` — the model's last output as a plain dict, kept even when it did not validate,
   so you can show what was understood so far.
 - `missing_slots` — JSON Pointers of the required fields the text did not provide.
+- `missing_fields` — the same fields with their `name` and the schema's `description`.
+- `question` — when the status is `NEEDS_CLARIFICATION`, a ready question asking for
+  them, built from the descriptions without a model call (see [Settings](#settings) to
+  word it in your users' language).
 - `issues` — every problem found, each with a `kind`, a `code`, a `message` and the
   `path` of the field concerned.
 - `fields` — per-field evidence reports, filled only by the evidence step.
@@ -119,7 +126,8 @@ from kuhaku import Extractor
 extractor = Extractor(["department", "day", "time"])
 
 first = extractor.extract("A cardiology appointment tomorrow, please")
-# first.status is NEEDS_CLARIFICATION, first.missing_slots is ('/time',)
+print(first.question)  # Could you also tell me: time?  -- send it to the user
+
 
 second = extractor.extract("3 pm", prior=first)
 print(second.status, second.data)
@@ -333,6 +341,7 @@ it:
 |---|---|---|
 | `max_retries` | `KUHAKU_EXTRACTION__MAX_RETRIES` | `1` |
 | `audit_log_path` | `KUHAKU_EXTRACTION__AUDIT_LOG_PATH` | unset — no audit log |
+| `clarification_question` | `KUHAKU_EXTRACTION__CLARIFICATION_QUESTION` | `Could you also tell me: {fields}?` — empty turns it off |
 | `security.sanitize` | `KUHAKU_EXTRACTION__SECURITY__SANITIZE` | `false` |
 | `security.input_guard` | `KUHAKU_EXTRACTION__SECURITY__INPUT_GUARD` | `false` |
 

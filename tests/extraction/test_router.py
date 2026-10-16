@@ -183,3 +183,14 @@ def test_router_refuses_a_bare_dict_as_prior():
     router = _router(ScriptedLLM())  # any call fails the test
     with pytest.raises(TypeError, match="ExtractionResult"):
         router.extract("5 tea", prior={"product": "tea"})
+
+
+def test_an_empty_text_is_no_match_without_a_model_call():
+    router = _router(ScriptedLLM())  # any call fails the test
+    assert router.extract("  ").status is ExtractionStatus.NO_MATCH
+
+
+def test_a_non_str_text_is_the_callers_type_error():
+    router = _router(ScriptedLLM())
+    with pytest.raises(TypeError, match="text must be a str"):
+        router.extract(None)

@@ -212,3 +212,51 @@ def test_prior_without_the_slot_filling_step_is_refused():
 
     with pytest.raises(ConfigError):
         extractor.extract("5 kilo", prior={"product": "tea"})
+
+
+@pytest.mark.parametrize("text", ["", "   \n"])
+def test_an_empty_text_needs_no_model_call(text):
+    llm = ScriptedLLM()  # any call fails the test
+    result = Extractor(Order, llm=llm).extract(text)
+
+    assert result.status is ExtractionStatus.NEEDS_CLARIFICATION
+    assert set(result.missing_slots) == {"/product", "/quantity"}
+    assert result.attempts == 0 and llm.calls == []
+
+
+def test_an_empty_text_keeps_what_an_earlier_turn_found():
+    llm = ScriptedLLM()  # any call fails the test
+    result = Extractor(Order, llm=llm).extract("", prior={"product": "tea", "quantity": None})
+
+    assert result.data == {"product": "tea", "quantity": None}
+    assert result.missing_slots == ("/quantity",)
+
+
+def test_missing_fields_carry_their_description_and_a_ready_question():
+    llm = ScriptedLLM({"data": {"product": "tea", "quantity": None, "unit": None}})
+    extractor = Extractor(
+        {"product": str, "quantity": (float, "how many"), "unit": str | None}, llm=llm
+    )
+    result = extractor.extract("tea please")
+
+    assert [(m.path, m.name, m.description) for m in result.missing_fields] == [
+        ("/quantity", "quantity", "how many")
+    ]
+    assert result.question == "Could you also tell me: how many?"
+
+
+def test_the_question_wording_comes_from_the_shared_settings(monkeypatch):
+    monkeypatch.setenv("KUHAKU_EXTRACTION__CLARIFICATION_QUESTION", "Şunu da yazar mısınız: {fields}?")
+    llm = ScriptedLLM({"data": {"lines": [{"item": "çay", "qty": None}], "day": None}})
+    extractor = Extractor({"lines": [{"item": str, "qty": float}], "day": (str, "teslim günü")}, llm=llm)
+    result = extractor.extract("çay yaz")
+
+    assert [m.path for m in result.missing_fields] == ["/lines/0/qty", "/day"]
+    assert result.question == "Şunu da yazar mısınız: qty, teslim günü?"
+
+
+def test_no_question_when_nothing_is_missing_or_it_is_turned_off(monkeypatch):
+    assert Extractor(Order, llm=ScriptedLLM({"data": {"product": "tea", "quantity": 5}})).extract("5 tea").question is None
+    monkeypatch.setenv("KUHAKU_EXTRACTION__CLARIFICATION_QUESTION", "")
+    result = Extractor(Order, llm=ScriptedLLM({"data": {"product": "tea", "quantity": None}})).extract("tea")
+    assert result.missing_fields and result.question is None

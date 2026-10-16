@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `max_retries`, `audit_log_path`, and `security` (PII masking and the input guard, both
   off by default), applied to every extraction, the router's included. Extractors and
   routers are evaluation targets.
+- `result.missing_fields` (name and description of each missing field) and
+  `result.question`, a ready question asking for them, built without a model call; its
+  wording is `ExtractionSettings.clarification_question`. An empty text is answered
+  without a model call.
 - `StructuredMatchMetric` in `kuhaku.evaluation`: `field_accuracy` and `exact_match` of a
   JSON answer against a JSON `golden_answer`.
 - **OpenRouter** as an LLM provider (`openrouter`, `OPENROUTER_API_KEY`), defaulting to a

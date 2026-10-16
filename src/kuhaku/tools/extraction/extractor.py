@@ -150,7 +150,7 @@ class Extractor(Generic[M]):
             except Exception as exc:
                 self._audit(text, tid, status="error", error=type(exc).__name__)
                 raise
-            result = ctx.to_result()
+            result = ctx.to_result(self.extraction_settings.clarification_question)
             rec.set(outcome=result.status.value, attempts=result.attempts)
             self._audit(
                 text,
