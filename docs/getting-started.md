@@ -23,10 +23,18 @@ with several set, it continues with the one you used last.
 **A hosted model** — nothing to run locally:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...    # free models available
-# or OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY -- or pin one:
-export KUHAKU_LLM_PROVIDER=openrouter
+export OPENAI_API_KEY=sk-...           # macOS / Linux
 ```
+
+```powershell
+$env:OPENAI_API_KEY = "sk-..."         # Windows PowerShell
+```
+
+Or in Python, before kuhaku is used: `os.environ["OPENAI_API_KEY"] = "sk-..."`.
+`ANTHROPIC_API_KEY`, `GROQ_API_KEY` and `OPENROUTER_API_KEY` work the same way — see
+[Providers](providers.md).
+
+To pick one provider when several keys are set, pin it: `KUHAKU_LLM_PROVIDER=openai`.
 
 **A local model** — no API key, no data leaving the machine:
 

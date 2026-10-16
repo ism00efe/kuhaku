@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-10-17
+
+### Fixed
+
+- The Quickstart shows how to set an API key on macOS/Linux, on Windows PowerShell and
+  from Python, with `OPENAI_API_KEY` as the example.
+- The `auto` LLM notice no longer calls Ollama "the documented baseline" when an API key
+  was chosen; it says what `KUHAKU_AUTO=false` would pick instead.
+- `docs/providers.md` gives the current `auto` order: any provider with a key comes
+  before a local Ollama.
+- The remaining non-English examples in the docs are in English.
+
 ## [0.2.0] — 2026-10-17
 
 ### Added

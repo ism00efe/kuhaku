@@ -89,7 +89,7 @@ def _gap_message(kind: str, candidates: list[Candidate]) -> str:
 def _chosen_message(kind: str, candidate: Candidate, baseline_id: str | None) -> str:
     tail = ""
     if baseline_id and baseline_id != candidate.id:
-        tail = f" (the documented baseline is '{baseline_id}')"
+        tail = f" (with KUHAKU_AUTO=false it would be '{baseline_id}')"
     return (
         f"{kind}: using {candidate.label} -- the only option usable now"
         f"{tail}. {_override_hint(kind)}"
@@ -102,7 +102,7 @@ def _skipped_message(
     others = ", ".join(c.id for c in ready)
     tail = ""
     if baseline_id and baseline_id != chosen.id:
-        tail = f" The documented baseline is '{baseline_id}'."
+        tail = f" With KUHAKU_AUTO=false it would be '{baseline_id}'."
     return (
         f"{kind}: {len(ready)} options were usable ({others}) but no interactive "
         f"terminal was available, so '{chosen.label}' was chosen as the lowest-risk "

@@ -22,8 +22,8 @@ credentials and the Ollama server's model list. See [Configuration → Auto](con
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `google/gemma-4-31b-it:free` |
 
 Groq and OpenRouter are OpenAI-compatible endpoints. Groq has a free tier and is tried
-last in `auto`. OpenRouter's default model is a free one, so in `auto` it comes right
-after a local Ollama and before every paid provider. Either way the prompt leaves your
+last in `auto`. OpenRouter's default model is a free one, so in `auto` it comes before the paid
+providers; any provider with a key comes before a local Ollama. Either way the prompt leaves your
 machine.
 
 ### OpenRouter
