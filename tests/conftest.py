@@ -34,6 +34,22 @@ def _isolate_kuhaku_decisions(tmp_path_factory, monkeypatch):
     _reset_default_ui()  # so announcement-dedupe state does not leak between tests
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_write_paths(tmp_path_factory, monkeypatch):
+    """Run every test from a throwaway working directory.
+
+    The kuhaku-managed default locations -- the audit log (``./logs/
+    kuhaku_audit.jsonl``) and the standalone QA-cache fallback (``./data/
+    kuhaku_qa_cache.sqlite3``) -- are relative to the current working directory, so
+    every test that built an engine with audit on (the default) or a cache without an
+    explicit path wrote into the working tree. Changing directory, rather than patching
+    the two constants, keeps the tests that assert those defaults resolve against the
+    working directory (``tests/security/test_audit.py``) meaningful. No test reads repo
+    files through a relative path; they resolve them from ``__file__``."""
+
+    monkeypatch.chdir(tmp_path_factory.mktemp("kuhaku_cwd"))
+
+
 def _matching_samples(instrument, family_name: str, sample_name: str, labels: dict[str, str]):
     # Prometheus label names may not contain a ".": the OTel Prometheus exporter
     # sanitizes attribute keys by replacing "." with "_" on export (verified against the
@@ -122,9 +138,13 @@ def _matches_where(chunk: Chunk, where: dict | None) -> bool:
         return True
     if "$or" in where:
         return any(_matches_where(chunk, clause) for clause in where["$or"])
+    if "$and" in where:
+        return all(_matches_where(chunk, clause) for clause in where["$and"])
     ((key, cond),) = where.items()
     if key == ACCESS_TAGS_NONE_KEY:
         return not chunk.access_tags
+    if key in ("doc_type", "document_id") and isinstance(cond, str):
+        return getattr(chunk, key) == cond
     if key == "access_tags" and isinstance(cond, dict) and "$contains" in cond:
         return cond["$contains"] in chunk.access_tags
     raise ValueError(f"FakeVectorStore: unsupported where clause {where!r}")
@@ -144,7 +164,14 @@ class FakeVectorStore:
         self.query_where_calls: list[dict | None] = []
 
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
-        self._chunks.extend(chunks)
+        # Upsert by chunk id, like ChromaVectorStore.
+        new_ids = {c.id for c in chunks}
+        self._chunks = [c for c in self._chunks if c.id not in new_ids] + list(chunks)
+
+    def delete_document(self, document_id: str) -> int:
+        before = len(self._chunks)
+        self._chunks = [c for c in self._chunks if c.document_id != document_id]
+        return before - len(self._chunks)
 
     def query(
         self, embedding: list[float], top_k: int, *, where: dict | None = None
@@ -234,7 +261,7 @@ class FakeCache:
         self.get_calls.append(cache_key)
         return self._store.get(cache_key)
 
-    def put(self, cache_key: str, answer_text: str) -> None:
+    def put(self, cache_key: str, answer_text: str, document_ids=()) -> None:
         self.put_calls.append((cache_key, answer_text))
         self._store[cache_key] = answer_text
 

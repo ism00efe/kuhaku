@@ -7,14 +7,22 @@ OpenRouter's base URL and its own error text, like :mod:`.groq_provider`. Select
 
 from __future__ import annotations
 
-from .base import LLMError
+from dataclasses import replace
+
+from .base import LLMError, StructuredOutputMode
 from .openai_provider import OpenAIProvider
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 class OpenRouterProvider(OpenAIProvider):
+    # JSON mode, not a JSON schema: OpenRouter forwards response_format to the routed
+    # model, and many models (the free default among them) reject json_schema.
+    capabilities = replace(
+        OpenAIProvider.capabilities, structured_output=StructuredOutputMode.JSON
+    )
     _service = "openrouter"
+    _error_prefix = "OpenRouter"
 
     def __init__(
         self,

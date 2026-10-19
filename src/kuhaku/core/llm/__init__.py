@@ -16,6 +16,14 @@ calls it instead of wrapping by hand, so a layer added here reaches every tool.
 
 Provider construction lives in :mod:`kuhaku.core.resolve.adapters.llm`; adding a provider
 is one module there plus a row in ``ApiLLMAdapter``.
+
+Every provider the factory builds implements the v2 surface
+(:class:`~kuhaku.core.llm.base.ChatLLMProvider`: ``chat``, ``generate_structured``,
+``stream``, their ``a*`` async twins and ``capabilities``) on top of v1's
+``generate(system, user)``; :func:`as_chat_provider` lifts any other v1 provider to it.
+They also implement tool calling (:class:`ToolCallingLLMProvider`: ``chat_with_tools``
+and its stream/async twins, taking :class:`ToolSpec` objects);
+:func:`as_tool_calling_provider` lifts anything else, by emulation.
 """
 
 from __future__ import annotations
@@ -36,8 +44,50 @@ from ..resolve import (
     fingerprint as build_fingerprint,
 )
 from ..resolve.adapters.llm import BUILDERS, register_llm_adapters
-from .base import LLMError, LLMProvider
+from .base import (
+    ChatLLMProvider,
+    GenerationOptions,
+    LLMCapabilities,
+    LLMError,
+    LLMProvider,
+    LLMResponse,
+    StructuredOutputError,
+    StructuredOutputMode,
+    StructuredResponse,
+    TokenUsage,
+    ToolCallingLLMProvider,
+    UnsupportedContentError,
+)
+from .cache import (
+    CacheBackend,
+    CacheEntry,
+    CacheStats,
+    CachingLLM,
+    InMemoryCacheBackend,
+    SQLiteCacheBackend,
+    llm_cache_key,
+)
+from .limits import (
+    CharTokenEstimator,
+    RateLimitedLLM,
+    RateLimits,
+    rate_limiter_key,
+    shared_rate_limiter,
+)
+from .provider import (
+    BaseLLMProvider,
+    LegacyLLMAdapter,
+    as_chat_provider,
+    capabilities_of,
+)
 from .token_tracking import TokenTrackingLLM
+from .tool_calling import (
+    ToolRequest,
+    ToolSpec,
+    execute_tool_call,
+    tool_result_message,
+)
+from .wrapper import LLMWrapper, as_tool_calling_provider
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +125,7 @@ def build_llm_provider(
             "llm", registry=registry, env=env, ui=ui, memory=memory, required=True,
             candidates=local, fingerprint=fingerprint,
         )
-        return activate(resolution, env=env, ui=ui)
+        return apply_rate_limits(activate(resolution, env=env, ui=ui), settings)
     if configured != AUTO:
         # A pinned provider is built as asked, with no probing; it is still recorded so
         # that a later "auto" run continues with the provider used last.
@@ -89,7 +139,7 @@ def build_llm_provider(
         fp = fingerprint or build_fingerprint(env, packages=registry.required_packages())
         if memory.get("llm", fp) != configured:
             memory.put("llm", fp, configured)
-        return provider
+        return apply_rate_limits(provider, settings)
 
     candidates = registry.candidates("llm", env)
     fingerprint = fingerprint or build_fingerprint(env, packages=registry.required_packages())
@@ -109,7 +159,7 @@ def build_llm_provider(
         candidates=candidates,
         fingerprint=fingerprint,
     )
-    return activate(resolution, env=env, ui=ui)
+    return apply_rate_limits(activate(resolution, env=env, ui=ui), settings)
 
 
 def _is_ollama(candidate_id: str) -> bool:
@@ -127,4 +177,65 @@ def with_runtime(llm: LLMProvider, *, token_tracking: bool = True) -> LLMProvide
     return llm
 
 
-__all__ = ["LLMError", "LLMProvider", "build_llm_provider", "with_runtime"]
+def apply_rate_limits(provider: LLMProvider, settings: Settings) -> LLMProvider:
+    """Wrap ``provider`` in a :class:`~kuhaku.core.llm.limits.RateLimitedLLM` when any
+    ``llm_rate_limit_*`` setting is set; return it unchanged otherwise.
+
+    The limiter is the process-wide one for the provider's model *and account*
+    (:func:`~kuhaku.core.llm.limits.rate_limiter_key`: its ``name`` plus a hash of its
+    API key / endpoint), so every provider built for the same account and model shares
+    one quota, and two accounts never share one. The output reservation is
+    ``llm_max_tokens`` -- the most a completion can cost -- and is credited back once
+    the provider reports what the call really used.
+    """
+
+    limits = RateLimits(
+        requests_per_minute=settings.llm_rate_limit_requests_per_minute,
+        tokens_per_minute=settings.llm_rate_limit_tokens_per_minute,
+        tokens_per_day=settings.llm_rate_limit_tokens_per_day,
+    )
+    if limits.unlimited:
+        return provider
+    return RateLimitedLLM(
+        provider,
+        shared_rate_limiter(rate_limiter_key(provider), limits),
+        estimator=CharTokenEstimator(output_tokens=settings.llm_max_tokens),
+    )
+
+
+__all__ = [
+    "BaseLLMProvider",
+    "CacheBackend",
+    "CacheEntry",
+    "CacheStats",
+    "CachingLLM",
+    "ChatLLMProvider",
+    "GenerationOptions",
+    "InMemoryCacheBackend",
+    "LLMCapabilities",
+    "LLMError",
+    "LLMProvider",
+    "LLMResponse",
+    "LLMWrapper",
+    "LegacyLLMAdapter",
+    "SQLiteCacheBackend",
+    "StructuredOutputError",
+    "StructuredOutputMode",
+    "StructuredResponse",
+    "TokenTrackingLLM",
+    "TokenUsage",
+    "ToolCallingLLMProvider",
+    "ToolRequest",
+    "ToolSpec",
+    "UnsupportedContentError",
+    "apply_rate_limits",
+    "as_chat_provider",
+    "as_tool_calling_provider",
+    "build_llm_provider",
+    "capabilities_of",
+    "execute_tool_call",
+    "llm_cache_key",
+    "tool_result_message",
+    "with_runtime",
+]
+

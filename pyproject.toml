@@ -72,9 +72,31 @@ otlp = ["opentelemetry-exporter-otlp-proto-grpc>=1.27"]
 # Google Vertex AI (LLM + embeddings), for users with Google Cloud credits. Optional --
 # both providers import it lazily, so it never blocks the local (Ollama) default.
 vertex = ["google-genai>=1.0.0"]
+# Document parsing (kuhaku.tools.parsing). Each is imported lazily by the parser that
+# needs it; HTML, Markdown and text need none, and PDFs fall back to pypdf (a core
+# dependency) for text-only reading without parsing-pdf. parsing-ocr also needs the
+# system `tesseract` binary.
+parsing-pdf = ["pdfplumber>=0.11"]
+parsing-docx = ["python-docx>=1.1"]
+parsing-ocr = ["pytesseract>=0.3.10", "Pillow>=10.0"]
+# Encoding detection for text/HTML/Markdown that is neither UTF-8 nor declared. It also
+# arrives with `requests`, but is declared here because the parser imports it directly.
+parsing-text = ["charset-normalizer>=3.0"]
+parsing = ["kuhaku[parsing-pdf,parsing-docx,parsing-ocr,parsing-text]"]
+# PostgreSQL for the text-to-SQL tool (kuhaku.tools.sql.PostgresDatabase). Imported
+# lazily -- SQLite, the default, needs only the standard library.
+sql-postgres = ["psycopg>=3.1"]
 # Building the documentation site (mkdocs build). Separate from `dev` -- most
 # contributors never need to build the site locally.
 docs = ["mkdocs-material>=9.5"]
+# Serving (kuhaku.serving): each transport is its own extra and imported lazily, so the
+# core install never pulls a web framework. The MCP SDK brings starlette and uvicorn for
+# its streamable-HTTP transport itself.
+mcp = ["mcp>=1.10"]
+http = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.scripts]
+kuhaku-mcp = "kuhaku.serving.cli:main"
 
 # src layout: the importable package lives at src/kuhaku/. Nothing outside src/ is
 # packaged, so tests/ and scripts/ stay in the repository but never reach the wheel.

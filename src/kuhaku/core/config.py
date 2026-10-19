@@ -7,11 +7,14 @@ required to run the local Ollama default.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Any
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 # Fields that used to exist, mapped to what to do instead. Settings ignores unknown
 # environment variables (extra="ignore"), which is right for the environment but would
@@ -70,6 +73,10 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="auto")
     llm_temperature: float = Field(default=0.1)
     llm_max_tokens: int = Field(default=1024)
+    # Content types the built provider declares (comma-separated: "text,image,document").
+    # Unset, each provider decides from its model name, claiming images/PDFs only for
+    # model families documented to accept them -- set this for a model it does not know.
+    llm_content_types: str | None = Field(default=None)
 
     ollama_base_url: str = Field(default="http://localhost:11434")
     # Unset: one of the models already pulled on the server (asked in a terminal when
@@ -81,7 +88,7 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("KUHAKU_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
     )
-    anthropic_model: str = Field(default="claude-sonnet-5")
+    anthropic_model: str = Field(default="claude-opus-5-5")
 
     openai_api_key: str | None = Field(
         default=None,
@@ -123,7 +130,7 @@ class Settings(BaseSettings):
         default="us-central1",
         validation_alias=AliasChoices("KUHAKU_VERTEX_LOCATION", "GOOGLE_CLOUD_LOCATION"),
     )
-    vertex_model: str = Field(default="gemini-2.5-flash")
+    vertex_model: str = Field(default="gemini-3.5-flash")
 
     # --- Default behavior policy ------------------------------------------------
     # Performance/helper components (BM25, cross-encoder reranker) configured as the
@@ -203,6 +210,17 @@ class Settings(BaseSettings):
     circuit_breaker_reset_timeout_seconds: float = Field(default=60.0)
     circuit_breaker_success_threshold: int = Field(default=1)
 
+    # --- LLM client-side rate limiting (core/llm/limits/) -----------------------------
+    # Unset (the default) = no limiter, nothing changes. Setting any of these makes
+    # build_llm_provider wrap the provider in a RateLimitedLLM backed by one process-wide
+    # limiter per provider name ("groq:llama-3.3-70b-versatile"), so RAG() and an
+    # Extractor in the same process share one quota. Per provider *and model* because
+    # that is how Groq and OpenAI meter. Budgets are deliberately not here: a budget is
+    # per run, and a run is something the calling code defines, not the environment.
+    llm_rate_limit_requests_per_minute: float | None = Field(default=None)
+    llm_rate_limit_tokens_per_minute: float | None = Field(default=None)
+    llm_rate_limit_tokens_per_day: float | None = Field(default=None)
+
     # --- Model versioning --------------------------------------------------------------
     # Deployment-time label, set manually by whoever upgrades the LLM model -- not
     # auto-detected. Independent of the functional selector fields above
@@ -214,15 +232,41 @@ class Settings(BaseSettings):
     llm_model_version: str = Field(default="qwen2.5:7b-instruct-q4_k_m")
 
 
-# Bootstrap-only fields -- must always come from .env/the environment, never from
-# app_config, since they are secrets that have no business being duplicated into a
-# second store.
-_BOOTSTRAP_KEYS = frozenset(
+# The only fields an app_config (DB) row may override. An allowlist, not a denylist: the
+# former denylist protected three keys and let a row set openai_base_url (sending the
+# environment's API key to any host), groq_*/vertex_* endpoints and projects, or
+# audit_enabled=false. Everything not listed here -- every *_api_key and *_base_url,
+# vertex_project/location, and every audit and guard field -- is
+# bootstrap-only: it comes from the process environment / dotenv file, never from a
+# second store someone else may write to. A field added to Settings later is
+# bootstrap-only until it is added here on purpose.
+_DB_OVERRIDABLE_KEYS = frozenset(
     {
-        "anthropic_api_key",
-        "openai_api_key",
-        "openrouter_api_key",
-        "ollama_base_url",
+        "llm_provider",
+        "llm_temperature",
+        "llm_max_tokens",
+        "llm_content_types",
+        "ollama_model",
+        "anthropic_model",
+        "openai_model",
+        "openrouter_model",
+        "groq_model",
+        "vertex_model",
+        "strict_performance_components",
+        "metrics_enabled",
+        "retry_enabled",
+        "retry_llm_max_attempts",
+        "retry_llm_backoff_base_seconds",
+        "retry_llm_backoff_max_seconds",
+        "llm_timeout_seconds",
+        "circuit_breaker_enabled",
+        "circuit_breaker_failure_threshold",
+        "circuit_breaker_reset_timeout_seconds",
+        "circuit_breaker_success_threshold",
+        "llm_rate_limit_requests_per_minute",
+        "llm_rate_limit_tokens_per_minute",
+        "llm_rate_limit_tokens_per_day",
+        "llm_model_version",
     }
 )
 
@@ -231,11 +275,12 @@ def load_settings(
     app_config_loader: Any = None,
     env_file: str | None = None,
 ) -> Settings:
-    """Layer defaults < ``app_config`` (DB) < ``.env``/env (bootstrap keys only).
+    """Layer defaults < ``.env``/env < ``app_config`` (DB, allowlisted keys only).
 
     ``base`` already reflects today's defaults + ``.env``/environment (pydantic-settings'
-    normal behavior, unchanged). Every ``app_config`` key that isn't bootstrap-only is
-    then overlaid on top of ``base``'s own dump, and re-passed as explicit constructor
+    normal behavior, unchanged). Every ``app_config`` key in ``_DB_OVERRIDABLE_KEYS`` is
+    then overlaid; any other key (secrets, endpoints, audit, guard, unknown names) is
+    ignored with a warning naming it. The allowed keys are overlaid on top of ``base``'s own dump, and re-passed as explicit constructor
     kwargs -- pydantic-settings' documented precedence (init kwargs > env > dotenv >
     defaults) makes that overlay win over ``.env`` automatically, and pydantic's lax
     coercion turns the DB's ``TEXT`` values back into ``bool``/``int``/``float``.
@@ -261,11 +306,17 @@ def load_settings(
     if not stored:
         return base
 
+    ignored = sorted(key for key in stored if key not in _DB_OVERRIDABLE_KEYS)
+    if ignored:
+        logger.warning(
+            "app_config keys ignored (bootstrap-only or unknown; set them in the "
+            "environment): %s",
+            ", ".join(ignored),
+        )
     merged = base.model_dump()
     for key, value in stored.items():
-        if key in _BOOTSTRAP_KEYS or key not in merged:
-            continue
-        merged[key] = value
+        if key in _DB_OVERRIDABLE_KEYS:
+            merged[key] = value
     return Settings(_env_file=env_file, **merged)
 
 
@@ -289,4 +340,3 @@ def get_settings(
     """
 
     return load_settings(app_config_loader, env_file)
-

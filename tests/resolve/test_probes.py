@@ -7,8 +7,10 @@ import pytest
 
 pytest.importorskip("kuhaku.core.resolve", reason="mechanism lands in commit 3")
 
-from kuhaku.core.resolve import auto_enabled  # noqa: E402
-from kuhaku.core.resolve import probes  # noqa: E402
+from kuhaku.core.resolve import (
+    auto_enabled,  # noqa: E402
+    probes,  # noqa: E402
+)
 
 
 def test_auto_enabled_defaults_true(monkeypatch):

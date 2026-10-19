@@ -19,10 +19,15 @@ from kuhaku.core.exceptions import (  # noqa: E402
     KuhakuError,
     StoreConflict,
 )
-from kuhaku.core.resolve import Cost, Fingerprint, Registry, activate, resolve  # noqa: E402
+from kuhaku.core.resolve import (  # noqa: E402
+    Cost,
+    Fingerprint,
+    Registry,
+    activate,
+    resolve,
+)
 from kuhaku.core.resolve import consent as consent_mod  # noqa: E402
 from kuhaku.core.resolve.memory import JsonMemory  # noqa: E402
-
 from tests.resolve.conftest import (  # noqa: E402
     FakeAdapter,
     FakeUI,

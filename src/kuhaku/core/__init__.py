@@ -16,9 +16,15 @@ Submodules:
   logging.
 - ``observability``: structured logging, OpenTelemetry tracing, and OpenTelemetry
   metrics (``instrumented_step`` ties all three together for one pipeline stage).
+- ``session``: per-identity conversation state (``Session``, in-memory and SQLite
+  stores) and message windowing for the next LLM call.
+- ``prompts``: versioned prompt templates, the ``PromptRegistry`` tools render through,
+  file loading, and the per-call prompt refs recorded on spans and audit records.
 - ``sanitization``: deterministic, regex-based PII masking.
 - ``policy``: startup-time fallback/strictness policy for optional components.
 - ``retry``: retry-with-backoff and circuit-breaker helpers for transient failures.
+- ``batch``: run one function over many items concurrently, with per-item results,
+  retry, timeouts, a limiter seam and a resumable JSONL checkpoint.
 - ``exceptions``: shared exception types.
 - ``models``: generic domain primitives (``Message``, ``ToolCall``,
   ``ExecutionResult``) any tool can use.

@@ -70,7 +70,7 @@ def test_factory_builds_vertex(fake_genai_client):
     )
     provider = build_llm_provider(settings)
     assert isinstance(provider, VertexAIProvider)
-    assert provider.name == "vertex:gemini-2.5-flash"
+    assert provider.name == "vertex:gemini-3.5-flash"
 
 
 def test_generate_returns_text(fake_genai_client):
@@ -541,6 +541,7 @@ def test_is_retryable_vertex_exception():
     import httpx
     import requests
     from google.genai import errors
+
     from kuhaku.core.llm.vertex_provider import is_retryable_vertex_exception
 
     def _make_api_error(code: int) -> errors.APIError:

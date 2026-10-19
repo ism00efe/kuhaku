@@ -120,7 +120,9 @@ change, and do not document them as working:
 
 - The authorization and authentication classes in `core/auth/` are not wired into
   retrieval. Working access control is the `access_tags` intersection in
-  `tools/rag/retriever.py`.
+  `tools/rag/retriever.py`. The serving layer (`kuhaku.serving`) is their one caller:
+  it authenticates requests with the providers and checks an `AuthorizationPolicy`
+  before calling a tool.
 - The second-generation guard and the entire output guard are not reachable through the
   `RAG` facade; the engine only invokes them when a guard pipeline is supplied (via
   `RAGEngine(guard=...)` or `rag.engine.update_guard(...)`). `RAG(settings=Settings(

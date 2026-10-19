@@ -8,13 +8,15 @@ pytest.importorskip("kuhaku.core.resolve", reason="mechanism lands in commit 3")
 
 from kuhaku.core.exceptions import StoreConflict  # noqa: E402
 from kuhaku.core.resolve import Registry  # noqa: E402
-from kuhaku.core.resolve.hardware import VRAM_HEADROOM, recommended_size_class  # noqa: E402
+from kuhaku.core.resolve.hardware import (  # noqa: E402
+    VRAM_HEADROOM,
+    recommended_size_class,
+)
 from kuhaku.tools.rag.resolve.store_policy import (  # noqa: E402
     CHUNK_UPGRADE_THRESHOLD,
     guard_single_writer,
     suggest_store_upgrade,
 )
-
 from tests.resolve.conftest import FakeAdapter, FakeUI, make_candidate, make_env
 
 
