@@ -10,12 +10,6 @@ from __future__ import annotations
 
 import prometheus_client
 
-from tests.conftest import (
-    prometheus_counter_value as _counter_value,
-)
-from tests.conftest import (
-    prometheus_gauge_value as _gauge_value,
-)
 from kuhaku.tools.rag.metrics import (
     ABSTENTION_COUNT,
     ACTIVE_DOCUMENTS,
@@ -41,6 +35,12 @@ from kuhaku.tools.rag.metrics import (
     record_query_rewrite,
     record_replay,
     record_unverified_citation,
+)
+from tests.conftest import (
+    prometheus_counter_value as _counter_value,
+)
+from tests.conftest import (
+    prometheus_gauge_value as _gauge_value,
 )
 
 

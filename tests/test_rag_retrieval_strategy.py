@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import kuhaku
 from kuhaku import RAG
 from kuhaku.core.config import Settings
@@ -64,8 +66,8 @@ def test_build_retriever_sparse_without_reranker_routes_through_sparse_retriever
 
 
 def test_build_retriever_sparse_normalizes_raw_bm25_scores(monkeypatch):
-    # Raw Okapi scores are unbounded (not 0..1) -- here 8.3/2.1/0.4 -- and must be
-    # min-max normalized once routed through the sparse strategy with no reranker.
+    # Raw Okapi scores are unbounded (not 0..1) -- here 8.3/2.1/0.4 -- and are mapped
+    # absolutely onto [0, 1) by bm25_confidence once routed through the sparse strategy.
     fake_sparse = _RawScoreRetriever(
         [
             RetrievedChunk(chunk=make_chunk("hi"), score=8.3),
@@ -80,9 +82,10 @@ def test_build_retriever_sparse_normalizes_raw_bm25_scores(monkeypatch):
     results = retriever.retrieve("query", 3)
 
     scores = {r.chunk.document_id: r.score for r in results}
-    assert scores["hi"] == 1.0
-    assert scores["lo"] == 0.0
-    assert 0.0 < scores["mid"] < 1.0
+    # Was hi == 1.0 / lo == 0.0 (min-max within the candidates, review finding 2).
+    assert scores["hi"] == pytest.approx(8.3 / 9.3)
+    assert scores["lo"] == pytest.approx(0.4 / 1.4)
+    assert 0.0 < scores["lo"] < scores["mid"] < scores["hi"] < 1.0
     assert [r.chunk.document_id for r in results] == ["hi", "mid", "lo"]
 
 
@@ -94,7 +97,7 @@ def test_build_retriever_sparse_single_chunk_does_not_divide_by_zero(monkeypatch
     retriever = RAG._build_retriever(stub, "sparse", False)
     results = retriever.retrieve("query", 1)
 
-    assert results[0].score == 1.0
+    assert results[0].score == pytest.approx(5.0 / 6.0)
 
 
 def test_build_retriever_sparse_with_reranker_strategy(monkeypatch):

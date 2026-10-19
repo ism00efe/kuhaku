@@ -11,25 +11,31 @@ already-in-memory document appended to an existing collection, never touching di
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import io
 import logging
 import re
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 from typing import TypedDict
-from uuid import uuid4
 
 import filetype
 
-from kuhaku.tools.rag.models import Chunk, Document
 from kuhaku.core.sanitization import Redaction, sanitize_text
 from kuhaku.core.security import inspect_query
+from kuhaku.tools.rag.models import Chunk, Document
 
-from .chunking import Chunker, ParagraphChunker, chunk_document  # noqa: F401 - re-exported
+from .chunking import (  # noqa: F401 - re-exported
+    Chunker,
+    ParagraphChunker,
+    chunk_document,
+)
 from .config import RAGSettings
 from .embeddings import EmbeddingProvider
 from .messages import DEFAULT_ENGINE_MESSAGES, EngineMessages
 from .vectorstore import VectorStore
+from .vectorstore import VectorStore as _VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -167,10 +173,28 @@ def _freshness_fields(text: str) -> _FreshnessFields:
 
     fields = _parse_metadata_block(text)
     return _FreshnessFields(
-        effective_date=fields.get("effective_date", ""),
+        effective_date=_valid_iso_date(fields.get("effective_date", ""), "effective_date"),
         obsolete=fields.get("obsolete", "").strip().lower() == "true",
-        expiry_date=fields.get("expiry_date", ""),
+        expiry_date=_valid_iso_date(fields.get("expiry_date", ""), "expiry_date"),
     )
+
+
+def _valid_iso_date(value: str, key: str) -> str:
+    """``value`` if it is an ISO date (``YYYY-MM-DD``), else ``""`` ("no bound") with a
+    warning. Dropped rather than guessed: ``01/02/2024`` is January 2nd or February 1st
+    depending on who wrote it."""
+
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        logger.warning(
+            "ignoring malformed %s %r in document metadata (expected YYYY-MM-DD)", key, value
+        )
+        return ""
+    return value
 
 
 def _normalize_access_tags(access_tags: Sequence[str] | None) -> tuple[str, ...]:
@@ -191,6 +215,37 @@ def _normalize_access_tags(access_tags: Sequence[str] | None) -> tuple[str, ...]
             raise ValueError("access_tags: tag must not be empty or whitespace-only")
         seen.setdefault(tag, None)
     return tuple(seen)
+
+
+def validate_document_id(document_id: str) -> str:
+    """A caller-supplied document id, checked: non-blank and free of ``::`` (the chunk
+    id separator -- ``"a::1"`` as a document id would collide with chunk 1 of ``a``)."""
+
+    if not isinstance(document_id, str) or not document_id.strip():
+        raise ValueError("document_id must be a non-empty string")
+    if "::" in document_id:
+        raise ValueError("document_id must not contain '::' (the chunk id separator)")
+    return document_id
+
+
+def content_document_id(name: str, text: str) -> str:
+    """A stable id for a document the caller did not name: ``upload_`` + a hash of its
+    name and content. The same file ingested twice maps to the same id (replaced, not
+    duplicated); different content under the same name gets its own id."""
+
+    digest = hashlib.sha256(f"{name}\x1f{text}".encode()).hexdigest()
+    return f"upload_{digest[:16]}"
+
+
+def replace_document(store: _VectorStore, document_id: str) -> int:
+    """Delete ``document_id``'s existing chunks before new ones are written (upsert).
+    Returns how many were removed; a store without ``delete_document`` removes none."""
+
+    delete = getattr(store, "delete_document", None)
+    if not callable(delete):
+        logger.debug("store has no delete_document; '%s' is appended, not replaced", document_id)
+        return 0
+    return int(delete(document_id) or 0)
 
 
 def _infer_doc_type(filename: str, mapping: dict[str, str] | None = None) -> str:
@@ -291,6 +346,8 @@ def ingest(
 
     chunks: list[Chunk] = []
     for doc in documents:
+        if not reset:
+            replace_document(store, doc.id)
         chunks.extend(chunker.chunk(doc, chunk_size=chunk_size, overlap=overlap))
 
     if not chunks:
@@ -317,6 +374,7 @@ def ingest_single_document(
     max_upload_bytes: int | None = None,
     messages: EngineMessages | None = None,
     access_tags: Sequence[str] | None = None,
+    document_id: str | None = None,
 ) -> tuple[int, list[Redaction]]:
     """Sanitize, chunk, embed, and add ONE document to an existing collection.
 
@@ -326,10 +384,11 @@ def ingest_single_document(
     up in stored metadata (title fallback, ``source_path``) and is operator-supplied, not
     developer-curated like a corpus path, so it gets the same guarantee as document text.
 
-    The id gets a random suffix rather than reusing the filename stem the way corpus
-    ingestion does: corpus ids only need to be unique within one directory listing, but an
-    upload lands in a collection that may already hold any id, and colliding would either
-    overwrite an existing document's chunks or fail outright depending on the store.
+    ``document_id`` names the document; ingesting under an id the store already holds
+    *replaces* that document (its old chunks are deleted first, so a shorter new
+    version leaves no orphans). Without one, the id is derived from the filename and
+    content (:func:`content_document_id`): re-ingesting the same file is idempotent
+    rather than duplicating the corpus, as the former random ``upload_<uuid>`` id did.
 
     ``rag_settings``, when given, supplies ``doc_type_prefix_mapping`` for
     :func:`_infer_doc_type`; ``None`` (the default) means ``doc_type`` falls back to
@@ -363,13 +422,25 @@ def ingest_single_document(
     clean_text, text_redactions = sanitize_text(text)
     redactions = filename_redactions + text_redactions
 
+    # Not a rejection: a policy document that *quotes* "ignore previous instructions"
+    # is legitimate content, and the query-side guard pattern matched it anyway. What
+    # protects the model is answer-time data marking -- every chunk is wrapped in
+    # [DOC]...[/DOC] and the system prompt treats marked text as data, never
+    # instructions (see prompts._format_sources). The match is still logged.
     safe, reason = inspect_query(clean_text)
     if not safe:
-        raise ValueError(messages.document_security_check_failed_template.format(reason=reason))
+        logger.warning(
+            "document contains text matching a prompt-injection pattern; indexed as data",
+            extra={"reason": reason, "upload_filename": clean_filename},
+        )
 
     doc_type_mapping = rag_settings.doc_type_prefix_mapping if rag_settings is not None else None
     doc = Document(
-        id=f"upload_{uuid4().hex[:12]}",
+        id=(
+            validate_document_id(document_id)
+            if document_id is not None
+            else content_document_id(clean_filename, clean_text)
+        ),
         title=_infer_title(clean_text, Path(clean_filename).stem),
         doc_type=_infer_doc_type(clean_filename, doc_type_mapping),
         text=clean_text,
@@ -382,7 +453,9 @@ def ingest_single_document(
     if not chunks:
         return 0, redactions
 
+    # Embed first so a failing embedder leaves the previous version in place.
     embeddings = embedder.embed_documents([c.text for c in chunks])
+    replace_document(store, doc.id)
     store.add(chunks, embeddings)
     logger.info("Indexed %d chunks from uploaded document '%s'.", len(chunks), doc.id)
     return len(chunks), redactions

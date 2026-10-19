@@ -13,8 +13,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from tenacity import wait_fixed
 
-from kuhaku.tools.rag.models import ACCESS_TAGS_NONE_KEY, Chunk, RetrievedChunk
 from kuhaku.core.retry import call_with_retry
+from kuhaku.tools.rag.models import ACCESS_TAGS_NONE_KEY, Chunk, RetrievedChunk
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,14 @@ class VectorStore(Protocol):
     def count(self) -> int: ...
 
     def reset(self) -> None: ...
+
+    def delete_document(self, document_id: str) -> int:
+        """Remove every chunk of ``document_id``; return how many were removed (0 when
+        the document is not in the store). Ingestion calls this before writing a
+        document's chunks, so re-ingesting replaces it -- including chunks a shorter
+        new version no longer produces. A store without this method still works for
+        ingest and retrieval, but cannot replace or delete documents."""
+        ...
 
     def list_collections(self) -> list[str]: ...
 
@@ -120,11 +128,13 @@ class ChromaVectorStore:
         return self._collection
 
     def add(self, chunks: list[Chunk], embeddings: list[list[float]]) -> None:
+        # upsert, not add: Chroma's add() silently keeps the existing row for an id it
+        # already holds, so re-ingesting a document under the same id kept its old text.
         if not chunks:
             return
         metadatas = [self._to_stored_metadata(c) for c in chunks]
         try:
-            self._collection.add(
+            self._collection.upsert(
                 ids=[c.id for c in chunks],
                 embeddings=embeddings,  # type: ignore[arg-type]
                 documents=[c.text for c in chunks],
@@ -132,7 +142,7 @@ class ChromaVectorStore:
             )
         except Exception as e:
             if "does not exist" in str(e).lower():
-                self._refresh_collection_if_stale().add(
+                self._refresh_collection_if_stale().upsert(
                     ids=[c.id for c in chunks],
                     embeddings=embeddings,  # type: ignore[arg-type]
                     documents=[c.text for c in chunks],
@@ -349,6 +359,21 @@ class ChromaVectorStore:
             if "does not exist" in str(e).lower():
                 return self._refresh_collection_if_stale().count()
             raise
+
+    def delete_document(self, document_id: str) -> int:
+        """Remove every chunk whose ``document_id`` metadata matches; see
+        :meth:`VectorStore.delete_document`."""
+
+        where = {"document_id": document_id}
+        try:
+            ids = self._collection.get(where=where, include=[]).get("ids", [])
+        except Exception as e:
+            if "does not exist" not in str(e).lower():
+                raise
+            ids = self._refresh_collection_if_stale().get(where=where, include=[]).get("ids", [])
+        if ids:
+            self._collection.delete(ids=list(ids))
+        return len(ids)
 
     def reset(self) -> None:
         """Drop and recreate the collection (used before a fresh ingest)."""

@@ -195,8 +195,10 @@ def test_refresh_picks_up_chunks_ingested_after_construction():
     assert retriever.retrieve("beta", top_k=5) == []
 
     store.add([make_chunk("b", text="beta")], [[0.0, 0.0, 0.0]])
-    # Without refresh(), the cached index must not silently see the new chunk.
-    assert retriever.retrieve("beta", top_k=5) == []
+    # This used to assert the new chunk stayed invisible until refresh(); a write that
+    # skips refresh() (another process, a direct store.add) is now picked up through
+    # the store's count changing (review finding 6).
+    assert [r.chunk.document_id for r in retriever.retrieve("beta", top_k=5)] == ["b"]
 
     retriever.refresh()
     results = retriever.retrieve("beta", top_k=5)
@@ -247,3 +249,37 @@ def test_refresh_defers_rebuild_until_the_next_query(monkeypatch):
 
     retriever.retrieve("term3", top_k=5)
     assert len(build_calls) == 2  # one rebuild covers all 5 pending refreshes
+
+
+# --- review finding 6: refresh race and unannounced writes --------------------------
+
+
+def test_refresh_during_a_rebuild_is_not_lost():
+    from kuhaku.tools.rag.sparse_retriever import StoreBackedBM25Retriever
+
+    store = FakeVectorStore([make_chunk("a", text="alpha")])
+    retriever = StoreBackedBM25Retriever(store)
+    original_iter = store.iter_chunks
+
+    def iter_then_concurrent_ingest():
+        chunks = list(original_iter())
+        # Another thread ingests and refreshes while this rebuild is reading.
+        store._chunks.append(make_chunk("b", text="bravo"))
+        retriever.refresh()
+        return iter(chunks)
+
+    store.iter_chunks = iter_then_concurrent_ingest
+    retriever.retrieve("alpha", 5)
+    store.iter_chunks = original_iter
+
+    assert [r.chunk.document_id for r in retriever.retrieve("bravo", 5)] == ["b"]
+
+
+def test_write_without_refresh_is_picked_up_by_count_change():
+    from kuhaku.tools.rag.sparse_retriever import StoreBackedBM25Retriever
+
+    store = FakeVectorStore([make_chunk("a", text="alpha")])
+    retriever = StoreBackedBM25Retriever(store)
+    retriever.retrieve("alpha", 5)
+    store.add([make_chunk("b", text="bravo")], [[0.0]])  # no refresh() call
+    assert [r.chunk.document_id for r in retriever.retrieve("bravo", 5)] == ["b"]

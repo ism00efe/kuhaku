@@ -146,6 +146,18 @@ class RAGSettings:
     retry_reranker_backoff_base_seconds: float = 1.0
     retry_reranker_backoff_max_seconds: float = 5.0
 
+    def __post_init__(self) -> None:
+        # chunk_overlap >= chunk_size used to be accepted and silently clamped to a
+        # 1-character stride when a long paragraph was hard-split: thousands of
+        # near-identical chunks from one paragraph.
+        if self.chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive; got {self.chunk_size}")
+        if not 0 <= self.chunk_overlap < self.chunk_size:
+            raise ValueError(
+                "chunk_overlap must satisfy 0 <= chunk_overlap < chunk_size; got "
+                f"chunk_overlap={self.chunk_overlap}, chunk_size={self.chunk_size}"
+            )
+
     @classmethod
     def from_env(cls, env_file: str | None = None, **overrides: Any) -> RAGSettings:
         """Build from ``KUHAKU_RAG__<FIELD>`` variables (case-insensitive), then

@@ -14,70 +14,81 @@ import math
 from .._tokenization import tokenize
 
 
-def _effective_k(retrieved_ids: list[str], k: int) -> int:
-    """Clamp ``k`` to ``len(retrieved_ids)`` -- a caller asking for more than what was
-    retrieved must not be penalized for it."""
+def _dedupe(retrieved_ids: list[str]) -> list[str]:
+    """Keep each id at its first (best) rank only.
 
-    return min(k, len(retrieved_ids))
+    Targets usually report one id per retrieved *chunk*, so a document with three chunks
+    in the top-k would otherwise count three times -- inflating precision and pushing
+    nDCG above 1.0, since the ideal ranking can only contain each relevant id once.
+    """
+
+    return list(dict.fromkeys(retrieved_ids))
+
+
+def _top_k(retrieved_ids: list[str], k: int) -> list[str]:
+    return _dedupe(retrieved_ids)[: max(k, 0)]
 
 
 def recall_at_k(retrieved_ids: list[str], expected_ids: set[str], k: int) -> float:
-    """Fraction of ``expected_ids`` present in the top-``k`` of ``retrieved_ids``."""
+    """Fraction of ``expected_ids`` present in the top-``k`` distinct retrieved ids."""
 
     if not retrieved_ids or not expected_ids:
         return 0.0
-    top_k = retrieved_ids[: _effective_k(retrieved_ids, k)]
-    hits = len(expected_ids & set(top_k))
+    hits = len(expected_ids & set(_top_k(retrieved_ids, k)))
     return hits / len(expected_ids)
 
 
 def precision_at_k(retrieved_ids: list[str], expected_ids: set[str], k: int) -> float:
-    """Fraction of the top-``k`` retrieved ids that are relevant."""
+    """Relevant ids among the top-``k`` distinct retrieved ids, divided by ``k``.
 
-    if not retrieved_ids or not expected_ids:
+    Divided by the *requested* ``k``, not by how many ids came back: a target that
+    returns one lucky id for k=5 retrieved 1/5 of what was asked for, and must not score
+    the same as one that filled all five slots with relevant ids.
+    """
+
+    if not retrieved_ids or not expected_ids or k <= 0:
         return 0.0
-    effective_k = _effective_k(retrieved_ids, k)
-    top_k = retrieved_ids[:effective_k]
-    hits = sum(1 for doc_id in top_k if doc_id in expected_ids)
-    return hits / effective_k
+    hits = sum(1 for doc_id in _top_k(retrieved_ids, k) if doc_id in expected_ids)
+    return hits / k
 
 
 def mrr(retrieved_ids: list[str], expected_ids: set[str]) -> float:
-    """Reciprocal rank of the first relevant id in ``retrieved_ids`` (0.0 if none)."""
+    """Reciprocal rank of the first relevant id among the distinct retrieved ids."""
 
     if not retrieved_ids or not expected_ids:
         return 0.0
-    for rank, doc_id in enumerate(retrieved_ids, start=1):
+    for rank, doc_id in enumerate(_dedupe(retrieved_ids), start=1):
         if doc_id in expected_ids:
             return 1.0 / rank
     return 0.0
 
 
 def ndcg_at_k(retrieved_ids: list[str], expected_ids: set[str], k: int) -> float:
-    """Normalized discounted cumulative gain at ``k``, binary relevance."""
+    """Normalized discounted cumulative gain at ``k``, binary relevance.
 
-    if not retrieved_ids or not expected_ids:
+    The ideal ranking holds ``min(len(expected_ids), k)`` relevant ids -- not clamped to
+    how many ids the target returned, so a short list cannot reach 1.0 by returning less.
+    Duplicate ids count once, at their first rank, so the score never exceeds 1.0.
+    """
+
+    if not retrieved_ids or not expected_ids or k <= 0:
         return 0.0
-    effective_k = _effective_k(retrieved_ids, k)
-    top_k = retrieved_ids[:effective_k]
-
     dcg = sum(
-        1.0 / math.log2(rank + 1) for rank, doc_id in enumerate(top_k, start=1) if doc_id in expected_ids
+        1.0 / math.log2(rank + 1)
+        for rank, doc_id in enumerate(_top_k(retrieved_ids, k), start=1)
+        if doc_id in expected_ids
     )
-    ideal_hits = min(len(expected_ids), effective_k)
+    ideal_hits = min(len(expected_ids), k)
     idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
-    if idcg == 0.0:
-        return 0.0
     return dcg / idcg
 
 
 def hit_rate_at_k(retrieved_ids: list[str], expected_ids: set[str], k: int) -> float:
-    """1.0 if any of the top-``k`` retrieved ids is relevant, else 0.0."""
+    """1.0 if any of the top-``k`` distinct retrieved ids is relevant, else 0.0."""
 
     if not retrieved_ids or not expected_ids:
         return 0.0
-    top_k = retrieved_ids[: _effective_k(retrieved_ids, k)]
-    return 1.0 if any(doc_id in expected_ids for doc_id in top_k) else 0.0
+    return 1.0 if any(doc_id in expected_ids for doc_id in _top_k(retrieved_ids, k)) else 0.0
 
 
 def answer_correctness(generated_answer: str, golden_answer: str) -> float:

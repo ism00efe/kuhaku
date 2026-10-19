@@ -6,8 +6,8 @@ import logging
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from kuhaku.tools.rag.models import Document
 from kuhaku.core.sanitization import sanitize
+from kuhaku.tools.rag.models import Document
 
 from .config import RAGSettings
 from .ingestion import (

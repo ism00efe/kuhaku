@@ -6,8 +6,10 @@ evaluator here if one is explicitly passed to it (see ``runner.py``).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from dataclasses import dataclass
 
 from kuhaku.core.llm.base import LLMProvider
 
@@ -19,10 +21,45 @@ _JUDGE_SYSTEM_PROMPT = (
     "You are a strict faithfulness judge for a RAG system. Given a question, retrieved "
     "context, and a generated answer, score how well the answer is supported by the "
     "context alone, on a scale from 0.0 (entirely unsupported / fabricated) to 1.0 "
-    "(fully supported by the context). Respond with ONLY the numeric score."
+    "(fully supported by the context). Respond with ONLY a JSON object of the form "
+    '{"score": <number>}.'
 )
 
 _SCORE_PATTERN = re.compile(r"(-?\d+(?:\.\d+)?)")
+_JSON_OBJECT_PATTERN = re.compile(r"\{[^{}]*\}")
+
+
+@dataclass(frozen=True)
+class JudgeScore:
+    """A faithfulness score plus where it came from. ``fallback`` is ``True`` when the
+    judge LLM failed or answered unparsably and the keyword-overlap heuristic produced
+    ``score`` instead -- a different measurement that must not be averaged together
+    with real judge scores."""
+
+    score: float
+    fallback: bool = False
+
+
+def parse_judge_score(response: str) -> float:
+    """Extract the score from a judge response.
+
+    A JSON object with a ``score`` key wins. Otherwise the *last* number is taken:
+    judges that ignore the format tend to restate the scale first ("On a 0 to 1 scale,
+    ... 0.9"), so the first number is the scale's lower bound, not the verdict.
+    Raises ``ValueError`` when there is no number at all.
+    """
+
+    for candidate in reversed(_JSON_OBJECT_PATTERN.findall(response)):
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get("score"), (int, float)):
+            return float(parsed["score"])
+    numbers = _SCORE_PATTERN.findall(response)
+    if not numbers:
+        raise ValueError(f"no numeric score found in judge response: {response!r}")
+    return float(numbers[-1])
 
 
 def _keyword_overlap_fallback(context_chunks: list[str], generated_answer: str) -> float:
@@ -50,20 +87,27 @@ class LLMFaithfulnessEvaluator:
         self._llm_provider = llm_provider
 
     def evaluate(self, question: str, context_chunks: list[str], generated_answer: str) -> float:
+        """The score alone -- see :meth:`evaluate_detailed` to know whether it is the
+        judge's or the keyword-overlap fallback's."""
+
+        return self.evaluate_detailed(question, context_chunks, generated_answer).score
+
+    def evaluate_detailed(
+        self, question: str, context_chunks: list[str], generated_answer: str
+    ) -> JudgeScore:
         context_block = "\n---\n".join(context_chunks)
         user_prompt = (
             f"Question: {question}\n\n"
             f"Context:\n{context_block}\n\n"
             f"Answer: {generated_answer}\n\n"
-            "Faithfulness score (0.0-1.0):"
+            'Faithfulness score as {"score": <0.0-1.0>}:'
         )
         try:
             response = self._llm_provider.generate(_JUDGE_SYSTEM_PROMPT, user_prompt)
-            match = _SCORE_PATTERN.search(response)
-            if match is None:
-                raise ValueError(f"no numeric score found in judge response: {response!r}")
-            score = float(match.group(1))
+            score = parse_judge_score(response)
         except Exception as exc:
             logger.warning("LLM faithfulness judge failed, using keyword-overlap fallback: %s", exc)
-            return _keyword_overlap_fallback(context_chunks, generated_answer)
-        return max(0.0, min(1.0, score))
+            return JudgeScore(
+                _keyword_overlap_fallback(context_chunks, generated_answer), fallback=True
+            )
+        return JudgeScore(max(0.0, min(1.0, score)))

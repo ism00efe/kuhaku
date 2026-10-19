@@ -3,8 +3,6 @@ wiring in RAG() (§7). Replaces the old tests/rag/test_capabilities.py."""
 
 from __future__ import annotations
 
-import pytest
-
 from kuhaku.core.resolve import Registry
 from kuhaku.core.resolve.environment import Environment
 from kuhaku.tools.rag.config import RAGSettings

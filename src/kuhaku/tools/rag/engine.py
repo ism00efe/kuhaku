@@ -30,6 +30,13 @@ from kuhaku.core.observability import (
     record_guard_zone,
     record_redactions,
 )
+from kuhaku.core.prompts import (
+    PromptRef,
+    PromptRegistry,
+    RenderedPrompt,
+    prompt_metadata,
+    record_prompts,
+)
 from kuhaku.core.sanitization import Redaction, sanitize_text
 from kuhaku.core.security import (
     CANARY_TOKEN,
@@ -49,10 +56,10 @@ from kuhaku.tools.rag.models import Answer, Citation, RetrievedChunk
 from .cache import QueryAnswerCache, compute_cache_key
 from .chunking import Chunker, ParagraphChunker
 from .config import RAGSettings
+from .context_summary import summarize_context
 from .contradiction_detector import ContradictionDetector
 from .embeddings import EmbeddingProvider
 from .ingestion import ingest_single_document
-from .context_summary import summarize_context
 from .messages import DEFAULT_ENGINE_MESSAGES, EngineMessages
 from .metrics import (
     ABSTENTION_COUNT,
@@ -66,7 +73,14 @@ from .metrics import (
     record_contradiction_detected,
     record_unverified_citation,
 )
-from .prompts import SYSTEM_PROMPT, build_user_prompt
+from .prompts import (
+    ABSTENTION_PHRASE,
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_NAME,
+    SYSTEM_PROMPT_REF,
+    build_user_prompt,
+    render_system_prompt,
+)
 from .query_rewriter import QueryRewriter
 from .retriever import DenseRetriever, Retriever, refresh_retriever
 from .vectorstore import VectorStore, VectorStoreError
@@ -101,13 +115,15 @@ class RAGEngine:
         llm_version: str = "",
         embedding_version: str = "",
         system_prompt_version: str = "",
-        system_prompt: str | None = None,
+        system_prompt: str | RenderedPrompt | None = None,
         query_rewriter: QueryRewriter | None = None,
         contradiction_detector: ContradictionDetector | None = None,
         contradiction_db_path: str | None = None,
         messages: EngineMessages | None = None,
         contradiction_storage: object | None = None,
         rag_settings: RAGSettings | None = None,
+        prompts: PromptRegistry | None = None,
+        abstention_phrase: str = ABSTENTION_PHRASE,
     ) -> None:
         self._embedder = embedder
         self._store = store
@@ -150,7 +166,16 @@ class RAGEngine:
         # every existing call site (which never passes this) is byte-identical to before.
         # AssistantService.reconfigure() mutates this attribute directly to hot-reload an
         # edited prompt without rebuilding the engine.
-        self._system_prompt = system_prompt if system_prompt is not None else SYSTEM_PROMPT
+        # `prompts` is consulted only when no text is given: a registry override of
+        # "rag.system" is rendered once here, like the built-in default always was.
+        # `get_system_prompt_ref()` is what spans and audit records report as the prompt.
+        if system_prompt is None:
+            system_prompt = (
+                render_system_prompt(prompts=prompts)
+                if prompts is not None
+                else RenderedPrompt(SYSTEM_PROMPT, SYSTEM_PROMPT_REF)
+            )
+        self._system_prompt, self._system_prompt_source = _split_prompt(system_prompt)
         # Optional pre-retrieval query rewriter. None (the default) disables
         # rewriting entirely -- retrieval uses `retrieval_query` unchanged, exactly as
         # before this feature existed. When set, only the retriever call sees the
@@ -173,6 +198,10 @@ class RAGEngine:
         # User-facing strings are injectable: the engine's control flow stays free of
         # any hard-coded copy. Callers that pass nothing get DEFAULT_ENGINE_MESSAGES.
         self._messages = messages if messages is not None else DEFAULT_ENGINE_MESSAGES
+        # The phrase the system prompt tells the model to answer with when the sources
+        # do not cover the question; pass the same value given to
+        # render_system_prompt(abstention_phrase=...) when overriding it.
+        self._abstention_phrase = abstention_phrase
 
     def _require_methods(self, obj: object, methods: tuple[str, ...], param: str) -> None:
         """Duck-type guard for Protocol-typed parameters (Protocols aren't safely
@@ -244,12 +273,18 @@ class RAGEngine:
             self._require_methods(detector, ("detect",), "detector")
         self._contradiction_detector = detector
 
-    def update_system_prompt(self, prompt_text: str) -> None:
-        """Hot-reload the system prompt text used for generation."""
+    def update_system_prompt(self, prompt_text: str | RenderedPrompt) -> None:
+        """Hot-reload the system prompt text used for generation.
 
-        if not isinstance(prompt_text, str):
+        A plain ``str`` is recorded as prompt ``rag.system`` version ``"custom"`` with
+        the text's own hash; pass a :class:`~kuhaku.core.prompts.RenderedPrompt` (e.g.
+        from :func:`~kuhaku.tools.rag.prompts.render_system_prompt`) to keep the
+        template's name and version.
+        """
+
+        if not isinstance(prompt_text, (str, RenderedPrompt)):
             raise TypeError(f"prompt_text must be a str; got {type(prompt_text).__name__}")
-        self._system_prompt = prompt_text
+        self._system_prompt, self._system_prompt_source = _split_prompt(prompt_text)
 
     def update_system_prompt_version(self, version: str) -> None:
         """Update the system prompt version label recorded on every ``Answer``.
@@ -300,6 +335,18 @@ class RAGEngine:
         """The current system prompt version label."""
 
         return self._system_prompt_version
+
+    def get_system_prompt_ref(self) -> PromptRef:
+        """Name, template version and content hash of the current system prompt -- what
+        spans (``kuhaku.prompt.system.*``) and audit records
+        (``metadata["prompts"]["system"]``) report."""
+
+        ref, text = self._system_prompt_source
+        # `_system_prompt` is documented as directly mutable (hot reload); a text that
+        # no longer matches what the ref was made for is reported as custom text.
+        if text is not self._system_prompt and text != self._system_prompt:
+            return PromptRef.for_text(SYSTEM_PROMPT_NAME, self._system_prompt)
+        return ref
 
     def get_llm(self) -> LLMProvider:
         """The LLM provider currently used for generation."""
@@ -384,8 +431,13 @@ class RAGEngine:
         chunk_size: int,
         overlap: int,
         access_tags: Sequence[str] | None = None,
+        document_id: str | None = None,
     ) -> tuple[int, list[Redaction]]:
-        """Sanitize, chunk, embed, and add one operator-uploaded document.
+        """Sanitize, chunk, embed, and add (or replace) one operator-uploaded document.
+
+        ``document_id`` names the document; an id already in the store is replaced.
+        ``None`` derives a stable id from ``filename`` and the content (see
+        :func:`~kuhaku.tools.rag.ingestion.ingest_single_document`).
 
         Delegates to :func:`ingest_single_document` using this engine's own embedder and
         store — the same instances ``retrieve``/``answer`` already search — so an upload
@@ -415,12 +467,32 @@ class RAGEngine:
             text, filename, self._embedder, self._store,
             chunk_size=chunk_size, overlap=overlap, chunker=self._chunker,
             rag_settings=self._rag_settings, max_upload_bytes=max_upload_bytes,
-            messages=self._messages, access_tags=access_tags,
+            messages=self._messages, access_tags=access_tags, document_id=document_id,
         )
         chunks_added, _redactions = result
         if chunks_added:
             refresh_retriever(self._retriever)
         return result
+
+    def delete_document(self, document_id: str) -> int:
+        """Remove every chunk of ``document_id`` from the store; return how many.
+
+        Also refreshes a sparse/hybrid retriever's BM25 index and drops the cached
+        answers generated from this document, so neither can serve the deleted text.
+        Other documents' cached answers are kept. Raises ``TypeError``
+        when the store has no ``delete_document`` method.
+        """
+
+        delete = getattr(self._store, "delete_document", None)
+        if not callable(delete):
+            raise TypeError(
+                f"{type(self._store).__name__} does not support delete_document"
+            )
+        removed = int(delete(document_id) or 0)
+        refresh_retriever(self._retriever)
+        if self._cache is not None:
+            self._cache.delete_document(document_id)
+        return removed
 
     def retrieve(
         self,
@@ -478,20 +550,32 @@ class RAGEngine:
                 rec.set(abstained=result.abstained)
                 return result
 
-    def evaluate_sample(self, query: str) -> EvaluationSample:
+    def evaluate_sample(
+        self, query: str, *, auth_context: AuthContext | None = None
+    ) -> EvaluationSample:
         """Implements ``EvaluationTarget`` (see ``evaluation/target.py``): runs the full
         ``answer()`` pipeline -- sanitization, guards, retrieval, generation, citation
         mapping -- and reduces the result to a tool-agnostic ``EvaluationSample`` an
         ``EvaluationRunner`` can score without knowing anything about ``RetrievedChunk``
-        or ``Answer``."""
+        or ``Answer``.
 
-        result = self.answer(query)
+        ``auth_context`` is passed to :meth:`answer`, so a corpus with tagged documents
+        can be evaluated as a given caller -- without it only untagged chunks are
+        retrievable. A runner calls ``evaluate_sample(query)``; to evaluate as a caller,
+        pass ``functools.partial(engine.evaluate_sample, auth_context=ctx)`` as the
+        target."""
+
+        result = self.answer(query, auth_context=auth_context)
         return EvaluationSample(
             query=query,
             answer=result.text,
             contexts=[item.chunk.text for item in result.retrieved],
             retrieved_doc_ids=[item.chunk.document_id for item in result.retrieved],
-            metadata={"trace_id": result.trace_id, "abstained": result.abstained},
+            metadata={
+                "trace_id": result.trace_id,
+                "abstained": result.abstained,
+                "abstention_reason": result.abstention_reason,
+            },
         )
 
     def _write_audit(
@@ -544,6 +628,7 @@ class RAGEngine:
                 llm_version=self._llm_version,
                 embedding_version=self._embedding_version,
                 system_prompt_version=self._system_prompt_version,
+                metadata={"prompts": prompt_metadata(system=self.get_system_prompt_ref())},
             )
         except AuditWriteError:
             logger.error(
@@ -638,6 +723,13 @@ class RAGEngine:
             auth_context,
         )
 
+        abstention_reason: str | None = "output_guard" if abstained else None
+        if not abstained and _is_abstention(text, self._abstention_phrase):
+            # The model followed the prompt's grounding rule and declined: report it as
+            # an abstention, not as an answer (it used to come back abstained=False).
+            abstained, abstention_reason = True, "model_abstained"
+            ABSTENTION_COUNT.add(1, {"reason": abstention_reason})
+
         REQUEST_COUNT.add(1, {"status": "ok"})
         return Answer(
             text=text,
@@ -646,6 +738,7 @@ class RAGEngine:
             redactions=redaction_labels,
             trace_id=trace_id,
             abstained=abstained,
+            abstention_reason=abstention_reason,
             # Populated only on this, the one exit point that reaches "the end" of
             # _answer() -- the earlier early-return Answers (empty question, legacy-guard
             # block, empty KB, no chunks, low confidence, guard v2 reject) stay None,
@@ -713,6 +806,9 @@ class RAGEngine:
             redactions=redaction_labels,
             trace_id=trace_id,
             abstained=abstained,
+            abstention_reason=(
+                (abstention_reason or event_type) if abstained else None
+            ),
         )
 
     def _sanitize_and_build_query(
@@ -964,9 +1060,11 @@ class RAGEngine:
                     )
                     for _pair in contradiction_pairs:
                         record_contradiction_detected()
-                    record_audit(
-                        self._audit_log_path,
-                        enabled=self._audit_enabled,
+                    # Through _write_audit like every other record: a broken audit sink
+                    # is logged as an error there. Called directly, its AuditWriteError
+                    # fell into the generic handler below and was logged as a
+                    # contradiction-detection failure instead.
+                    self._write_audit(
                         trace_id=trace_id,
                         raw_question=question or "",
                         sanitized_retrieval_query=retrieval_query,
@@ -980,9 +1078,6 @@ class RAGEngine:
                             {p.chunk_a_id for p in contradiction_pairs}
                             | {p.chunk_b_id for p in contradiction_pairs}
                         ),
-                        llm_version=self._llm_version,
-                        embedding_version=self._embedding_version,
-                        system_prompt_version=self._system_prompt_version,
                     )
                     if (
                         self._contradiction_db_path is not None
@@ -1024,6 +1119,9 @@ class RAGEngine:
                     self._system_prompt_version,
                     self._llm_version,
                     self._embedding_version,
+                    chunk_texts=[c.chunk.text for c in retrieved],
+                    system_prompt_hash=self.get_system_prompt_ref().content_hash,
+                    llm_identity=_llm_identity(self._llm),
                 )
                 text = self._cache.get(cache_key)
                 cache_hit = text is not None
@@ -1037,13 +1135,16 @@ class RAGEngine:
         if text is None:
             with instrumented_step("generate"):
                 user_prompt = build_user_prompt(retrieval_query, retrieved, self._messages)
+                record_prompts(system=self.get_system_prompt_ref())
                 try:
                     text = self._llm.generate(self._system_prompt, user_prompt)
                 except LLMError as exc:
                     raise LLMUnavailableError(str(exc)) from exc
             if cache_key is not None:
                 assert self._cache is not None  # cache_key is only set when cache exists
-                self._cache.put(cache_key, text)
+                self._cache.put(
+                    cache_key, text, [c.chunk.document_id for c in retrieved]
+                )
 
         return text, user_prompt
 
@@ -1181,3 +1282,42 @@ class RAGEngine:
             # Citation verification is best-effort; failures must not affect the returned answer.
             logger.exception("citation verification failed (answer unaffected)")
             return text
+
+
+_CITATION_TAG_RE = re.compile(r"\[S\d+\]")
+
+
+def _normalize_for_abstention(text: str) -> str:
+    text = _CITATION_TAG_RE.sub(" ", text).casefold()
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in text).split())
+
+
+def _is_abstention(text: str, phrase: str) -> bool:
+    """Whether ``text`` opens with the abstention phrase, ignoring case, punctuation,
+    citation tags and spacing ("I don't have enough information ... [S1]." included).
+    An answer that merely mentions the phrase later on is still an answer."""
+
+    normalized_phrase = _normalize_for_abstention(phrase)
+    return bool(normalized_phrase) and _normalize_for_abstention(text).startswith(
+        normalized_phrase
+    )
+
+
+def _llm_identity(llm: LLMProvider) -> str:
+    """Provider and model of ``llm`` for the QA-cache key. Built-in providers report
+    both in ``name`` (``"openai:gpt-4o-mini"``); the class name keeps two providers that
+    report nothing useful apart."""
+
+    try:
+        name = str(llm.name)
+    except Exception:  # noqa: BLE001 -- a provider without a usable name still caches
+        name = ""
+    return f"{type(llm).__module__}.{type(llm).__qualname__}:{name}"
+
+
+def _split_prompt(prompt: str | RenderedPrompt) -> tuple[str, tuple[PromptRef, str]]:
+    """``(text, (ref, text the ref was made for))`` -- see ``get_system_prompt_ref``."""
+
+    if isinstance(prompt, RenderedPrompt):
+        return prompt.text, (prompt.ref, prompt.text)
+    return prompt, (PromptRef.for_text(SYSTEM_PROMPT_NAME, prompt), prompt)

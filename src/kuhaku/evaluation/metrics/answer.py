@@ -13,13 +13,15 @@ class AnswerCorrectnessMetric(BaseMetric):
     A baseline fallback only -- prefer ``FaithfulnessMetric`` with an LLM judge for a
     semantic score. Skips (returns ``{}``) when no answer was generated, or no golden
     answer is present in ``metadata`` (a non-RAG target with nothing to compare against).
+    An empty or whitespace-only golden answer -- what the dataset loader fills in when a
+    row has none -- counts as absent, not as a reference every answer scores 0.0 against.
     """
 
     name = "answer_correctness"
 
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
         golden_answer = sample.metadata.get("golden_answer")
-        if sample.answer is None or golden_answer is None:
+        if sample.answer is None or not isinstance(golden_answer, str) or not golden_answer.strip():
             return {}
         score = fn.answer_correctness(sample.answer, golden_answer)
         return {"answer_correctness": score}

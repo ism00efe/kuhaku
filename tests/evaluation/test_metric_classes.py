@@ -73,6 +73,16 @@ def test_hit_rate_at_k_metric_miss():
     assert result == {"hit_rate_at_k": 0.0}
 
 
+@pytest.mark.parametrize(
+    "metric",
+    [RecallAtKMetric(), PrecisionAtKMetric(), MRRMetric(), NDCGAtKMetric(), HitRateAtKMetric()],
+)
+@pytest.mark.parametrize("relevant", [set(), None])
+def test_retrieval_metrics_skip_samples_without_golden_ids(metric, relevant):
+    sample = _sample(retrieved_doc_ids=["a"], relevant_doc_ids=relevant)
+    assert metric.evaluate(sample) == {}
+
+
 # -- answer correctness --------------------------------------------------------------
 
 
@@ -84,6 +94,12 @@ def test_answer_correctness_metric_none_answer_skips():
 def test_answer_correctness_metric_no_golden_answer_skips():
     metric = AnswerCorrectnessMetric()
     assert metric.evaluate(_sample(answer="a b c")) == {}
+
+
+@pytest.mark.parametrize("golden", ["", "   "])
+def test_answer_correctness_metric_empty_golden_answer_skips(golden):
+    metric = AnswerCorrectnessMetric()
+    assert metric.evaluate(_sample(answer="a b c", metadata={"golden_answer": golden})) == {}
 
 
 def test_answer_correctness_metric_computes_jaccard():

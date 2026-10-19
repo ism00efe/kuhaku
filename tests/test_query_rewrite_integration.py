@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from kuhaku.tools.rag.engine import RAGEngine
 from kuhaku.tools.rag.query_rewriter import QueryRewriter
-from tests.conftest import FakeEmbeddings, FakeLLM, FakeRetriever, FakeVectorStore, make_chunk
+from tests.conftest import (
+    FakeEmbeddings,
+    FakeLLM,
+    FakeRetriever,
+    FakeVectorStore,
+    make_chunk,
+)
 
 
 class _ScriptedRewriteLLM:

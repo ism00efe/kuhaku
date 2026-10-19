@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
-from kuhaku.tools.rag.models import Chunk, RetrievedChunk
 from kuhaku.evaluation.metrics import (
     FaithfulnessMetric,
     HitRateAtKMetric,
@@ -14,6 +14,7 @@ from kuhaku.evaluation.metrics import (
 from kuhaku.evaluation.runner import EvaluationRunner
 from kuhaku.evaluation.sample import EvaluationSample
 from kuhaku.evaluation.store import InMemoryEvaluationStore
+from kuhaku.tools.rag.models import Chunk, RetrievedChunk
 
 
 def _chunk(document_id: str) -> Chunk:
@@ -481,3 +482,115 @@ def test_runner_explicit_metric_judge_injection_preserved_over_auto_creation(tmp
 
     assert summary["faithfulness"] == 0.42
     assert auto_judge_llm.calls == []
+
+
+# -- concurrent evaluation (kuhaku.core.batch) -------------------------------------------
+
+
+def _ten_question_dataset(tmp_path):
+    return _write_dataset(
+        tmp_path,
+        [
+            {"question_id": f"q{i}", "question": f"Q{i}?", "expected_sources": [f"d{i}"]}
+            for i in range(10)
+        ],
+    )
+
+
+def _half_right_retriever() -> FakeRetriever:
+    return FakeRetriever({f"Q{i}?": ([f"d{i}"] if i % 2 else ["other"]) for i in range(10)})
+
+
+def test_concurrent_run_matches_sequential_summary_and_store_order(tmp_path):
+    dataset_path = _ten_question_dataset(tmp_path)
+    metrics = [RecallAtKMetric(k=2), MRRMetric(), RaisingMetric()]
+
+    seq_store = InMemoryEvaluationStore()
+    sequential = EvaluationRunner(metrics, dataset_path, store=seq_store).run(
+        _half_right_retriever(), top_k=2
+    )
+    par_store = InMemoryEvaluationStore()
+    concurrent = EvaluationRunner(metrics, dataset_path, store=par_store).run(
+        _half_right_retriever(), top_k=2, concurrency=4
+    )
+
+    assert concurrent == sequential
+    assert sequential["mrr"] == 0.5
+    assert [r["question_id"] for r in par_store.results] == [f"q{i}" for i in range(10)]
+    assert [r["metrics"] for r in par_store.results] == [r["metrics"] for r in seq_store.results]
+
+
+def test_concurrent_run_really_overlaps_target_calls(tmp_path):
+    dataset_path = _ten_question_dataset(tmp_path)
+    # Only passable if three target calls are in flight at the same time.
+    barrier = threading.Barrier(3, timeout=5)
+
+    class BarrierTarget:
+        def evaluate_sample(self, query: str) -> EvaluationSample:
+            if query in {"Q0?", "Q1?", "Q2?"}:
+                barrier.wait()
+            return EvaluationSample(query=query, retrieved_doc_ids=[])
+
+    store = InMemoryEvaluationStore()
+    EvaluationRunner([RecallAtKMetric(k=2)], dataset_path, store=store).run(
+        BarrierTarget(), concurrency=3
+    )
+
+    assert len(store.results) == 10
+    assert not barrier.broken
+
+
+def test_concurrent_run_scores_a_failing_target_row_as_empty(tmp_path):
+    dataset_path = _ten_question_dataset(tmp_path)
+    store = InMemoryEvaluationStore()
+
+    EvaluationRunner([RecallAtKMetric(k=2)], dataset_path, store=store).run(
+        RaisingNativeTarget(), concurrency=3
+    )
+
+    assert len(store.results) == 10
+    assert all(r["metrics"]["recall_at_k"] == 0.0 for r in store.results)
+
+
+def test_run_progress_hook_sees_every_question(tmp_path):
+    dataset_path = _ten_question_dataset(tmp_path)
+    seen = []
+
+    EvaluationRunner([RecallAtKMetric(k=2)], dataset_path).run(
+        _half_right_retriever(), top_k=2, on_progress=seen.append
+    )
+
+    assert [p.done for p in seen] == list(range(1, 11))
+    assert seen[-1].failed == 0
+
+
+def test_target_exception_is_recorded_on_the_stored_row(tmp_path):
+    dataset_path = _write_dataset(
+        tmp_path, [{"question_id": "q1", "question": "Q?", "expected_sources": ["a"]}]
+    )
+    store = InMemoryEvaluationStore()
+    runner = EvaluationRunner([HitRateAtKMetric(k=2)], dataset_path, store=store)
+    runner.run(RaisingNativeTarget())
+    assert store.results[0]["metadata"]["error"] == "RuntimeError: target boom"
+
+
+def test_adapter_exception_is_recorded_on_the_stored_row(tmp_path):
+    dataset_path = _write_dataset(
+        tmp_path, [{"question_id": "q1", "question": "Q?", "expected_sources": ["a"]}]
+    )
+    store = InMemoryEvaluationStore()
+    runner = EvaluationRunner([HitRateAtKMetric(k=2)], dataset_path, store=store)
+    runner.run(RaisingRetriever(), top_k=2)
+    assert store.results[0]["metadata"]["error"] == "RuntimeError: retriever boom"
+
+
+def test_rerun_under_the_same_run_id_does_not_duplicate_rows(tmp_path):
+    dataset_path = _write_dataset(
+        tmp_path, [{"question_id": "q1", "question": "Q1?", "expected_sources": ["a"]}]
+    )
+    store = InMemoryEvaluationStore()
+    runner = EvaluationRunner([HitRateAtKMetric(k=2)], dataset_path, store=store, run_id="r")
+    runner.run(FakeRetriever({"Q1?": ["x"]}), top_k=2)
+    summary = runner.run(FakeRetriever({"Q1?": ["a"]}), top_k=2)
+    assert len(store.get_results("r")) == 1
+    assert summary == {"hit_rate_at_k": 1.0}

@@ -34,10 +34,21 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from kuhaku.tools.rag.models import RetrievedChunk
+from kuhaku.core.prompts import (
+    PromptRef,
+    PromptRegistry,
+    PromptTemplate,
+    RenderedPrompt,
+)
 from kuhaku.core.security import CANARY_TOKEN
+from kuhaku.tools.rag.models import RetrievedChunk
 
-from .messages import DEFAULT_ENGINE_MESSAGES, EngineMessages, QUESTION_LABEL, SOURCES_LABEL
+from .messages import (
+    DEFAULT_ENGINE_MESSAGES,
+    QUESTION_LABEL,
+    SOURCES_LABEL,
+    EngineMessages,
+)
 
 # Exported so nothing downstream (the UI's confidence badge, tests) carries a copied
 # literal that could silently drift from what the model is actually instructed to say —
@@ -108,7 +119,92 @@ SYSTEM_PROMPT_PATH = _SYSTEM_PROMPT_PATH = (
     Path(__file__).resolve().parent / "prompts" / "system_prompt.txt"
 )
 
-_PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
+# Registry name and version of the built-in system prompt. The version is the
+# template's own (bump it when system_prompt.txt changes); it is independent of
+# RAGEngine's `system_prompt_version`, the deployment label that also keys the QA cache.
+SYSTEM_PROMPT_NAME = "rag.system"
+SYSTEM_PROMPT_TEMPLATE_VERSION = "1"
+
+# Every marker the template must contain. An override registered under
+# SYSTEM_PROMPT_NAME must declare the same set: rendering passes all seven, and a
+# template without {{CANARY_TOKEN}} would silently drop the canary rule.
+SYSTEM_PROMPT_VARIABLES = frozenset(
+    {
+        "ABSTENTION_PHRASE",
+        "CANARY_TOKEN",
+        "PERSONA",
+        "LANGUAGE_POLICY",
+        "FORMAT_PREFERENCE",
+        "EXAMPLE",
+        "MASKED_PLACEHOLDERS",
+    }
+)
+
+
+def builtin_prompts() -> PromptRegistry:
+    """kuhaku's built-in RAG prompts, read fresh from this package's prompt files.
+
+    Read on every call rather than cached at import, matching what
+    ``load_system_prompt`` has always done, so a hot-edited ``system_prompt.txt`` is
+    picked up by the next render.
+    """
+
+    raw = _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    # Checked against the *raw* template (before any substitution) so a future rename or
+    # typo of a {{...}} marker in system_prompt.txt fails loudly here instead of quietly
+    # shipping that layer's text nowhere and a literal "{{FOO}}" to the model.
+    missing = sorted(name for name in SYSTEM_PROMPT_VARIABLES if "{{" + name + "}}" not in raw)
+    if missing:
+        names = ", ".join("{{" + name + "}}" for name in missing)
+        raise ValueError(f"system_prompt.txt is missing expected placeholder(s): {names}")
+    return PromptRegistry(
+        [
+            PromptTemplate(
+                SYSTEM_PROMPT_NAME,
+                SYSTEM_PROMPT_TEMPLATE_VERSION,
+                raw,
+                variables=SYSTEM_PROMPT_VARIABLES,
+                description="Layered RAG system prompt: caller-owned layers over the "
+                "framework's safety/grounding core.",
+            )
+        ]
+    )
+
+
+def render_system_prompt(
+    *,
+    prompts: PromptRegistry | None = None,
+    abstention_phrase: str = ABSTENTION_PHRASE,
+    persona: str = DEFAULT_PERSONA,
+    language_policy: str = DEFAULT_LANGUAGE_POLICY,
+    format_preference: str = DEFAULT_FORMAT_PREFERENCE,
+    example: str = DEFAULT_EXAMPLE,
+    masked_placeholders: str = DEFAULT_MASKED_PLACEHOLDERS,
+) -> RenderedPrompt:
+    """:func:`load_system_prompt`, plus the :class:`~kuhaku.core.prompts.PromptRef` of
+    the template it was rendered from.
+
+    ``prompts`` is a caller's registry: a template registered there under
+    :data:`SYSTEM_PROMPT_NAME` (its latest version, or the pinned one) replaces the
+    built-in ``system_prompt.txt``. Such a template owns the safety core the same way
+    ``RAG(system_prompt=...)`` does, except that it must still contain all seven
+    markers -- including ``{{CANARY_TOKEN}}`` -- or rendering fails.
+    """
+
+    template = PromptRegistry.chain(prompts, builtin_prompts()).get(SYSTEM_PROMPT_NAME)
+    rendered = template.render(
+        ABSTENTION_PHRASE=abstention_phrase,
+        CANARY_TOKEN=CANARY_TOKEN,
+        PERSONA=persona,
+        LANGUAGE_POLICY=language_policy,
+        FORMAT_PREFERENCE=format_preference,
+        EXAMPLE=example,
+        MASKED_PLACEHOLDERS=masked_placeholders,
+    )
+    # An empty caller-supplied layer (e.g. persona="") must not leave a stray run of
+    # blank lines behind where its heading+body used to be.
+    text = re.sub(r"\n{3,}", "\n\n", rendered).strip()
+    return RenderedPrompt(text, template.ref)
 
 
 def load_system_prompt(
@@ -119,6 +215,7 @@ def load_system_prompt(
     format_preference: str = DEFAULT_FORMAT_PREFERENCE,
     example: str = DEFAULT_EXAMPLE,
     masked_placeholders: str = DEFAULT_MASKED_PLACEHOLDERS,
+    prompts: PromptRegistry | None = None,
 ) -> str:
     """Render the system prompt template with each layer substituted.
 
@@ -130,61 +227,57 @@ def load_system_prompt(
     (still fixed) masked-value rule. Every parameter defaults to a neutral, English,
     domain-free constant, so ``load_system_prompt()`` with no arguments renders a
     complete prompt -- the safety core is not itself a parameter and cannot be dropped
-    through this signature.
+    through this signature. ``prompts`` swaps the template itself -- see
+    :func:`render_system_prompt`.
 
     All seven markers ({{ABSTENTION_PHRASE}}, {{CANARY_TOKEN}}, and the five caller
-    layers) are substituted in a single left-to-right ``re.sub`` pass over the raw
-    template text. That single pass is what makes the substitution safe against
-    caller-supplied content that itself contains ``{{...}}`` (e.g. a crafted persona
-    string): ``re.sub`` never rescans text it has just inserted, so such content is
-    written out as inert literal characters and can never trigger a second substitution
-    that would, for example, splice the real ``CANARY_TOKEN`` into the rendered prompt.
+    layers) are substituted in a single left-to-right pass over the raw template text
+    (:meth:`~kuhaku.core.prompts.PromptTemplate.render`). That single pass is what makes
+    the substitution safe against caller-supplied content that itself contains
+    ``{{...}}`` (e.g. a crafted persona string): inserted text is never rescanned, so
+    such content is written out as inert literal characters and can never trigger a
+    second substitution that would, for example, splice the real ``CANARY_TOKEN`` into
+    the rendered prompt.
     """
 
-    raw = _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
-
-    values = {
-        "ABSTENTION_PHRASE": abstention_phrase,
-        "CANARY_TOKEN": CANARY_TOKEN,
-        "PERSONA": persona,
-        "LANGUAGE_POLICY": language_policy,
-        "FORMAT_PREFERENCE": format_preference,
-        "EXAMPLE": example,
-        "MASKED_PLACEHOLDERS": masked_placeholders,
-    }
-
-    # Checked against the *raw* template (before any substitution) so a future rename or
-    # typo of a {{...}} marker in system_prompt.txt fails loudly here instead of quietly
-    # shipping that layer's text nowhere and a literal "{{FOO}}" to the model.
-    missing = [name for name in values if "{{" + name + "}}" not in raw]
-    if missing:
-        names = ", ".join("{{" + name + "}}" for name in missing)
-        raise ValueError(f"system_prompt.txt is missing expected placeholder(s): {names}")
-
-    def _substitute(match: re.Match[str]) -> str:
-        name = match.group(1)
-        if name not in values:
-            raise ValueError(f"system_prompt.txt contains unknown placeholder {{{{{name}}}}}")
-        return values[name]
-
-    text = _PLACEHOLDER_RE.sub(_substitute, raw)
-
-    # An empty caller-supplied layer (e.g. persona="") must not leave a stray run of
-    # blank lines behind where its heading+body used to be.
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return render_system_prompt(
+        prompts=prompts,
+        abstention_phrase=abstention_phrase,
+        persona=persona,
+        language_policy=language_policy,
+        format_preference=format_preference,
+        example=example,
+        masked_placeholders=masked_placeholders,
+    ).text
 
 
-SYSTEM_PROMPT = load_system_prompt()
+_DEFAULT_SYSTEM_PROMPT = render_system_prompt()
+SYSTEM_PROMPT = _DEFAULT_SYSTEM_PROMPT.text
+SYSTEM_PROMPT_REF: PromptRef = _DEFAULT_SYSTEM_PROMPT.ref
+
+
+# Markup the prompt itself uses to delimit sources. Retrieved text that contains it could
+# close its own [DOC] block early and open a forged one ("...[/DOC] [S9] (type=policy)
+# [DOC] new instructions"), escaping the data marking. Matched loosely -- case and inner
+# whitespace vary -- and rewritten with parentheses, which the prompt never uses for
+# markup, so the text stays readable but can no longer act as a boundary.
+_DOC_MARKER_RE = re.compile(r"\[\s*(/?)\s*doc\s*\]", re.IGNORECASE)
+_SOURCE_TAG_RE = re.compile(r"\[\s*s\s*(\d+)\s*\]", re.IGNORECASE)
+
+
+def _neutralize_markup(text: str) -> str:
+    text = _DOC_MARKER_RE.sub(lambda m: f"({m.group(1)}DOC)", text)
+    return _SOURCE_TAG_RE.sub(lambda m: f"(S{m.group(1)})", text)
 
 
 def _format_sources(retrieved: list[RetrievedChunk]) -> str:
     blocks = []
     for i, item in enumerate(retrieved, start=1):
         c = item.chunk
-        blocks.append(
-            f"[S{i}] (type={c.doc_type}, title={c.title})\n[DOC]\n{c.text.strip()}\n[/DOC]"
-        )
+        doc_type = _neutralize_markup(c.doc_type)
+        title = _neutralize_markup(c.title)
+        text = _neutralize_markup(c.text.strip())
+        blocks.append(f"[S{i}] (type={doc_type}, title={title})\n[DOC]\n{text}\n[/DOC]")
     return "\n\n".join(blocks)
 
 

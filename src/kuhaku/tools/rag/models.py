@@ -105,11 +105,27 @@ class Chunk:
         today = as_of or date.today()
         if self.obsolete:
             return False
-        if self.effective_date and date.fromisoformat(self.effective_date) > today:
+        effective = _parse_date(self.effective_date)
+        if effective is not None and effective > today:
             return False
-        if self.expiry_date and date.fromisoformat(self.expiry_date) < today:
+        expiry = _parse_date(self.expiry_date)
+        if expiry is not None and expiry < today:
             return False
         return True
+
+
+def _parse_date(value: str) -> date | None:
+    """An ISO date, or ``None`` for "no bound" -- which is also what an unparsable
+    value means here. Ingestion already drops malformed dates with a warning; a chunk
+    written before that (or by another writer) must not crash every query that
+    retrieves it, as ``date.fromisoformat("01/02/2024")`` used to."""
+
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -141,10 +157,14 @@ class Answer:
     retrieved: list[RetrievedChunk]
     redactions: list[str] = field(default_factory=list)
     trace_id: str = ""
-    # True only for the zero-chunk case: retrieval ran and found nothing, so the LLM
-    # was never called. Other "no real answer" paths (empty query, guard block, empty KB)
-    # are distinct, pre-existing conditions and stay False.
+    # True when no grounded answer was given: retrieval found nothing usable (zero
+    # chunks, low confidence), guard v2 rejected the query, the output guard blocked
+    # the answer, or the model itself answered with the abstention phrase. Other "no
+    # real answer" paths (empty query, legacy guard block, empty KB) stay False.
     abstained: bool = False
+    # Why, when abstained: "zero_chunks", "low_confidence", "guard_v2_reject",
+    # "output_guard" or "model_abstained". None otherwise.
+    abstention_reason: str | None = None
     # Deployed LLM/embedding/system-prompt versions that produced this answer, from
     # Settings.llm_model_version and RAGSettings.embedding_model_version/
     # prod_prompt_version. None only on the early-return paths in RAGEngine._answer()

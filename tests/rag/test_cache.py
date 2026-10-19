@@ -132,3 +132,51 @@ def test_get_and_put_against_a_broken_path_degrade_gracefully_and_warn(tmp_path,
 
     assert result is None
     assert "qa_cache" in caplog.text
+
+
+def test_compute_cache_key_is_sensitive_to_chunk_text_prompt_hash_and_llm():
+    base = {"chunk_texts": ["t"], "system_prompt_hash": "h", "llm_identity": "openai:a"}
+    key = compute_cache_key("q", ["d::0"], "v", "l", "e", **base)
+    for change in (
+        {"chunk_texts": ["t2"]},
+        {"system_prompt_hash": "h2"},
+        {"llm_identity": "openai:b"},
+    ):
+        assert compute_cache_key("q", ["d::0"], "v", "l", "e", **{**base, **change}) != key
+
+
+# --- per-document invalidation --------------------------------------------------
+def test_delete_document_drops_only_answers_built_on_that_document(tmp_path):
+    cache = QueryAnswerCache(str(tmp_path / "qa.sqlite3"), ttl_seconds=3600)
+    cache.put("k-a", "cevap a", ["doc-a"])
+    cache.put("k-ab", "cevap ab", ["doc-a", "doc-b"])
+    cache.put("k-b", "cevap b", ["doc-b"])
+
+    assert cache.delete_document("doc-a") == 2
+
+    assert cache.get("k-a") is None
+    assert cache.get("k-ab") is None
+    assert cache.get("k-b") == "cevap b"
+    assert cache.delete_document("doc-a") == 0
+
+
+def test_put_overwrite_replaces_the_document_mapping(tmp_path):
+    cache = QueryAnswerCache(str(tmp_path / "qa.sqlite3"), ttl_seconds=3600)
+    cache.put("k", "eski", ["doc-a"])
+    cache.put("k", "yeni", ["doc-b"])
+
+    assert cache.delete_document("doc-a") == 0
+    assert cache.get("k") == "yeni"
+    assert cache.delete_document("doc-b") == 1
+
+
+def test_clear_still_drops_everything(tmp_path):
+    cache = QueryAnswerCache(str(tmp_path / "qa.sqlite3"), ttl_seconds=3600)
+    cache.put("k1", "bir", ["doc-a"])
+    cache.put("k2", "iki")
+
+    cache.clear()
+
+    assert cache.get("k1") is None
+    assert cache.get("k2") is None
+    assert cache.delete_document("doc-a") == 0

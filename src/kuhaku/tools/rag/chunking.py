@@ -27,8 +27,14 @@ class Chunker(Protocol):
 
 
 def _pack_paragraphs(paragraphs: list[str], chunk_size: int, overlap: int) -> list[str]:
-    """Greedily pack paragraphs into ``chunk_size``-char windows, hard-splitting any
-    single paragraph too long to fit, with an ``overlap``-char stride."""
+    """Greedily pack paragraphs into ``chunk_size``-char windows.
+
+    ``overlap`` only applies inside a single paragraph too long to fit, which is
+    hard-split into windows sharing ``overlap`` characters. Packed paragraphs do not
+    overlap: the paragraph boundary is already a natural break. The hard split stops at
+    the window that reaches the paragraph's end, so the tail is never emitted again as a
+    window wholly contained in the previous one.
+    """
 
     windows: list[str] = []
     buffer = ""
@@ -41,10 +47,17 @@ def _pack_paragraphs(paragraphs: list[str], chunk_size: int, overlap: int) -> li
             if len(para) <= chunk_size:
                 buffer = para
             else:
+                if not 0 <= overlap < chunk_size:
+                    raise ValueError(
+                        "overlap must satisfy 0 <= overlap < chunk_size; got "
+                        f"overlap={overlap}, chunk_size={chunk_size}"
+                    )
                 start = 0
-                while start < len(para):
+                while True:
                     windows.append(para[start : start + chunk_size])
-                    start += max(1, chunk_size - overlap)
+                    if start + chunk_size >= len(para):
+                        break
+                    start += chunk_size - overlap
                 buffer = ""
     if buffer:
         windows.append(buffer)
@@ -52,7 +65,8 @@ def _pack_paragraphs(paragraphs: list[str], chunk_size: int, overlap: int) -> li
 
 
 def chunk_document(doc: Document, chunk_size: int, overlap: int) -> list[Chunk]:
-    """Split a document into overlapping, paragraph-aware character windows."""
+    """Split a document into paragraph-aware character windows (see
+    ``_pack_paragraphs`` for where ``overlap`` applies)."""
 
     text = doc.text.strip()
     if not text:
