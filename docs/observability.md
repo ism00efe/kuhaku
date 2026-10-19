@@ -117,6 +117,9 @@ registry. The instruments a library user will actually see values on:
 | `kuhaku_stage_duration_seconds` | histogram | `stage` |
 | `kuhaku_sanitization_redactions_total` | counter | `category` |
 | `kuhaku_llm_tokens_total` | counter | `gen_ai.system`, `gen_ai.request.model`, `gen_ai.token.type` |
+| `kuhaku_llm_cache_lookups_total` | counter | `source` (`cache`), `result` (`hit`/`miss`), `gen_ai.system` |
+| `kuhaku_llm_rate_limit_wait_seconds` | histogram | `gen_ai.system` — only with a [rate limiter](limits.md) |
+| `kuhaku_llm_rate_limited_total` | counter | `gen_ai.system` — only with a rate limiter |
 | `kuhaku_retry_attempts_total` | counter | `service` |
 | `kuhaku_retry_successes_total` / `_failures_total` | counter | `service` |
 | `kuhaku_audit_records_total` | counter | — |
@@ -132,6 +135,8 @@ registry. The instruments a library user will actually see values on:
 `low_confidence`.
 
 `service` on the retry counters is one of `llm`, `embedding`, `vectorstore`, `reranker`.
+
+`kuhaku_llm_cache_lookups_total` only moves when you wrap a provider in `CachingLLM` — see [LLM caching](llm-caching.md).
 
 ### Exposing them
 

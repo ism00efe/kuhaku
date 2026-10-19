@@ -141,7 +141,7 @@ RETRY_FAILURES = _meter.create_counter(
     description="Failed retries (all attempts exhausted) by service",
 )
 
-_VALID_RETRY_SERVICES = {"llm", "embedding", "vectorstore", "reranker"}
+_VALID_RETRY_SERVICES = {"llm", "embedding", "vectorstore", "reranker", "batch"}
 
 
 def record_retry_attempt(service: str) -> None:
@@ -248,3 +248,54 @@ def record_llm_token_usage(
         output_tokens,
         {GEN_AI_SYSTEM: provider, GEN_AI_REQUEST_MODEL: model, GEN_AI_TOKEN_TYPE: "output"},
     )
+
+
+# --- LLM response cache (core/llm/cache.py) ----
+LLM_CACHE_LOOKUPS = _meter.create_counter(
+    "kuhaku_llm_cache_lookups_total",
+    unit="1",
+    description="LLM response lookups, by source (cache), result and provider",
+)
+
+_VALID_LLM_CACHE_SOURCES = {"cache"}
+_VALID_LLM_CACHE_RESULTS = {"hit", "miss"}
+
+
+def record_llm_cache_lookup(*, source: str, result: str, system: str) -> None:
+    """Increment the LLM cache lookup counter. ``system`` is the provider prefix of
+    ``LLMProvider.name`` (e.g. ``"openai"``) -- never the model or any prompt content."""
+
+    source_label = source if source in _VALID_LLM_CACHE_SOURCES else "unknown"
+    result_label = result if result in _VALID_LLM_CACHE_RESULTS else "unknown"
+    LLM_CACHE_LOOKUPS.add(
+        1, {"source": source_label, "result": result_label, GEN_AI_SYSTEM: system}
+    )
+
+
+# --- LLM rate limiting (core/llm/limits/) ----------------------------------------------
+# `gen_ai.system` is the provider label the wrapper was constructed with (a fixed config
+# value, as for TokenTrackingLLM).
+LLM_RATE_LIMIT_WAIT = _meter.create_histogram(
+    "kuhaku_llm_rate_limit_wait_seconds",
+    unit="s",
+    description="Time a call waited in the client-side rate limiter before being sent",
+)
+LLM_RATE_LIMITED_TOTAL = _meter.create_counter(
+    "kuhaku_llm_rate_limited_total",
+    unit="1",
+    description="Provider rate-limit rejections (HTTP 429) seen by the rate limiter",
+)
+
+def record_llm_rate_limit_wait(*, provider: str, seconds: float) -> None:
+    """Observe how long one call waited in a ``RateLimiter`` (0 when it went straight
+    through -- recorded anyway, so the histogram's count is the number of calls)."""
+
+    LLM_RATE_LIMIT_WAIT.record(seconds, {GEN_AI_SYSTEM: provider})
+
+
+def record_llm_rate_limited(*, provider: str) -> None:
+    """Increment the provider-429 counter."""
+
+    LLM_RATE_LIMITED_TOTAL.add(1, {GEN_AI_SYSTEM: provider})
+
+

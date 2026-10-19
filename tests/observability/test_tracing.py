@@ -90,17 +90,24 @@ def test_nested_instrumented_steps_are_parent_and_child():
 
 
 class _FakeProvider:
-    """Minimal LLMProvider stub carrying a preset `last_usage`, like conftest's but
-    local to this test to keep the tracing suite self-contained."""
+    """Minimal LLMProvider stub reporting a preset usage on each call (a new object
+    per call, as the real providers do), local to keep the tracing suite
+    self-contained."""
 
     def __init__(self, last_usage: TokenUsage | None) -> None:
-        self.last_usage = last_usage
+        self._usage = last_usage
+        self.last_usage: TokenUsage | None = None
 
     @property
     def name(self) -> str:
         return "ollama:qwen2.5:7b-instruct"
 
     def generate(self, system: str, user: str) -> str:
+        if self._usage is not None:
+            self.last_usage = TokenUsage(
+                prompt_tokens=self._usage.prompt_tokens,
+                completion_tokens=self._usage.completion_tokens,
+            )
         return "answer"
 
 

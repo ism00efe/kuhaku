@@ -92,6 +92,12 @@ _KEYWORD_PHRASES: tuple[str, ...] = (
     "artık sınırsız",
     "kurallarını yoksay",
     "kurallarını unut",
+    "kuralları unut",
+    "talimatları unut",
+    "önceki talimatları yok say",
+    "talimatları yok say",
+    "sistem istemini",
+    "sistem promptunu",
 )
 _KEYWORD_WEIGHT = 0.15
 _KEYWORD_CAP = 0.30
@@ -224,6 +230,41 @@ class RuleBasedScorer:
             return 0.0
         density = sum(1 for ch in text if ch in _PUNCT_DENSITY_CHARS) / len(text)
         return _PUNCT_DENSITY_WEIGHT if density > _PUNCT_DENSITY_THRESHOLD else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Structural signals the normalizer removes before scoring
+# ---------------------------------------------------------------------------
+# Chat-template turn markers the normalizer strips. Stripped, they can no longer be seen
+# by any Stage-1 backend (rule-based or LR) -- so their presence in the raw text is added
+# afterwards as its own feature. Weighted to reach RESTRICTED on its own at the usual
+# thresholds but to need one corroborating signal for REJECT. "---"/"###" are stripped
+# too but are ordinary Markdown, so they are not counted.
+_STRUCTURAL_DELIMITERS = frozenset(
+    {"<|im_start|>", "<|im_end|>", "</system>", "</user>", "</assistant>",
+     "[system]", "[user]", "[assistant]"}
+)
+_STRUCTURAL_DELIMITER_WEIGHT = 0.45
+
+
+def with_structural_signals(stage1: Stage1Result, normalization: object) -> Stage1Result:
+    """``stage1`` plus an ``injection_delimiter`` feature when the normalizer stripped a
+    chat-template delimiter from the raw text (``normalization`` is a
+    :class:`~kuhaku.core.security.normalizer.NormalizationResult`)."""
+
+    stripped = getattr(normalization, "stripped_delimiters", ())
+    if not any(d in _STRUCTURAL_DELIMITERS for d in stripped):
+        return stage1
+    features = [
+        *stage1.top_features,
+        ("injection_delimiter", _STRUCTURAL_DELIMITER_WEIGHT),
+    ]
+    features.sort(key=lambda kv: abs(kv[1]), reverse=True)
+    return Stage1Result(
+        score=min(1.0, stage1.score + _STRUCTURAL_DELIMITER_WEIGHT),
+        source=stage1.source,
+        top_features=features[:_TOP_FEATURES_COUNT],
+    )
 
 
 # ---------------------------------------------------------------------------

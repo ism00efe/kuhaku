@@ -19,7 +19,15 @@ import re
 from dataclasses import dataclass
 
 from ..observability.metrics import record_guard_degradation
-from ..sanitization import _CARD_RE, _TCKN_RE, _luhn_ok, _tckn_ok
+from ..sanitization import (  # _iban_ok re-exported: it lived here before
+    _CARD_RE,
+    _IBAN_RE,
+    _TCKN_RE,
+    _iban_ok,  # noqa: F401
+    _luhn_ok,
+    _tckn_ok,
+    _valid_iban_prefix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,34 +42,6 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 _TAG_ONLY_RE = re.compile(r"^(\[S\d+\]\s*)+$")
 
 _CANARY_MIN_SUBSTRING = 8
-
-# Candidate IBAN: 2 letters (country code) + 2 digits (check digits) + up to 30
-# alphanumerics (BBAN). Validated by mod-97 (ISO 7064) below.
-_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b")
-
-
-def _iban_ok(candidate: str) -> bool:
-    """mod-97 (ISO 7064) IBAN checksum.
-
-    Move the first 4 characters to the end, map letters A-Z -> 10-35, and check that the
-    resulting integer mod 97 equals 1. No IBAN validator exists anywhere else in this
-    codebase — written in the same regex+validator shape as `sanitization.py`'s
-    `_CARD_RE`/`_luhn_ok` and `_TCKN_RE`/`_tckn_ok`, not a different style.
-    """
-
-    if not 15 <= len(candidate) <= 34:
-        return False
-    rearranged = candidate[4:] + candidate[:4]
-    digits = []
-    for ch in rearranged:
-        if ch.isdigit():
-            digits.append(ch)
-        elif "A" <= ch <= "Z":
-            digits.append(str(ord(ch) - ord("A") + 10))
-        else:
-            return False
-    return int("".join(digits)) % 97 == 1
-
 
 def _tokenize(text: str) -> set[str]:
     return {w.lower() for w in _WORD_RE.findall(text)}
@@ -145,7 +125,7 @@ def detect_canary(text: str, canary: str) -> bool:
         return False
     if canary in text:
         return True
-    for start in range(0, len(canary) - _CANARY_MIN_SUBSTRING + 1):
+    for start in range(len(canary) - _CANARY_MIN_SUBSTRING + 1):
         if canary[start : start + _CANARY_MIN_SUBSTRING] in text:
             return True
     return False
@@ -156,12 +136,12 @@ def check_pii_egress(text: str, contexts: list[str]) -> list[str]:
     whose matched value does not appear verbatim in ``contexts`` (e.g. retrieved chunk
     text).
 
-    Note (documented, not a defect): `sanitization.py` already masks PII at ingestion, so
-    no legitimately-retrieved chunk can ever contain a raw PAN/national-ID/IBAN — the "not in
-    contexts" branch will practically always be true, so any valid-checksum PII the LLM
-    emits will always be flagged. That's correct, safe behavior; the check stays
-    context-aware anyway (matches the literal spec, and defends against a future
-    sanitization gap for some format).
+    `sanitization.py` masks cards, national ids and IBANs (spaced or not) at ingestion,
+    so a legitimately-retrieved chunk should not contain a raw one and the "not in
+    contexts" branch is practically always true: any valid-checksum value the LLM emits
+    is flagged. The check stays context-aware anyway, as a defence against a future
+    sanitization gap for some format. The IBAN pattern and mod-97 validator are the
+    sanitizer's own, so the two cannot drift apart.
     """
 
     corpus = "\n".join(contexts)
@@ -178,8 +158,8 @@ def check_pii_egress(text: str, contexts: list[str]) -> list[str]:
             categories.append("NATIONAL_ID")
 
     for match in _IBAN_RE.finditer(text):
-        candidate = match.group(0)
-        if _iban_ok(candidate) and candidate not in corpus:
+        candidate = _valid_iban_prefix(match.group(0))
+        if candidate is not None and candidate not in corpus:
             categories.append("IBAN")
 
     seen: set[str] = set()

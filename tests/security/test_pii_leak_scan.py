@@ -20,10 +20,10 @@ import logging
 
 import pytest
 
-from kuhaku.tools.rag.models import Chunk
 from kuhaku.core.sanitization import sanitize_text
 from kuhaku.tools.rag.engine import RAGEngine
 from kuhaku.tools.rag.ingestion import chunk_document, ingest, load_corpus
+from kuhaku.tools.rag.models import Chunk
 from kuhaku.tools.rag.retriever import DenseRetriever
 from kuhaku.tools.rag.sparse_retriever import build_bm25_from_store
 from tests.conftest import FakeEmbeddings, FakeVectorStore

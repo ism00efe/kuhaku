@@ -173,7 +173,9 @@ def test_log_step_logs_error_and_reraises(caplog):
     record = caplog.records[-1]
     assert record.step == "generate"
     assert record.status == "error"
-    assert record.error == "boom"
+    # The type, never the message: messages quote their input.
+    assert record.error == "ValueError"
+    assert "boom" not in record.getMessage()
 
 
 def test_log_step_initial_extra_is_included(caplog):

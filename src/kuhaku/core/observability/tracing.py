@@ -21,7 +21,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 
 from opentelemetry import trace
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, Status, StatusCode
 
 from .telemetry import get_tracer
 
@@ -76,14 +76,24 @@ def set_span_attributes(span: Span, attributes: Mapping[str, object]) -> None:
 def start_span(name: str, **attributes: object) -> Iterator[Span]:
     """Open an OTel span named ``name``, as a child of whatever span is current.
 
-    On an exception raised inside the block, the SDK's own ``start_as_current_span``
-    records it and marks the span ERROR before re-raising -- nothing extra needed here.
+    On an exception raised inside the block the span gets an ``exception`` event and an
+    ERROR status, then the exception is re-raised. The event carries the exception type
+    only: the SDK's own recording would export ``str(exc)`` and the stack trace, and an
+    exception message routinely quotes user input.
     """
 
     tracer = get_tracer()
-    with tracer.start_as_current_span(name) as span:
+    with tracer.start_as_current_span(
+        name, record_exception=False, set_status_on_exception=False
+    ) as span:
         set_span_attributes(span, attributes)
-        yield span
+        try:
+            yield span
+        except BaseException as exc:
+            error_type = type(exc).__name__
+            span.add_event("exception", {"exception.type": error_type})
+            span.set_status(Status(StatusCode.ERROR, error_type))
+            raise
 
 
 def set_current_span_attributes(**attributes: object) -> None:

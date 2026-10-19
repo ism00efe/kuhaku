@@ -6,13 +6,16 @@ retrieval or the LLM. Mirrors ``sanitization.py``'s philosophy: rule-based, no L
 narrow and auditable. This is a coarse first line of defense against the well-known
 override/jailbreak patterns, not general content moderation.
 
-Known limitation: patterns target the common English jailbreak phrasing ("ignore
-previous instructions", etc.). A determined attacker phrasing an injection in Turkish
-could evade them, the same inherent limit deterministic regex sanitization already has.
+Coverage: the common English jailbreak phrasing ("ignore previous instructions", etc.)
+and the Turkish equivalents of the two most common shapes -- discarding instructions
+("önceki talimatları yok say", "kuralları unut") and revealing the system prompt
+("sistem istemini yaz/göster"). Any other language, or a paraphrase, can evade them: the
+inherent limit of a deterministic pattern list.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 import re
@@ -57,6 +60,23 @@ _PROMPT_LEAK = re.compile(
     r"(?i)\b(reveal|print|show|display|repeat)\b.{0,30}\bsystem\s+prompt\b"
 )
 
+# Turkish: "<instructions|rules|commands> ... <ignore|forget|disregard>" (Turkish puts the
+# verb last). The verb must end the word, plus an optional plural-imperative suffix, so
+# "kuralları unutma" ("do not forget the rules") is not a match.
+_INSTRUCTION_OVERRIDE_TR = re.compile(
+    r"(?i)\b(?:talimat|komut|kural|yönerge|direktif)\w*\s+(?:\w+\s+)?"
+    r"(?:yok\s*say|görmezden\s+gel|unut|dikkate\s+alma|umursama)(?:ın|in|un|ün)?\b"
+)
+
+# Turkish: "sistem istemini / promptunu / talimatlarını ... yaz|göster|söyle|...". The
+# verb must be an imperative or a polite question ("göster", "yazar mısın"), so "sistem
+# promptu yazılırken" ("while the system prompt was being written") is not a match.
+_PROMPT_LEAK_TR = re.compile(
+    r"(?i)\bsistem\s+(?:istem|prompt|talimat)\w*\s+(?:\w+\s+){0,2}?"
+    r"(?:yaz|göster|söyle|paylaş|tekrarla|dök)"
+    r"(?:ın|in|un|ün|ar|er|ır|ir|r|abilir|ebilir|yabilir|yebilir)?(?:\s+m[ıiuü]s[ıiuü]n(?:[ıiuü]z)?)?\b"
+)
+
 # Checked in order; first match wins. Order doesn't affect the outcome (any match
 # blocks), only which `reason` is reported.
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -65,6 +85,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (_ROLE_SWITCH, "role_switch"),
     (_SPECIAL_TOKENS, "special_token"),
     (_PROMPT_LEAK, "prompt_leak"),
+    (_INSTRUCTION_OVERRIDE_TR, "instruction_override"),
+    (_PROMPT_LEAK_TR, "prompt_leak"),
 )
 
 
@@ -91,12 +113,13 @@ def inspect_query(query: str) -> tuple[bool, str]:
 # below is dormant unless `Settings.guard_enabled` is True (default False).
 # ---------------------------------------------------------------------------
 
-# Process-wide singleton, generated once at import. Logged once so it's checkable
-# without reading source; the value itself is not sensitive (it exists
-# specifically to be logged and to appear, if ever, in a leaked LLM response), so it's
-# safe in a plain log message.
+# Process-wide singleton, generated once at import. Only a short hash of it is logged:
+# the token is in the system prompt, and anyone who can read the logs and learn it could
+# craft output that avoids (or deliberately trips) the leak detector. The hash prefix is
+# enough to tell which process's canary an alert refers to.
 CANARY_TOKEN: str = uuid.uuid4().hex
-logger.info("guard v2 canary token: %s", CANARY_TOKEN)
+CANARY_FINGERPRINT: str = hashlib.sha256(CANARY_TOKEN.encode("ascii")).hexdigest()[:12]
+logger.info("guard v2 canary token fingerprint: %s", CANARY_FINGERPRINT)
 
 GUARD_REJECT_MESSAGE = (
     "This request could not be processed due to security policy. Please rephrase "
@@ -185,9 +208,10 @@ class GuardPipeline:
         # Local import: avoids a module-level circular import (classifier.py imports
         # `guard._PATTERNS`), and only runs once per GuardPipeline construction, not
         # per-request.
-        from .classifier import NOT_RUN_STAGE2
+        from .classifier import NOT_RUN_STAGE2, with_structural_signals
 
         self._not_run_stage2 = NOT_RUN_STAGE2
+        self._with_structural_signals = with_structural_signals
         self._classifier = classifier
         self.low_threshold = low_threshold
         self.high_threshold = high_threshold
@@ -206,7 +230,9 @@ class GuardPipeline:
                 extra={"norm_drift": normalization.drift},
             )
 
-        stage1 = self._classifier.classify_stage1(normalization.text)
+        stage1 = self._with_structural_signals(
+            self._classifier.classify_stage1(normalization.text), normalization
+        )
 
         escalation_reason: str | None = None
         if stage1.score >= self.low_threshold:
