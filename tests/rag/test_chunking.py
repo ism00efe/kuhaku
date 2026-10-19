@@ -216,3 +216,25 @@ def test_structural_chunker_threads_access_tags_onto_every_chunk():
     chunks = StructuralChunker().chunk(doc, chunk_size=1000, overlap=50)
     assert len(chunks) >= 1
     assert all(c.access_tags == ("restricted",) for c in chunks)
+
+
+def test_hard_split_does_not_emit_a_contained_tail_window():
+    # 250 chars, size 100, overlap 20 -> windows at 0, 80, 160; the last reaches the end.
+    # The old loop also emitted [240:250], wholly inside the previous window.
+    chunks = ParagraphChunker().chunk(_doc("x" * 250), chunk_size=100, overlap=20)
+    assert [len(c.text) for c in chunks] == [100, 100, 90]
+
+
+def test_hard_split_rejects_overlap_not_smaller_than_size():
+    with pytest.raises(ValueError):
+        ParagraphChunker().chunk(_doc("x" * 250), chunk_size=100, overlap=100)
+
+
+@pytest.mark.parametrize(
+    ("size", "overlap"), [(100, 100), (100, 150), (100, -1), (0, 0)]
+)
+def test_rag_settings_validates_chunk_overlap(size, overlap):
+    from kuhaku.tools.rag.config import RAGSettings
+
+    with pytest.raises(ValueError):
+        RAGSettings(chunk_size=size, chunk_overlap=overlap)

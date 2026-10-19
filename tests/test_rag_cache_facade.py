@@ -11,6 +11,7 @@ These tests go through `kuhaku.RAG` instead, with a real (SQLite-backed)
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import kuhaku
 from kuhaku import RAG
@@ -89,7 +90,13 @@ def test_facade_default_cache_is_enabled_at_the_managed_default_location(monkeyp
     rag.ask("soru")
 
     assert llm.last_user is None  # caching is on by default -- no kwarg configured it
-    assert (tmp_path / "data" / "kuhaku_qa_cache.sqlite3").exists()
+    # Scoped to the store (it used to be the shared ./data/kuhaku_qa_cache.sqlite3,
+    # which let two stores with the same chunk ids read each other's answers).
+    rs = rag._rag_settings
+    assert (
+        Path(rs.chroma_persist_dir) / f"kuhaku_qa_cache_{rs.chroma_collection}.sqlite3"
+    ).exists()
+    assert not (tmp_path / "data").exists()
 
 
 def test_facade_ragsettings_cache_enabled_false_disables_caching_by_default(monkeypatch, tmp_path):
@@ -196,3 +203,62 @@ def test_facade_two_rag_instances_share_a_cache_path_without_crashing(monkeypatc
 
     rag2.ask("soru")  # second process/instance, same key -> hit against the shared file
     assert llm2.last_user is None
+
+
+# --- cache key correctness (review finding: stale / cross-tenant answers) -----------
+
+
+def test_two_stores_with_the_same_chunk_id_do_not_share_answers(monkeypatch):
+    llm_a = FakeLLM(response="A's secret salary [S1].")
+    rag_a = _build_rag(monkeypatch, FakeVectorStore([make_chunk("h", text="salary A")]), llm_a)
+    rag_a.ask("what is the salary?")
+
+    llm_b = FakeLLM(response="B's answer [S1].")
+    rag_b = _build_rag(monkeypatch, FakeVectorStore([make_chunk("h", text="salary B")]), llm_b)
+    answer = rag_b.ask("what is the salary?")
+
+    assert answer.text.startswith("B's answer")
+    assert llm_b.last_user is not None
+
+
+def test_reingested_text_under_the_same_chunk_id_misses_the_cache(monkeypatch, tmp_path):
+    store = FakeVectorStore([make_chunk("d1", text="old policy")])
+    llm = FakeLLM(response="old [S1].")
+    rag = _build_rag(monkeypatch, store, llm, cache=str(tmp_path / "c.db"))
+    rag.ask("policy?")
+
+    store._chunks = [make_chunk("d1", text="new policy")]
+    llm.response = "new [S1]."
+    assert rag.ask("policy?").text.startswith("new")
+
+
+def test_system_prompt_change_misses_the_cache(monkeypatch, tmp_path):
+    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+    llm = FakeLLM(response="first [S1].")
+    rag = _build_rag(monkeypatch, store, llm, cache=str(tmp_path / "c.db"))
+    rag.ask("soru")
+
+    rag.engine.update_system_prompt("A different system prompt.")
+    llm.response = "second [S1]."
+    assert rag.ask("soru").text.startswith("second")
+
+
+def test_llm_swap_misses_the_cache(monkeypatch, tmp_path):
+    class OtherLLM(FakeLLM):
+        @property
+        def name(self) -> str:
+            return "other:model"
+
+    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+    rag = _build_rag(monkeypatch, store, FakeLLM(response="first [S1]."), cache=str(tmp_path / "c.db"))
+    rag.ask("soru")
+
+    rag.engine.update_llm(OtherLLM(response="second [S1]."))
+    assert rag.ask("soru").text.startswith("second")
+
+
+def test_facade_passes_version_labels_to_the_engine(monkeypatch):
+    rag = _build_rag(monkeypatch, FakeVectorStore([make_chunk("d1")]), FakeLLM())
+    assert rag.engine.get_llm_version() == Settings(_env_file=None).llm_model_version
+    assert rag.engine.get_embedding_version() == rag._rag_settings.embedding_model_version
+    assert rag.engine.get_system_prompt_version() == rag._rag_settings.prod_prompt_version

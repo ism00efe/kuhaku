@@ -19,8 +19,8 @@ from typing import Protocol, runtime_checkable
 
 from tenacity import wait_exponential
 
-from kuhaku.tools.rag.models import RetrievedChunk
 from kuhaku.core.retry import call_with_retry
+from kuhaku.tools.rag.models import RetrievedChunk
 
 logger = logging.getLogger(__name__)
 

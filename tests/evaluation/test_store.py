@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from kuhaku.evaluation.store import InMemoryEvaluationStore, SqliteEvaluationStore
+import sqlite3
+
+from kuhaku.evaluation.store import (
+    InMemoryEvaluationStore,
+    ReadableEvaluationStore,
+    SqliteEvaluationStore,
+)
 
 
 def test_in_memory_store_summary_averages_across_results():
@@ -105,4 +111,109 @@ def test_sqlite_store_accepts_optional_metadata_without_error(tmp_path):
     store.add_result("q1", ["a"], {"recall": 1.0}, run_id="run1", metadata={"category": "faq"})
 
     assert store.summary() == {"recall": 1.0}
+    store.close()
+
+
+def test_sqlite_store_persists_metadata(tmp_path):
+    store = SqliteEvaluationStore(tmp_path / "eval.db")
+    store.add_result("q1", ["a"], {"recall": 1.0}, run_id="run1", metadata={"category": "çay"})
+
+    assert store.get_results("run1")[0]["metadata"] == {"category": "çay"}
+    store.close()
+
+
+def test_sqlite_store_get_results_round_trips_every_column(tmp_path):
+    db_path = tmp_path / "eval.db"
+    store = SqliteEvaluationStore(db_path)
+    store.add_result("q1", ["a", "b"], {"recall": 1.0}, answer="yes", run_id="run1")
+    store.add_result("q2", [], {"recall": 0.0}, run_id="run2")
+    store.close()
+
+    reopened = SqliteEvaluationStore(db_path)
+    assert reopened.get_results("run1") == [
+        {
+            "question_id": "q1",
+            "retrieved_ids": ["a", "b"],
+            "metrics": {"recall": 1.0},
+            "answer": "yes",
+            "run_id": "run1",
+            "metadata": {},
+        }
+    ]
+    assert [r["question_id"] for r in reopened.get_results()] == ["q2"]
+    assert reopened.get_results("nope") == []
+    reopened.close()
+
+
+def test_sqlite_store_lists_runs_in_first_write_order(tmp_path):
+    store = SqliteEvaluationStore(tmp_path / "eval.db")
+    assert store.list_runs() == []
+    store.add_result("q1", [], {}, run_id="b")
+    store.add_result("q1", [], {}, run_id="a")
+    store.add_result("q2", [], {}, run_id="b")
+
+    assert store.list_runs() == ["b", "a"]
+    store.close()
+
+
+def test_sqlite_store_migrates_a_database_without_the_metadata_column(tmp_path):
+    db_path = tmp_path / "old.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE eval_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, "
+        "question_id TEXT NOT NULL, retrieved_ids TEXT NOT NULL, metrics TEXT NOT NULL, "
+        "answer TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO eval_runs (run_id, question_id, retrieved_ids, metrics, answer) "
+        "VALUES ('old', 'q1', '[]', '{\"recall\": 1.0}', NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = SqliteEvaluationStore(db_path)
+    store.add_result("q2", [], {"recall": 0.0}, run_id="new", metadata={"k": 1})
+
+    assert store.get_results("old")[0]["metadata"] == {}
+    assert store.get_results("new")[0]["metadata"] == {"k": 1}
+    assert store.summary("old") == {"recall": 1.0}
+    store.close()
+
+
+def test_in_memory_store_get_results_and_list_runs():
+    store = InMemoryEvaluationStore()
+    assert store.get_results() == []
+    store.add_result("q1", [], {"recall": 1.0}, run_id="run1")
+    store.add_result("q2", [], {"recall": 0.0}, run_id="run2")
+
+    assert store.list_runs() == ["run1", "run2"]
+    assert [r["question_id"] for r in store.get_results()] == ["q2"]
+    assert [r["question_id"] for r in store.get_results("run1")] == ["q1"]
+
+
+def test_both_stores_satisfy_the_readable_protocol(tmp_path):
+    sqlite_store = SqliteEvaluationStore(tmp_path / "eval.db")
+    assert isinstance(InMemoryEvaluationStore(), ReadableEvaluationStore)
+    assert isinstance(sqlite_store, ReadableEvaluationStore)
+    sqlite_store.close()
+
+
+def test_same_run_and_sample_replaces_the_row_in_memory():
+    store = InMemoryEvaluationStore()
+    store.add_result("q1", ["a"], {"recall": 0.0}, run_id="run1")
+    store.add_result("q1", ["a"], {"recall": 1.0}, run_id="run1")
+
+    assert len(store.get_results("run1")) == 1
+    assert store.summary("run1") == {"recall": 1.0}
+
+
+def test_same_run_and_sample_replaces_the_row_in_sqlite(tmp_path):
+    store = SqliteEvaluationStore(tmp_path / "eval.db")
+    store.add_result("q1", ["a"], {"recall": 0.0}, run_id="run1")
+    store.add_result("q2", ["a"], {"recall": 0.0}, run_id="run1")
+    store.add_result("q1", ["a"], {"recall": 1.0}, run_id="run1")
+
+    rows = store.get_results("run1")
+    assert [r["question_id"] for r in rows] == ["q2", "q1"]
+    assert store.summary("run1") == {"recall": 0.5}
     store.close()

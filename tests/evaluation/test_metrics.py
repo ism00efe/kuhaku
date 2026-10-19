@@ -39,8 +39,29 @@ def test_precision_at_k_basic():
     assert precision_at_k(["a", "x", "y"], {"a"}, k=3) == pytest.approx(1 / 3)
 
 
-def test_precision_at_k_k_larger_than_list_uses_list_length():
-    assert precision_at_k(["a", "x"], {"a"}, k=10) == 0.5
+def test_precision_at_k_divides_by_requested_k_not_returned_count():
+    # Was 0.5 (k clamped to the returned count), which rewarded short lists: a target
+    # returning one relevant id for k=10 scored the same as one filling every slot.
+    assert precision_at_k(["a", "x"], {"a"}, k=10) == pytest.approx(0.1)
+
+
+def test_ndcg_never_exceeds_one_with_duplicate_ids():
+    # One id per chunk: the same document can appear several times in the top-k.
+    assert ndcg_at_k(["a", "a", "a"], {"a"}, k=3) == pytest.approx(1.0)
+    assert ndcg_at_k(["a", "a", "b"], {"a", "b"}, k=3) <= 1.0
+
+
+def test_ndcg_short_list_is_not_rewarded():
+    # Two relevant ids, k=2, only one returned: the ideal ranking still holds two.
+    assert ndcg_at_k(["a"], {"a", "b"}, k=2) < 1.0
+
+
+def test_precision_counts_duplicate_ids_once():
+    assert precision_at_k(["a", "a"], {"a"}, k=2) == pytest.approx(0.5)
+
+
+def test_mrr_ranks_by_distinct_ids():
+    assert mrr(["x", "x", "a"], {"a"}) == pytest.approx(0.5)
 
 
 def test_precision_at_k_empty_retrieved_is_zero():

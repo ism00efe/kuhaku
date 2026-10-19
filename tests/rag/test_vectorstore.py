@@ -247,19 +247,29 @@ def test_iter_chunks_refreshes_stale_collection(tmp_path):
     assert list(store.iter_chunks()) == []
 
 
-def test_iter_chunks_reflects_add_semantics_on_id_collision(tmp_path):
-    """``add()`` ignores a duplicate id rather than overwriting it (verified against the
-    installed Chroma client) -- ``iter_chunks()`` must faithfully reflect that
-    store-level behavior, not paper over it, since it's the only enumeration path a
-    consumer like BM25 index construction has."""
+def test_add_replaces_an_existing_chunk_id(tmp_path):
+    """``add()`` upserts. It used to call Chroma's ``add``, which silently keeps the
+    existing row for a duplicate id -- this test asserted that, and it meant
+    re-ingesting a document under the same id kept its old text (review finding 4)."""
 
     store = _store(tmp_path)
     store.add([make_chunk("a", text="original")], [[1.0, 0.0, 0.0]])
-    store.add([make_chunk("a", text="colliding")], [[0.0, 1.0, 0.0]])  # same id "a::0"
+    store.add([make_chunk("a", text="replacement")], [[0.0, 1.0, 0.0]])  # same id "a::0"
 
     chunks = list(store.iter_chunks())
     assert len(chunks) == 1
-    assert chunks[0].text == "original"
+    assert chunks[0].text == "replacement"
+
+
+def test_delete_document_removes_every_chunk_of_that_document(tmp_path):
+    store = _store(tmp_path)
+    store.add(
+        [make_chunk("a", 0), make_chunk("a", 1), make_chunk("b", 0)],
+        [[1.0, 0.0, 0.0], [0.9, 0.1, 0.0], [0.0, 1.0, 0.0]],
+    )
+    assert store.delete_document("a") == 2
+    assert [c.document_id for c in store.iter_chunks()] == ["b"]
+    assert store.delete_document("missing") == 0
 
 
 def test_stale_collection_refreshes_automatically(tmp_path):

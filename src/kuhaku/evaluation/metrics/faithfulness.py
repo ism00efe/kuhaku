@@ -23,6 +23,12 @@ class FaithfulnessMetric(BaseMetric):
     judge failure is caught, logged, and also skipped rather than crashing the run --
     the judge itself already has its own keyword-overlap fallback, but a custom judge
     implementation might not.
+
+    When the judge reports that its score came from the keyword-overlap fallback (see
+    ``LLMFaithfulnessEvaluator.evaluate_detailed``), the score is recorded as
+    ``faithfulness_fallback`` instead of ``faithfulness``: the two measure different
+    things, and mixing them would make a run whose judge was down look like a
+    faithfulness change.
     """
 
     name = "faithfulness"
@@ -42,7 +48,12 @@ class FaithfulnessMetric(BaseMetric):
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
         if self._judge is None or sample.answer is None:
             return {}
+        detailed = getattr(self._judge, "evaluate_detailed", None)
         try:
+            if callable(detailed):
+                result = detailed(sample.query, sample.contexts or [], sample.answer)
+                key = "faithfulness_fallback" if result.fallback else "faithfulness"
+                return {key: result.score}
             score = self._judge.evaluate(sample.query, sample.contexts or [], sample.answer)
         except Exception as exc:
             logger.warning("faithfulness judge failed for query=%r: %s", sample.query, exc)

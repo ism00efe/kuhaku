@@ -5,7 +5,6 @@ Re-exports the pieces the composition root wires together, so callers can do
 """
 
 from .cache import QueryAnswerCache, compute_cache_key
-from .config import RAGSettings
 from .chunking import (
     Chunker,
     ParagraphChunker,
@@ -13,6 +12,7 @@ from .chunking import (
     build_chunker,
     chunk_document,
 )
+from .config import RAGSettings
 from .contradiction_detector import (
     ContradictionDetector,
     ContradictionPair,
@@ -57,7 +57,11 @@ from .retriever import (
     is_entitled,
     reciprocal_rank_fusion,
 )
-from .sparse_retriever import BM25Retriever, StoreBackedBM25Retriever, build_bm25_from_store
+from .sparse_retriever import (
+    BM25Retriever,
+    StoreBackedBM25Retriever,
+    build_bm25_from_store,
+)
 from .vectorstore import ChromaVectorStore, VectorStore
 
 __all__ = [

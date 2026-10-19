@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import pytest
 
-from kuhaku.tools.rag.models import RetrievedChunk
 from kuhaku.tools.rag.embeddings import EmbeddingServiceError
+from kuhaku.tools.rag.models import RetrievedChunk
 from kuhaku.tools.rag.retriever import (
     DenseRetriever,
     HybridRetriever,
     SparseRetriever,
-    _min_max_normalize,
+    bm25_confidence,
     reciprocal_rank_fusion,
 )
 from kuhaku.tools.rag.vectorstore import VectorStoreError
-from tests.conftest import FakeEmbeddings, FakeReranker, FakeRetriever, FakeVectorStore, make_chunk
+from tests.conftest import (
+    FakeEmbeddings,
+    FakeReranker,
+    FakeRetriever,
+    FakeVectorStore,
+    make_chunk,
+)
 
 
 def _ranked(*doc_ids: str) -> list[RetrievedChunk]:
@@ -90,8 +96,8 @@ def test_dense_retriever_filters_out_expired_chunks():
 
 
 def test_dense_retriever_updates_active_documents_gauge():
-    from tests.conftest import prometheus_gauge_value
     from kuhaku.tools.rag.metrics import ACTIVE_DOCUMENTS
+    from tests.conftest import prometheus_gauge_value
 
     store = FakeVectorStore([make_chunk("a"), make_chunk("b", 1, obsolete=True)])
     DenseRetriever(FakeEmbeddings(), store).retrieve("q", 2)
@@ -180,28 +186,14 @@ def test_rrf_is_deterministic_on_ties():
 
 
 # --- min-max normalization helper (hybrid confidence scoring) --------------
-def test_min_max_normalize_basic_range():
-    assert _min_max_normalize([0.0, 5.0, 10.0]) == [0.0, 0.5, 1.0]
-
-
-def test_min_max_normalize_single_value_positive_maps_to_one():
-    assert _min_max_normalize([3.0]) == [1.0]
-
-
-def test_min_max_normalize_single_value_zero_maps_to_zero():
-    assert _min_max_normalize([0.0]) == [0.0]
-
-
-def test_min_max_normalize_tie_at_nonzero_maps_to_one():
-    assert _min_max_normalize([2.0, 2.0, 2.0]) == [1.0, 1.0, 1.0]
-
-
-def test_min_max_normalize_tie_at_zero_maps_to_zero():
-    assert _min_max_normalize([0.0, 0.0]) == [0.0, 0.0]
-
-
-def test_min_max_normalize_empty():
-    assert _min_max_normalize([]) == []
+# _min_max_normalize was removed: normalizing within the candidate set made the best
+# candidate 1.0 and the worst 0.0 however good or bad the match (review finding 2).
+def test_bm25_confidence_is_absolute_and_monotonic():
+    assert bm25_confidence(0.0) == 0.0
+    assert bm25_confidence(-1.0) == 0.0
+    assert bm25_confidence(1.0) == pytest.approx(0.5)
+    assert bm25_confidence(0.1) < 0.15 < bm25_confidence(0.25)
+    assert bm25_confidence(2.0) < bm25_confidence(8.0) < 1.0
 
 
 # --- HybridRetriever --------------------------------------------------------
@@ -234,10 +226,11 @@ def test_hybrid_replaces_rrf_score_with_normalized_combined_score():
 
     results = hybrid.retrieve("q", 2)
     scores = {r.chunk.id: r.score for r in results}
-    # Symmetric setup (each doc ranks #1 on one side, #2 on the other) -> both land
-    # exactly on the midpoint of the weighted, min-max-normalized combination.
-    assert scores["a::0"] == pytest.approx(0.5)
-    assert scores["b::1"] == pytest.approx(0.5)
+    # Each candidate's stronger absolute signal: FakeRetriever scores 1.0, 0.9 in rank
+    # order, read as raw cosine (dense) and raw BM25 (sparse). Was 0.5/0.5 under the old
+    # min-max-normalized average, which no longer reflected match strength at all.
+    assert scores["a::0"] == pytest.approx(1.0)  # dense cosine 1.0
+    assert scores["b::1"] == pytest.approx(0.9)  # dense cosine 0.9 > bm25_confidence(1.0)
     assert all(s > 0.15 for s in scores.values())  # clears the default confidence threshold
 
 
@@ -289,8 +282,8 @@ def test_hybrid_falls_back_to_combined_score_when_reranker_fails():
 
     results = hybrid.retrieve("q", 2)
     scores = {r.chunk.id: r.score for r in results}
-    assert scores["a::0"] == pytest.approx(0.5)
-    assert scores["b::1"] == pytest.approx(0.5)
+    assert scores["a::0"] == pytest.approx(1.0)
+    assert scores["b::1"] == pytest.approx(0.9)
 
 
 def test_hybrid_requests_deeper_candidate_pool_than_top_k():
@@ -440,10 +433,11 @@ def test_sparse_retriever_normalizes_raw_scores():
 
     results = retriever.retrieve("q", 3)
     scores = {r.chunk.document_id: r.score for r in results}
-    # FakeRetriever scores descend 1.0, 0.9, 0.8 -- min-max normalized over that range.
-    assert scores["hi"] == 1.0
-    assert scores["lo"] == 0.0
-    assert 0.0 < scores["mid"] < 1.0
+    # FakeRetriever scores descend 1.0, 0.9, 0.8 -- each mapped absolutely. The old
+    # min-max normalization forced "hi" to 1.0 and "lo" to 0.0 whatever the raw scores.
+    assert scores["hi"] == pytest.approx(bm25_confidence(1.0))
+    assert scores["lo"] == pytest.approx(bm25_confidence(0.8))
+    assert 0.0 < scores["lo"] < scores["mid"] < scores["hi"] < 1.0
     # Order is preserved.
     assert [r.chunk.document_id for r in results] == ["hi", "mid", "lo"]
 
@@ -453,7 +447,7 @@ def test_sparse_retriever_single_chunk_no_divide_by_zero():
     retriever = SparseRetriever(sparse, candidates=20)
 
     results = retriever.retrieve("q", 1)
-    assert results[0].score == 1.0
+    assert results[0].score == pytest.approx(bm25_confidence(1.0))
 
 
 def test_sparse_retriever_top_k_zero():
@@ -507,3 +501,85 @@ def test_sparse_retriever_caps_chunks_per_document():
     results = retriever.retrieve("q", 5)
     assert [r.chunk.document_id for r in results].count("dominant") == 2
     assert "other" in [r.chunk.document_id for r in results]
+
+
+# --- review finding 2: hybrid/sparse must be able to abstain -------------------------
+
+
+class _RawRetriever:
+    def __init__(self, items):
+        self._items = items
+
+    def retrieve(self, query, top_k, *, auth_context=None, doc_type=None):
+        return self._items[:top_k]
+
+
+def test_hybrid_weak_matches_stay_below_the_confidence_threshold():
+    dense = _RawRetriever([
+        RetrievedChunk(chunk=make_chunk("a"), score=0.05),
+        RetrievedChunk(chunk=make_chunk("b", 1), score=0.02),
+    ])
+    sparse = _RawRetriever([RetrievedChunk(chunk=make_chunk("a"), score=0.05)])
+    results = HybridRetriever(dense, sparse, candidates=20).retrieve("q", 2)
+    assert max(r.score for r in results) < 0.15  # the engine abstains
+
+
+def test_sparse_weak_best_match_stays_below_the_confidence_threshold():
+    sparse = _RawRetriever([
+        RetrievedChunk(chunk=make_chunk("a"), score=0.1),
+        RetrievedChunk(chunk=make_chunk("b", 1), score=0.05),
+    ])
+    results = SparseRetriever(sparse, candidates=20).retrieve("q", 2)
+    assert max(r.score for r in results) < 0.15
+
+
+def test_hybrid_does_not_zero_the_bottom_candidate_by_construction():
+    dense = _RawRetriever([
+        RetrievedChunk(chunk=make_chunk("a"), score=0.82),
+        RetrievedChunk(chunk=make_chunk("b", 1), score=0.80),
+    ])
+    sparse = _RawRetriever([
+        RetrievedChunk(chunk=make_chunk("a"), score=6.0),
+        RetrievedChunk(chunk=make_chunk("b", 1), score=5.5),
+    ])
+    results = HybridRetriever(dense, sparse, candidates=20).retrieve("q", 2)
+    assert min(r.score for r in results) > 0.15  # both near-equal matches survive
+
+
+# --- review finding 7: filters run before top-k truncation --------------------------
+
+
+def _stale(doc_id: str, index: int = 0):
+    from dataclasses import replace
+
+    return replace(make_chunk(doc_id, index), obsolete=True)
+
+
+def test_dense_stale_chunks_do_not_crowd_out_fresh_ones():
+    store = FakeVectorStore([_stale(f"old{i}") for i in range(10)] + [make_chunk("new")])
+    results = DenseRetriever(FakeEmbeddings(), store).retrieve("q", 2)
+    assert [r.chunk.document_id for r in results] == ["new"]
+
+
+def test_dense_doc_type_is_pushed_into_the_store_query():
+    from dataclasses import replace
+
+    chunks = [make_chunk(f"faq{i}") for i in range(5)] + [
+        replace(make_chunk("log"), doc_type="log")
+    ]
+    store = FakeVectorStore(chunks)
+    results = DenseRetriever(FakeEmbeddings(), store).retrieve("q", 2, doc_type="log")
+    assert [r.chunk.document_id for r in results] == ["log"]
+    assert "$and" in store.query_where_calls[-1]
+
+
+def test_bm25_stale_and_off_type_chunks_do_not_crowd_out_matches():
+    from dataclasses import replace
+
+    from kuhaku.tools.rag.sparse_retriever import BM25Retriever
+
+    chunks = [replace(_stale(f"old{i}"), text="payment error") for i in range(5)]
+    chunks += [replace(make_chunk(f"other{i}"), text="payment error", doc_type="x") for i in range(5)]
+    chunks += [make_chunk("fresh", text="payment error details")]
+    results = BM25Retriever(chunks).retrieve("payment error", 2, doc_type=chunks[-1].doc_type)
+    assert [r.chunk.document_id for r in results] == ["fresh"]

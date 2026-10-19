@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from kuhaku.tools.rag.models import RetrievedChunk
 from kuhaku.tools.rag.contradiction_detector import ContradictionDetector
+from kuhaku.tools.rag.models import RetrievedChunk
 from tests.conftest import make_chunk
 
 

@@ -33,7 +33,12 @@ from .metrics import (
 )
 from .runner import EvaluationRunner
 from .sample import EvaluationSample
-from .store import EvaluationStore, InMemoryEvaluationStore, SqliteEvaluationStore
+from .store import (
+    EvaluationStore,
+    InMemoryEvaluationStore,
+    ReadableEvaluationStore,
+    SqliteEvaluationStore,
+)
 from .target import EvaluationTarget, TargetAdapter
 
 __all__ = [
@@ -57,6 +62,7 @@ __all__ = [
     "recall_at_k",
     "EvaluationStore",
     "InMemoryEvaluationStore",
+    "ReadableEvaluationStore",
     "SqliteEvaluationStore",
     "EvaluationRunner",
     "EvaluationSample",

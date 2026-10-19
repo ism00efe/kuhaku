@@ -16,10 +16,11 @@ from __future__ import annotations
 import logging
 import math
 import re
+import threading
 from collections import Counter
 
-from kuhaku.tools.rag.models import Chunk, RetrievedChunk
 from kuhaku.core.auth import AuthContext
+from kuhaku.tools.rag.models import Chunk, RetrievedChunk
 
 from .retriever import is_entitled
 from .vectorstore import VectorStore
@@ -101,29 +102,19 @@ class BM25Retriever:
                 contribution = idf * (freq * (self._k1 + 1)) / (freq + self._k1 * norm)
                 scores[doc_idx] = scores.get(doc_idx, 0.0) + contribution
 
-        # Feature 3: entitlement narrows the candidate set *before* ranking/truncation --
-        # unlike the freshness filter below (pre-existing behavior, applied only within
-        # the already-truncated top_k window), an ineligible high-scoring chunk must
-        # never crowd an eligible lower-scoring one out of the top_k window.
-        entitled = {
+        # Entitlement, freshness and doc_type all narrow the candidate set *before*
+        # ranking/truncation: a filtered-out high-scoring chunk must never crowd an
+        # eligible lower-scoring one out of the top_k window. (Freshness and doc_type
+        # used to be applied after truncation, so stale chunks could empty the result.)
+        eligible = {
             idx: s
             for idx, s in scores.items()
             if is_entitled(self._chunks[idx], auth_context)
+            and self._chunks[idx].is_fresh()
+            and (doc_type is None or self._chunks[idx].doc_type == doc_type)
         }
-        ranked = sorted(entitled.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-        # Same freshness filter as DenseRetriever, so RRF fusion cannot resurface
-        # an obsolete/out-of-window chunk via the sparse side.
-        fresh = [
-            RetrievedChunk(chunk=self._chunks[i], score=s)
-            for i, s in ranked
-            if self._chunks[i].is_fresh()
-        ]
-
-        # 4.1: same optional doc_type filter as DenseRetriever, same placement
-        # (post-query, pre-fusion) so both retrieval paths filter identically.
-        if doc_type is None:
-            return fresh
-        return [item for item in fresh if item.chunk.doc_type == doc_type]
+        ranked = sorted(eligible.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+        return [RetrievedChunk(chunk=self._chunks[i], score=s) for i, s in ranked]
 
 
 class StoreBackedBM25Retriever:
@@ -147,7 +138,16 @@ class StoreBackedBM25Retriever:
         self._k1 = k1
         self._b = b
         self._bm25: BM25Retriever | None = None
-        self._dirty = True
+        # A generation counter, not a dirty flag: with a flag, a refresh() landing while
+        # a rebuild was reading the store was wiped out when the rebuild reset the flag,
+        # and the new document was never indexed. The rebuild records the generation it
+        # started from; any refresh() since then leaves it stale.
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._built_generation = -1
+        # Writes that never call refresh() -- another process, a direct store.add/reset
+        # -- are caught by the store's chunk count changing.
+        self._built_count = -1
 
     def refresh(self) -> None:
         """Mark the cached index stale so the next :meth:`retrieve`/:meth:`count`
@@ -163,13 +163,29 @@ class StoreBackedBM25Retriever:
         two queries into a single rebuild.
         """
 
-        self._dirty = True
+        with self._lock:
+            self._generation += 1
 
     def _current(self) -> BM25Retriever:
-        if self._dirty or self._bm25 is None:
-            self._bm25 = BM25Retriever(list(self._store.iter_chunks()), k1=self._k1, b=self._b)
-            self._dirty = False
-        return self._bm25
+        count = self._store.count()
+        with self._lock:
+            if (
+                self._bm25 is not None
+                and self._built_generation == self._generation
+                and self._built_count == count
+            ):
+                return self._bm25
+            generation = self._generation
+        # Built outside the lock so a refresh() is never blocked behind a rebuild; two
+        # racing rebuilds cost duplicate work, never a stale index.
+        chunks = list(self._store.iter_chunks())
+        bm25 = BM25Retriever(chunks, k1=self._k1, b=self._b)
+        with self._lock:
+            if generation >= self._built_generation:
+                self._bm25 = bm25
+                self._built_generation = generation
+                self._built_count = len(chunks)
+        return bm25
 
     def count(self) -> int:
         return self._current().count()

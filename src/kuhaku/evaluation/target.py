@@ -95,7 +95,7 @@ class TargetAdapter:
             ask_result = self._fn(query)
         except Exception as exc:
             logger.warning("target call failed for query=%r: %s", query, exc)
-            return EvaluationSample(query=query)
+            return EvaluationSample(query=query, metadata={"error": _describe(exc)})
 
         retrieved = list(getattr(ask_result, "retrieved", None) or [])
         answer = self._generate_answer(
@@ -113,7 +113,10 @@ class TargetAdapter:
             retrieved = self._fn(query, self._top_k)
         except Exception as exc:
             logger.warning("retrieve failed for query=%r: %s", query, exc)
-            return EvaluationSample(query=query, contexts=[], retrieved_doc_ids=[])
+            return EvaluationSample(
+                query=query, contexts=[], retrieved_doc_ids=[],
+                metadata={"error": _describe(exc)},
+            )
 
         answer = self._generate_answer(query, retrieved, default=None)
         return EvaluationSample(
@@ -159,3 +162,10 @@ class TargetAdapter:
         except TypeError as exc:
             logger.warning("could not extract document ids: %s", exc)
             return []
+
+
+def _describe(exc: BaseException) -> str:
+    """The error text stored with a failed sample, so a run's zero scores can be told
+    apart from genuinely bad answers."""
+
+    return f"{type(exc).__name__}: {exc}"

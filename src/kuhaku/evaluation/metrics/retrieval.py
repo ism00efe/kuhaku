@@ -20,6 +20,8 @@ class RecallAtKMetric(BaseMetric):
         self._k = k
 
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
+        if not sample.relevant_doc_ids:
+            return {}
         score = fn.recall_at_k(
             sample.retrieved_doc_ids or [], sample.relevant_doc_ids or set(), self._k
         )
@@ -33,6 +35,8 @@ class PrecisionAtKMetric(BaseMetric):
         self._k = k
 
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
+        if not sample.relevant_doc_ids:
+            return {}
         score = fn.precision_at_k(
             sample.retrieved_doc_ids or [], sample.relevant_doc_ids or set(), self._k
         )
@@ -43,6 +47,8 @@ class MRRMetric(BaseMetric):
     name = "mrr"
 
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
+        if not sample.relevant_doc_ids:
+            return {}
         score = fn.mrr(sample.retrieved_doc_ids or [], sample.relevant_doc_ids or set())
         return {"mrr": score}
 
@@ -54,6 +60,8 @@ class NDCGAtKMetric(BaseMetric):
         self._k = k
 
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
+        if not sample.relevant_doc_ids:
+            return {}
         score = fn.ndcg_at_k(
             sample.retrieved_doc_ids or [], sample.relevant_doc_ids or set(), self._k
         )
@@ -67,6 +75,8 @@ class HitRateAtKMetric(BaseMetric):
         self._k = k
 
     def evaluate(self, sample: EvaluationSample) -> dict[str, float]:
+        if not sample.relevant_doc_ids:
+            return {}
         score = fn.hit_rate_at_k(
             sample.retrieved_doc_ids or [], sample.relevant_doc_ids or set(), self._k
         )

@@ -16,6 +16,18 @@ from kuhaku.core.security.guard import (
     RESTRICTED_WARNING,
 )
 from kuhaku.core.security.output_guard import SAFE_FALLBACK
+from kuhaku.tools.rag.engine import RAGEngine
+from kuhaku.tools.rag.messages import NO_CHUNKS_MESSAGE
+from kuhaku.tools.rag.metrics import (
+    CACHE_HITS,
+    CACHE_MISSES,
+    REQUEST_COUNT,
+    UNVERIFIED_CITATIONS,
+)
+from kuhaku.tools.rag.models import RetrievedChunk
+from kuhaku.tools.rag.prompts import ABSTENTION_PHRASE
+from kuhaku.tools.rag.retriever import DenseRetriever
+from kuhaku.tools.rag.vectorstore import VectorStoreError
 from tests.conftest import (
     FakeCache,
     FakeEmbeddings,
@@ -29,13 +41,6 @@ from tests.conftest import (
 from tests.conftest import (
     prometheus_counter_value as _counter_value,
 )
-from kuhaku.tools.rag.engine import RAGEngine
-from kuhaku.tools.rag.messages import NO_CHUNKS_MESSAGE
-from kuhaku.tools.rag.metrics import CACHE_HITS, CACHE_MISSES, REQUEST_COUNT, UNVERIFIED_CITATIONS
-from kuhaku.tools.rag.models import RetrievedChunk
-from kuhaku.tools.rag.prompts import ABSTENTION_PHRASE
-from kuhaku.tools.rag.retriever import DenseRetriever
-from kuhaku.tools.rag.vectorstore import VectorStoreError
 
 
 def _engine(store, llm=None, top_k=4) -> RAGEngine:
@@ -937,7 +942,12 @@ def test_audit_record_carries_ids_and_counts_never_chunk_text(tmp_path):
     assert "super secret salary details" not in raw
     row = json.loads(raw.splitlines()[0])
     assert row["accessed_chunks"] == [chunk.id]  # ids only
-    assert row["metadata"] == {}  # nothing tool-specific (e.g. access tags) smuggled in
+    # Nothing tool-specific (e.g. access tags) smuggled in: the only metadata is the
+    # prompt provenance (name/version/hash -- never prompt text).
+    assert row["metadata"] == {
+        "prompts": {"system": engine.get_system_prompt_ref().as_dict()}
+    }
+    assert "finance" not in json.dumps(row["metadata"])
 
 
 def test_exception_mid_pipeline_writes_no_audit_record(tmp_path):
@@ -1299,3 +1309,86 @@ def test_retrieval_query_context_label_comes_from_engine_messages():
     query = embedder.query_calls[0]
     assert "Supplementary info: error_code=E1" in query
     assert "Context:" not in query
+
+
+# --- review finding 11: the model's own abstention is reported as one ---------------
+
+
+def test_model_abstention_phrase_is_reported_as_abstained():
+    from kuhaku.tools.rag.prompts import ABSTENTION_PHRASE
+
+    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+    llm = FakeLLM(response=f"{ABSTENTION_PHRASE} [S1]")
+    ans = RAGEngine(FakeEmbeddings(), store, llm, top_k=4).answer("unrelated question")
+    assert ans.abstained is True
+    assert ans.abstention_reason == "model_abstained"
+
+
+def test_answer_mentioning_the_phrase_later_is_not_an_abstention():
+    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+    llm = FakeLLM(response="Alpha is X [S1]. I don't have enough information about beta.")
+    ans = RAGEngine(FakeEmbeddings(), store, llm, top_k=4).answer("alpha?")
+    assert ans.abstained is False
+    assert ans.abstention_reason is None
+
+
+def test_custom_abstention_phrase_is_detected():
+    store = FakeVectorStore([make_chunk("d1", text="alpha")])
+    llm = FakeLLM(response="Bilmiyorum.")
+    engine = RAGEngine(
+        FakeEmbeddings(), store, llm, top_k=4, abstention_phrase="Bilmiyorum"
+    )
+    assert engine.answer("soru").abstention_reason == "model_abstained"
+
+
+def test_zero_chunk_abstention_carries_its_reason():
+    engine = RAGEngine(FakeEmbeddings(), FakeVectorStore([make_chunk("d1")]), FakeLLM(),
+                       retriever=FakeRetriever([]))
+    ans = engine.answer("soru")
+    assert ans.abstained is True
+    assert ans.abstention_reason == "zero_chunks"
+
+
+# --- review finding 18: evaluate_sample auth_context, contradiction audit path -------
+
+
+def test_evaluate_sample_passes_auth_context_through():
+    from dataclasses import replace
+
+    tagged = replace(make_chunk("hr", text="salary bands"), access_tags=("hr",))
+    engine = RAGEngine(FakeEmbeddings(), FakeVectorStore([tagged]), FakeLLM(), top_k=4)
+
+    anonymous = engine.evaluate_sample("salary?")
+    as_hr = engine.evaluate_sample("salary?", auth_context=AuthContext(identity="u", roles=("hr",)))
+
+    assert anonymous.retrieved_doc_ids == []
+    assert as_hr.retrieved_doc_ids == ["hr"]
+
+
+def test_contradiction_audit_goes_through_write_audit(monkeypatch, caplog):
+    from kuhaku.core.security.audit import AuditWriteError
+    from kuhaku.tools.rag import engine as engine_module
+    from kuhaku.tools.rag.contradiction_detector import (
+        ContradictionPair,
+        ContradictionResult,
+    )
+
+    class _Detector:
+        def detect(self, retrieved):
+            pair = ContradictionPair("d1::0", "d2::0", "topic", "differs", 0.9)
+            return ContradictionResult(True, "conflict!", [pair])
+
+    def broken_sink(*args, **kwargs):
+        raise AuditWriteError("sink down")
+
+    monkeypatch.setattr(engine_module, "record_audit", broken_sink)
+    store = FakeVectorStore([make_chunk("d1"), make_chunk("d2")])
+    engine = RAGEngine(
+        FakeEmbeddings(), store, FakeLLM(), top_k=4, contradiction_detector=_Detector()
+    )
+    with caplog.at_level("ERROR"):
+        ans = engine.answer("soru")
+
+    # The warning survives a broken audit sink, which is reported as an audit failure.
+    assert ans.contradiction_warning == "conflict!"
+    assert "audit record could not be written" in caplog.text

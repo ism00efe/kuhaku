@@ -24,7 +24,7 @@ import hashlib
 import logging
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -48,8 +48,13 @@ def compute_cache_key(
     prompt_version: str,
     llm_version: str,
     embedding_version: str,
+    *,
+    chunk_texts: Sequence[str] | None = None,
+    system_prompt_hash: str = "",
+    llm_identity: str = "",
 ) -> str:
-    """SHA256 hash of ``query`` + the ordered chunk ids + the three deployed versions.
+    """SHA256 hash of ``query`` + the ordered chunk ids + the three deployed versions,
+    plus what actually determines the answer regardless of labels.
 
     ``chunk_ids`` order must be preserved exactly as retrieved -- never sorted. ``[S#]``
     citation tags are assigned purely positionally (``rag/prompts.py._format_sources`` /
@@ -63,10 +68,32 @@ def compute_cache_key(
     so upgrading a model or the system prompt automatically invalidates every previously
     cached answer rather than silently serving a response a different configuration
     produced.
+
+    The labels alone are not enough: they are operator-maintained and were ``""`` for
+    every ``RAG()`` user, so an edited prompt or a swapped model kept serving old
+    answers, and a re-ingested document kept its chunk ids while its text changed. The
+    engine therefore also passes ``chunk_texts`` (hashed per chunk, in the same order as
+    ``chunk_ids``), ``system_prompt_hash`` (the prompt's content hash) and
+    ``llm_identity`` (provider and model, e.g. ``"openai:gpt-4o-mini"``).
     """
 
+    text_hashes = [
+        hashlib.sha256(text.encode("utf-8")).hexdigest() for text in (chunk_texts or ())
+    ]
     payload = _KEY_SEP.join(
-        [query, *chunk_ids, prompt_version, llm_version, embedding_version]
+        [
+            query,
+            *chunk_ids,
+            prompt_version,
+            llm_version,
+            embedding_version,
+            # Fixed-position separator before the optional parts, so a key computed
+            # without them can never equal one computed with them.
+            "\x1e",
+            *text_hashes,
+            system_prompt_hash,
+            llm_identity,
+        ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -74,8 +101,10 @@ def compute_cache_key(
 class QueryAnswerCache:
     """Get/put the cached answer text for a cache key, with a TTL.
 
-    ``db_path`` empty/``None`` (``RAGSettings.cache_db_path``'s own default) falls back
-    to :data:`_DEFAULT_CACHE_DB_PATH`.
+    ``db_path`` empty/``None`` falls back to :data:`_DEFAULT_CACHE_DB_PATH` -- for a
+    standalone cache only. ``RAG()`` never relies on that shared, cwd-relative file: it
+    resolves an empty ``RAGSettings.cache_db_path`` to a file inside the store's own
+    directory (see ``RAG._build_cache``), so two stores can never share a cache.
 
     Deliberately touches no filesystem state in ``__init__`` -- schema creation is
     lazy, on first :meth:`get`/:meth:`put` (see ``_ensure_schema``). ``RAG.__init__``
@@ -134,6 +163,19 @@ class QueryAnswerCache:
                     "created_at REAL NOT NULL"
                     ")"
                 )
+                # Which documents each answer was generated from, so deleting one
+                # document drops only the answers built on it.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS qa_cache_documents ("
+                    "cache_key TEXT NOT NULL, "
+                    "document_id TEXT NOT NULL, "
+                    "PRIMARY KEY (cache_key, document_id)"
+                    ")"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS qa_cache_documents_by_document "
+                    "ON qa_cache_documents (document_id)"
+                )
         except sqlite3.Error:
             logger.warning(
                 "qa_cache schema init failed; caching disabled for this process",
@@ -168,8 +210,56 @@ class QueryAnswerCache:
             return None
         return str(answer_text)
 
-    def put(self, cache_key: str, answer_text: str) -> None:
-        """Best-effort write; a failure here must never affect the caller's response."""
+    def clear(self) -> None:
+        """Drop every cached answer (best-effort, like :meth:`put`)."""
+
+        if not self._ensure_schema():
+            return
+        try:
+            with self._connection() as conn:
+                conn.execute("DELETE FROM qa_cache")
+                conn.execute("DELETE FROM qa_cache_documents")
+        except sqlite3.Error:
+            logger.warning("qa_cache clear failed", exc_info=True)
+
+    def delete_document(self, document_id: str) -> int:
+        """Drop only the cached answers generated from ``document_id``; return how many.
+
+        Best-effort, like :meth:`put`. Answers cached before this mapping existed have
+        no rows here and stay, but their keys include the deleted chunks' ids and text
+        hashes, so retrieval can no longer produce them and they expire with the TTL.
+        """
+
+        if not self._ensure_schema():
+            return 0
+        try:
+            with self._connection() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM qa_cache WHERE cache_key IN ("
+                    "SELECT cache_key FROM qa_cache_documents WHERE document_id = ?)",
+                    (document_id,),
+                )
+                removed = cursor.rowcount
+                conn.execute(
+                    "DELETE FROM qa_cache_documents WHERE cache_key NOT IN "
+                    "(SELECT cache_key FROM qa_cache)"
+                )
+                return max(removed, 0)
+        except sqlite3.Error:
+            logger.warning("qa_cache delete failed", exc_info=True)
+            return 0
+
+    def put(
+        self,
+        cache_key: str,
+        answer_text: str,
+        document_ids: Iterable[str] = (),
+    ) -> None:
+        """Best-effort write; a failure here must never affect the caller's response.
+
+        ``document_ids`` are the documents the answer was generated from, so
+        :meth:`delete_document` can drop it without clearing the whole cache.
+        """
 
         if not self._ensure_schema():
             return
@@ -180,6 +270,14 @@ class QueryAnswerCache:
                     "INSERT OR REPLACE INTO qa_cache (cache_key, answer_text, created_at) "
                     "VALUES (?, ?, ?)",
                     (cache_key, answer_text, time.time()),
+                )
+                conn.execute(
+                    "DELETE FROM qa_cache_documents WHERE cache_key = ?", (cache_key,)
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO qa_cache_documents (cache_key, document_id) "
+                    "VALUES (?, ?)",
+                    [(cache_key, doc_id) for doc_id in dict.fromkeys(document_ids)],
                 )
         except sqlite3.Error:
             logger.warning("qa_cache write failed; answer was not cached", exc_info=True)

@@ -11,7 +11,11 @@ import pytest
 import kuhaku
 from kuhaku import RAG
 from kuhaku.core.config import Settings
-from kuhaku.core.exceptions import CapabilityUnavailable, ConsentRequired, FallbackWarning
+from kuhaku.core.exceptions import (
+    CapabilityUnavailable,
+    ConsentRequired,
+    FallbackWarning,
+)
 from kuhaku.tools.rag.embeddings import NullEmbeddings
 from tests.conftest import FakeEmbeddings, FakeLLM, FakeVectorStore
 
