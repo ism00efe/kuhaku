@@ -58,9 +58,9 @@ def call_with_retry(
     """Call ``fn()``, retrying per ``wait``/``max_attempts`` on exceptions ``retry`` accepts.
 
     ``service`` is a fixed, low-cardinality label ("llm" | "embedding" | "vectorstore" |
-    "reranker") used for the ``kuhaku_retry_*`` metrics. Only genuine retries (more than one
-    attempt made) are counted as a "success" or "failure" -- a first-try success touches
-    no counters, and an exception the ``retry`` predicate rejects outright (e.g. an LLM
+    "reranker" | "batch") used for the ``kuhaku_retry_*`` metrics. Only genuine retries
+    (more than one attempt made) are counted as a "success" or "failure" -- a first-try
+    success touches no counters, and an exception the ``retry`` predicate rejects outright (e.g. an LLM
     4xx) fails after exactly one attempt and is likewise not counted as an exhausted
     retry, since no retry was ever attempted.
     """
@@ -123,9 +123,17 @@ class CircuitBreaker:
 
     States: ``closed`` (normal — every call passes through) -> ``open`` (fast-fail every
     call without invoking it, once ``failure_threshold`` consecutive failures accumulate)
-    -> ``half_open`` (after ``reset_timeout_seconds`` elapses, calls are let through again
-    as probes) -> back to ``closed`` once ``success_threshold`` probes succeed, or back to
-    ``open`` immediately on a single failed probe.
+    -> ``half_open`` (after ``reset_timeout_seconds`` elapses, one call at a time is let
+    through as a probe while concurrent callers keep fast-failing) -> back to ``closed``
+    once ``success_threshold`` probes succeed, or back to ``open`` immediately on a single
+    failed probe.
+
+    ``call(fn, is_failure=...)`` decides which exceptions count: by default all do; the
+    LLM providers count only those that say the dependency is unhealthy (transport
+    errors, 5xx), so a caller's bad request or a quota 429 never opens the circuit for
+    everyone. An exception that does not count is neutral -- it neither trips nor
+    resets the breaker, and a half-open probe that ends in one frees the probe slot
+    without closing the circuit.
 
     A single ``threading.Lock`` guards state transitions; the wrapped function itself is
     always invoked outside the lock, so a slow call never blocks other threads from
@@ -150,19 +158,28 @@ class CircuitBreaker:
         self._failure_count = 0
         self._success_count = 0
         self._opened_at: float | None = None
+        self._probe_in_flight = False
 
     @property
     def state(self) -> CircuitState:
         with self._lock:
             return self._state
 
-    def _before_call(self) -> None:
+    def _before_call(self) -> bool:
         """Raise :class:`CircuitOpenError` if the call must be rejected; otherwise, flip
-        an expired ``open`` circuit to ``half_open`` so this call can probe it."""
+        an expired ``open`` circuit to ``half_open`` so this call can probe it. Returns
+        whether this call holds the (single) half-open probe slot."""
 
         with self._lock:
-            if self._state is not CircuitState.OPEN:
-                return
+            if self._state is CircuitState.CLOSED:
+                return False
+            if self._state is CircuitState.HALF_OPEN:
+                if self._probe_in_flight:
+                    raise CircuitOpenError(
+                        f"Circuit '{self._name}' is half-open and a probe is in flight."
+                    )
+                self._probe_in_flight = True
+                return True
             assert self._opened_at is not None  # OPEN always sets opened_at
             elapsed = time.monotonic() - self._opened_at
             if elapsed < self._reset_timeout_seconds:
@@ -172,9 +189,12 @@ class CircuitBreaker:
                 )
             self._state = CircuitState.HALF_OPEN
             self._success_count = 0
+            self._probe_in_flight = True
+            return True
 
     def _on_success(self) -> None:
         with self._lock:
+            self._probe_in_flight = False
             if self._state is CircuitState.HALF_OPEN:
                 self._success_count += 1
                 if self._success_count >= self._success_threshold:
@@ -185,8 +205,14 @@ class CircuitBreaker:
             else:
                 self._failure_count = 0
 
+    def _on_neutral(self, probe: bool) -> None:
+        if probe:
+            with self._lock:
+                self._probe_in_flight = False
+
     def _on_failure(self) -> None:
         with self._lock:
+            self._probe_in_flight = False
             if self._state is CircuitState.HALF_OPEN:
                 # A failed probe reopens the circuit immediately, regardless of
                 # failure_threshold -- one bad probe is proof the dependency is still down.
@@ -206,16 +232,25 @@ class CircuitBreaker:
                     self._failure_count,
                 )
 
-    def call(self, fn: Callable[[], T]) -> T:
+    def call(
+        self,
+        fn: Callable[[], T],
+        *,
+        is_failure: Callable[[BaseException], bool] | None = None,
+    ) -> T:
         """Call ``fn()`` through the breaker: raises :class:`CircuitOpenError` without
         calling ``fn`` if the circuit is open, otherwise calls it and records the
-        outcome."""
+        outcome. ``is_failure`` (default: every exception) says which exceptions count
+        toward opening the circuit."""
 
-        self._before_call()
+        probe = self._before_call()
         try:
             result = fn()
-        except Exception:
-            self._on_failure()
+        except BaseException as exc:
+            if isinstance(exc, Exception) and (is_failure is None or is_failure(exc)):
+                self._on_failure()
+            else:
+                self._on_neutral(probe)
             raise
         else:
             self._on_success()

@@ -11,8 +11,13 @@ pytest.importorskip("kuhaku.core.resolve", reason="mechanism lands in commit 3")
 
 from kuhaku.core.resolve import Fingerprint, Registry, probes, resolve  # noqa: E402
 from kuhaku.core.resolve.memory import JsonMemory  # noqa: E402
-
-from tests.resolve.conftest import FakeAdapter, FakeMemory, FakeUI, make_candidate, make_env
+from tests.resolve.conftest import (
+    FakeAdapter,
+    FakeMemory,
+    FakeUI,
+    make_candidate,
+    make_env,
+)
 
 
 def _registry(*adapters) -> Registry:

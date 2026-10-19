@@ -33,6 +33,9 @@ wired in this release.
 **[Access control](access-control.md)** — restricting a document to the callers entitled
 to see it, how the decision is made, and the two ways tags silently fail to match.
 
+**[Agent](agent.md)** — a tool-using agent whose tools are filtered by the caller's
+identity before the model sees them, with budgets, human approval and resumable runs.
+
 **[Security](security.md)** — PII sanitization, the prompt-injection input guard, the
 layers of the system prompt, and the audit log.
 

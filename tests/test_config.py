@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from kuhaku.core.config import Settings, load_settings
 
 
@@ -120,3 +122,33 @@ def test_load_settings_empty_app_config_loader_returns_base():
     assert isinstance(settings, Settings)
     assert settings.llm_temperature == 0.1
 
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("openai_base_url", "https://attacker.example/v1"),
+        ("groq_base_url", "https://attacker.example/v1"),
+        ("groq_api_key", "injected"),
+        ("vertex_project", "attacker-project"),
+        ("vertex_location", "attacker-region"),
+        ("audit_enabled", "false"),
+        ("audit_log_path", "/dev/null"),
+        ("input_guard_enabled", "false"),
+        ("guard_enabled", "true"),
+        ("guard_high_threshold", "0.99"),
+    ],
+)
+def test_load_settings_app_config_cannot_set_bootstrap_only_keys(key, value):
+    base = Settings(_env_file=None)
+    settings = load_settings(app_config_loader=lambda: {key: value}, env_file=None)
+    assert getattr(settings, key) == getattr(base, key)
+
+
+def test_db_overridable_keys_exclude_secrets_endpoints_audit_and_guard():
+    from kuhaku.core.config import _DB_OVERRIDABLE_KEYS
+
+    assert _DB_OVERRIDABLE_KEYS <= set(Settings.model_fields)
+    for key in _DB_OVERRIDABLE_KEYS:
+        assert not key.endswith(("_api_key", "_base_url"))
+        assert not key.startswith(("audit", "guard", "input_guard", "vertex_project"))

@@ -29,16 +29,33 @@ _OLLAMA_RANK = 20
 
 
 def _resilience_kwargs(settings) -> dict:
-    return dict(
-        retry_enabled=settings.retry_enabled,
-        retry_max_attempts=settings.retry_llm_max_attempts,
-        retry_backoff_base_seconds=settings.retry_llm_backoff_base_seconds,
-        retry_backoff_max_seconds=settings.retry_llm_backoff_max_seconds,
-        circuit_breaker_enabled=settings.circuit_breaker_enabled,
-        circuit_breaker_failure_threshold=settings.circuit_breaker_failure_threshold,
-        circuit_breaker_reset_timeout_seconds=settings.circuit_breaker_reset_timeout_seconds,
-        circuit_breaker_success_threshold=settings.circuit_breaker_success_threshold,
-    )
+    return {
+        "retry_enabled": settings.retry_enabled,
+        "retry_max_attempts": settings.retry_llm_max_attempts,
+        "retry_backoff_base_seconds": settings.retry_llm_backoff_base_seconds,
+        "retry_backoff_max_seconds": settings.retry_llm_backoff_max_seconds,
+        "circuit_breaker_enabled": settings.circuit_breaker_enabled,
+        "circuit_breaker_failure_threshold": settings.circuit_breaker_failure_threshold,
+        "circuit_breaker_reset_timeout_seconds": settings.circuit_breaker_reset_timeout_seconds,
+        "circuit_breaker_success_threshold": settings.circuit_breaker_success_threshold,
+    }
+
+
+def _configured(settings, field: str):
+    """``settings.<field>``, or ``None`` when it still holds the shared default.
+
+    ``llm_temperature``/``llm_max_tokens`` default to values chosen for small local
+    models (0.1, 1024). Current Claude models reject a non-default temperature, and
+    with adaptive thinking on by default 1024 tokens is often spent before any answer;
+    Gemini 3 recommends its own default temperature. So for those providers an
+    unchanged default means "let the provider decide". A value equal to the default is
+    indistinguishable from it -- set a different one to force it.
+    """
+
+    value = getattr(settings, field)
+    model_fields = getattr(type(settings), "model_fields", {})
+    default = model_fields[field].default if field in model_fields else None
+    return None if value == default else value
 
 
 def _ollama_reachable(url: str) -> bool:
@@ -95,6 +112,7 @@ def build_ollama(settings, model: str | None = None):
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
         timeout=settings.llm_timeout_seconds,
+        content_types=settings.llm_content_types,
         **_resilience_kwargs(settings),
     )
 
@@ -105,9 +123,10 @@ def build_anthropic(settings):
     return AnthropicProvider(
         api_key=settings.anthropic_api_key or "",
         model=settings.anthropic_model,
-        temperature=settings.llm_temperature,
-        max_tokens=settings.llm_max_tokens,
+        temperature=_configured(settings, "llm_temperature"),
+        max_tokens=_configured(settings, "llm_max_tokens"),
         timeout=settings.llm_timeout_seconds,
+        content_types=settings.llm_content_types,
         **_resilience_kwargs(settings),
     )
 
@@ -122,6 +141,7 @@ def build_openai(settings):
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
         timeout=settings.llm_timeout_seconds,
+        content_types=settings.llm_content_types,
         **_resilience_kwargs(settings),
     )
 
@@ -133,7 +153,10 @@ def build_vertex(settings):
         model=settings.vertex_model,
         project=settings.vertex_project,
         location=settings.vertex_location,
+        temperature=_configured(settings, "llm_temperature"),
+        max_tokens=_configured(settings, "llm_max_tokens"),
         timeout=settings.llm_timeout_seconds,
+        content_types=settings.llm_content_types,
         **_resilience_kwargs(settings),
     )
 
@@ -148,6 +171,7 @@ def build_groq(settings):
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
         timeout=settings.llm_timeout_seconds,
+        content_types=settings.llm_content_types,
         **_resilience_kwargs(settings),
     )
 

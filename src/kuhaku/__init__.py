@@ -1,10 +1,15 @@
-"""kuhaku — generic, tool-agnostic runtime infrastructure (``kuhaku.core``), a
+"""kuhaku â€” generic, tool-agnostic runtime infrastructure (``kuhaku.core``), a
 generic evaluation harness (``kuhaku.evaluation``), and RAG as one tool built on top
 of both (``kuhaku.tools.rag``), plus structured extraction as a second tool
-(``kuhaku.tools.extraction``).
+(``kuhaku.tools.extraction``), text classification as a third
+(``kuhaku.tools.classification``) and an auth-scoped tool-using agent as a fourth
+(``kuhaku.tools.agent``).
 
-This top-level module re-exports three things: the extraction entry points
+This top-level module re-exports five things: the extraction entry points
 (:class:`Extractor` and its schema/result types), the
+classification entry points (:class:`Classifier`, :class:`Label` and the result
+types), the agent entry points (:class:`Agent`, :class:`AgentTool` and the result
+types), the
 generic core primitives (:class:`Settings`, :func:`build_llm_provider`,
 :class:`Message`/:class:`ToolCall`/:class:`ExecutionResult`) any tool built on kuhaku
 can use, and :class:`RAG` --
@@ -27,11 +32,23 @@ from pathlib import Path
 from typing import Any
 
 from .core.auth import AuthContext
+from .core.batch import BatchRunner, run_batch
 from .core.config import Settings, get_settings
 from .core.exceptions import CapabilityUnavailable, SecurityComponentError
 from .core.llm import build_llm_provider, with_runtime
-from .core.models import ExecutionResult, Message, ToolCall
+from .core.llm.tool_calling import ToolSpec
+from .core.media import DocumentPart, ImagePart
+from .core.models import (
+    ContentPart,
+    ExecutionResult,
+    Message,
+    TextPart,
+    ToolCall,
+    ToolCallPart,
+    ToolResultPart,
+)
 from .core.policy import enforce_guard_policy, validate_audit_log_path
+from .core.prompts import PromptRegistry, PromptTemplate, RenderedPrompt
 from .core.resolve import (
     AUTO,
     JsonMemory,
@@ -44,7 +61,16 @@ from .core.resolve import (
     resolve,
 )
 from .core.resolve.adapters.llm import register_llm_adapters
-from .core.sanitization import Redaction
+from .core.sanitization import Redaction, sanitize
+from .core.session import InMemorySessionStore, Session, SQLiteSessionStore
+from .tools.agent import Agent, AgentResult, AgentStatus, AgentTool
+from .tools.classification import (
+    ClassificationResult,
+    ClassificationStatus,
+    Classifier,
+    Label,
+    UndecidedReason,
+)
 from .tools.extraction import (
     ExtractionResult,
     ExtractionSchema,
@@ -67,13 +93,12 @@ from .tools.rag import (
     RAGSettings,
     Retriever,
     SparseRetriever,
-    UnsupportedFileType,
     build_bm25_from_store,
     build_chunker,
     build_embedding_provider,
     extract_text,
 )
-from .tools.rag.prompts import load_system_prompt
+from .tools.rag.prompts import render_system_prompt
 from .tools.rag.resolve import build_rag_registry, local_candidate_id, model_on_disk
 
 logger = logging.getLogger(__name__)
@@ -81,6 +106,17 @@ logger = logging.getLogger(__name__)
 __version__ = "0.2.1"
 
 _VALID_RETRIEVAL_MODES = ("dense", "sparse", "hybrid")
+
+
+def _path_document_id(path: Path) -> str:
+    """Stable document id for a file loaded from disk: its stem (readable) plus a hash
+    of its absolute path (unique across directories)."""
+
+    import hashlib
+
+    digest = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:12]
+    stem = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in path.stem)
+    return f"file_{stem}_{digest}"
 _LOAD_DOCUMENTS_SUFFIXES = (".txt", ".md", ".pdf")
 
 
@@ -130,6 +166,7 @@ class RAG:
         settings: Settings | None = None,
         rag_settings: RAGSettings | None = None,
         enable_token_tracking: bool = True,
+        prompts: PromptRegistry | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -226,6 +263,13 @@ class RAG:
                 :class:`~kuhaku.core.llm.token_tracking.TokenTrackingLLM`, which
                 records per-call token usage (Prometheus metrics + a log line). ``True``
                 by default; pass ``False`` to skip it.
+            prompts: a :class:`~kuhaku.core.prompts.PromptRegistry` whose
+                ``"rag.system"`` template (latest or pinned version) replaces the
+                built-in system prompt template; ``persona``/``language_policy`` are
+                still rendered into it. Ignored when ``system_prompt`` is given. The
+                template must keep all seven ``{{...}}`` markers of
+                ``system_prompt.txt``; otherwise it owns the safety rules exactly as a
+                ``system_prompt`` replacement does.
             **kwargs: any field name from :class:`Settings` or
                 :class:`~kuhaku.tools.rag.config.RAGSettings` that has no dedicated
                 parameter above (e.g. ``guard_enabled``, ``retry_llm_max_attempts``,
@@ -397,14 +441,16 @@ class RAG:
         # `None` (nothing given) is passed straight through to RAGEngine, which already
         # falls back to its own module-level default -- no separate "resolved" constant
         # needed here.
-        resolved_system_prompt = system_prompt
+        resolved_system_prompt: str | RenderedPrompt | None = system_prompt
         if resolved_system_prompt is None and (persona is not None or language_policy is not None):
             layer_overrides: dict[str, str] = {}
             if persona is not None:
                 layer_overrides["persona"] = persona
             if language_policy is not None:
                 layer_overrides["language_policy"] = language_policy
-            resolved_system_prompt = load_system_prompt(**layer_overrides)
+            # Rendered (not just loaded) so the engine records the template's name and
+            # version rather than treating layered text as a custom prompt.
+            resolved_system_prompt = render_system_prompt(prompts=prompts, **layer_overrides)
 
         self._engine = RAGEngine(
             self._embedder,
@@ -414,18 +460,28 @@ class RAG:
             retriever=self._retriever,
             chunker=self._chunker,
             confidence_threshold=rs.rag_confidence_threshold,
+            # Version labels feed Answer metadata, the audit trail and the QA-cache key;
+            # they were left "" here, so no RAG() user had them.
+            llm_version=s.llm_model_version,
+            embedding_version=rs.embedding_model_version,
+            system_prompt_version=rs.prod_prompt_version,
+            # Optional (it has a usability cost: it rejects legitimate text that quotes
+            # injection phrases), on by default, and set only from Settings/the
+            # environment (KUHAKU_INPUT_GUARD_ENABLED) or RAG(input_guard_enabled=...).
+            input_guard_enabled=s.input_guard_enabled,
             audit_enabled=s.audit_enabled,
             audit_log_path=s.audit_log_path or "",
             cache=self._cache,
             system_prompt=resolved_system_prompt,
             rag_settings=rs,
+            prompts=prompts,
         )
 
         self._upgrade_suggested = False
         self._announce_hardware_hint()
 
     def _announce_hardware_hint(self) -> None:
-        """§9/§10: when a GPU is visible, report the model *size class* that should fit
+        """Â§9/Â§10: when a GPU is visible, report the model *size class* that should fit
         given ``vram_headroom`` -- never a model name. Silent on a CPU-only box."""
 
         env = self._decision_env
@@ -444,7 +500,7 @@ class RAG:
         )
 
     def _maybe_suggest_store_upgrade(self) -> None:
-        """§8: once the corpus is large enough, suggest a heavier store. Runs at most
+        """Â§8: once the corpus is large enough, suggest a heavier store. Runs at most
         once per ``RAG`` instance and never migrates anything."""
 
         if self._upgrade_suggested:
@@ -471,7 +527,7 @@ class RAG:
         self, requested: str, rs: RAGSettings, *, registry, env, ui, memory, fp
     ) -> tuple[str, EmbeddingProvider]:
         """Decide the effective retrieval strategy and build the matching embedder
-        (§7 -- the embedding axis, resolved at construction time).
+        (Â§7 -- the embedding axis, resolved at construction time).
 
         - ``"sparse"`` (pinned): :class:`NullEmbeddings`; the embedding decision is not
           entered at all, so a sparse-only deployment never imports
@@ -511,7 +567,7 @@ class RAG:
                 return effective, build_embedding_provider(rs)
             except CapabilityUnavailable:
                 raise
-            except Exception as exc:  # noqa: BLE001 -- baseline unbuildable -> deterministic failure
+            except Exception as exc:
                 raise CapabilityUnavailable(
                     f"retrieval={effective} needs an embedding backend, which is not "
                     f"usable ({exc}); KUHAKU_AUTO is false, so there is no fallback. "
@@ -617,6 +673,13 @@ class RAG:
             db_path = rs.cache_db_path
         else:
             db_path = cache
+        if not db_path:
+            # Scoped to this store, never the shared cwd-relative default: two stores
+            # with the same chunk ids (two tenants' "handbook::0") must not read each
+            # other's answers.
+            db_path = str(
+                Path(rs.chroma_persist_dir) / f"kuhaku_qa_cache_{rs.chroma_collection}.sqlite3"
+            )
 
         try:
             return QueryAnswerCache(db_path, rs.cache_ttl_seconds)
@@ -635,8 +698,13 @@ class RAG:
         chunk_size: int | None = None,
         overlap: int | None = None,
         access_tags: Sequence[str] | None = None,
+        document_id: str | None = None,
     ) -> tuple[int, list[Redaction]]:
         """Sanitize, chunk, embed, and add one document to the vector store.
+
+        ``document_id`` names the document: ingesting again under the same id replaces
+        it (old chunks removed first). ``None`` derives a stable id from ``filename``
+        and the content, so ingesting the same file twice does not duplicate it.
 
         Thin pass-through to :meth:`RAGEngine.ingest_document` -- the document is
         visible to the very next :meth:`ask` call, no reload needed. Returns
@@ -662,9 +730,20 @@ class RAG:
                 chunk_size=chunk_size if chunk_size is not None else rs.chunk_size,
                 overlap=overlap if overlap is not None else rs.chunk_overlap,
                 access_tags=access_tags,
+                document_id=document_id,
             )
         self._maybe_suggest_store_upgrade()
         return result
+
+    def delete_document(self, document_id: str) -> int:
+        """Remove ``document_id`` (every chunk of it) from the store; returns how many
+        chunks were removed. The BM25 index and the query-answer cache are refreshed
+        so the deleted text cannot be served afterwards."""
+
+        from .tools.rag.resolve.store_policy import guard_single_writer
+
+        with guard_single_writer(self._rag_settings.chroma_persist_dir, ui=self._decision_ui):
+            return self._engine.delete_document(document_id)
 
     def load_documents(
         self, directory: str | Path, *, access_tags: Sequence[str] | None = None
@@ -674,8 +753,9 @@ class RAG:
         A thin loop over :meth:`ingest` -- no indexing logic is duplicated here.
         Non-recursive (top-level files only). Prints one ``indexed <filename>: N
         chunk(s)`` line per file and returns the number of documents indexed. A file
-        that can't be read (bad encoding, unreadable PDF) is skipped with a warning
-        rather than aborting the whole batch.
+        that can't be ingested (bad encoding, unreadable PDF, empty, over the upload
+        size limit) is skipped with a ``load_documents: skipping <name>: <reason>``
+        line and a warning log rather than aborting the whole batch.
 
         ``access_tags``, when given, is applied uniformly to every file this call
         indexes -- per-file tagging is deliberately not supported here; call
@@ -697,20 +777,35 @@ class RAG:
             print(f"load_documents: no supported files ({allowed}) found in {path}")
             return 0
 
+        # A bad access_tags argument is the caller's error, not one file's: fail once,
+        # up front, rather than skipping every file for the same reason.
+        from .tools.rag.ingestion import _normalize_access_tags
+
+        _normalize_access_tags(access_tags)
+
         indexed = 0
         for file_path in files:
+            # Every per-file failure -- unreadable, wrong type, empty, over the upload
+            # limit -- skips that file with its reason; one bad file used to abort the
+            # whole batch (only decode/type errors were caught).
             try:
                 if file_path.suffix.lower() == ".pdf":
                     text = extract_text(file_path.name, file_path.read_bytes())
                 else:
                     text = file_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, UnsupportedFileType) as exc:
+                # One id per file path: loading the directory again replaces each
+                # file's previous version instead of adding a second copy.
+                chunks_added, _redactions = self.ingest(
+                    text, file_path.name, access_tags=access_tags,
+                    document_id=_path_document_id(file_path),
+                )
+            except (ValueError, OSError) as exc:
                 print(f"load_documents: skipping {file_path.name}: {exc}")
+                logger.warning(
+                    "load_documents skipped a file",
+                    extra={"upload_filename": file_path.name, "reason": str(exc)},
+                )
                 continue
-
-            chunks_added, _redactions = self.ingest(
-                text, file_path.name, access_tags=access_tags
-            )
             print(f"indexed {file_path.name}: {chunks_added} chunk(s)")
             indexed += 1
 
@@ -799,14 +894,37 @@ __all__ = [
     "ExtractionSchema",
     "ExtractionResult",
     "ExtractionStatus",
+    # Text classification, the third tool -- likewise the entry points only.
+    "Classifier",
+    "Label",
+    "ClassificationResult",
+    "ClassificationStatus",
+    "UndecidedReason",
+    # The auth-scoped agent, the fourth tool -- entry points only; the rest stays in
+    # kuhaku.tools.agent.
+    "Agent",
+    "AgentTool",
+    "AgentResult",
+    "AgentStatus",
     # Generic core primitives, re-exported for callers that build a non-RAG tool on
     # kuhaku without reaching into `kuhaku.core` directly.
     "Settings",
     "get_settings",
     "build_llm_provider",
     "Message",
+    "ContentPart",
+    "TextPart",
+    "ToolCallPart",
+    "ToolResultPart",
+    "ImagePart",
+    "DocumentPart",
     "ToolCall",
+    "ToolSpec",
     "ExecutionResult",
+    # Versioned prompts: register an override, hand the registry to RAG(prompts=...) or
+    # Extractor(prompts=...).
+    "PromptRegistry",
+    "PromptTemplate",
     # Document-level access filtering: the identity primitive RAG.ask()'s auth_context
     # expects, plus a default tag vocabulary RAG.ingest()'s access_tags can reach for
     # (Feature 6, suggestions only -- any other string works identically).
@@ -814,4 +932,11 @@ __all__ = [
     "ACCESS_TAG_PUBLIC",
     "ACCESS_TAG_INTERNAL",
     "ACCESS_TAG_RESTRICTED",
+    # Conversation memory, batch execution and PII masking from kuhaku.core.
+    "Session",
+    "InMemorySessionStore",
+    "SQLiteSessionStore",
+    "BatchRunner",
+    "run_batch",
+    "sanitize",
 ]

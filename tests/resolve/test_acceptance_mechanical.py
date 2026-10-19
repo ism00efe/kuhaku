@@ -10,8 +10,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 _SRC = Path(__file__).resolve().parents[2] / "src" / "kuhaku"
 
 _RESOLVE_PKGS = [

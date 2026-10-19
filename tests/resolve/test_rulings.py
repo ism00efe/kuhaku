@@ -19,7 +19,6 @@ from kuhaku.core.exceptions import (  # noqa: E402
 from kuhaku.core.resolve import Registry, activate, resolve  # noqa: E402
 from kuhaku.core.resolve.memory import JsonMemory  # noqa: E402
 from kuhaku.core.resolve.ui import ConsoleUI  # noqa: E402
-
 from tests.resolve.conftest import (  # noqa: E402
     FakeAdapter,
     FakeMemory,

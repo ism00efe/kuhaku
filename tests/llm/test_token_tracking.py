@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from kuhaku.core.llm.base import TokenUsage
 from kuhaku.core.llm.token_tracking import TokenTrackingLLM
@@ -12,11 +13,13 @@ from tests.conftest import prometheus_counter_value as _counter_value
 
 
 class _FakeProvider:
-    """LLMProvider stub whose `last_usage` a test can set directly."""
+    """LLMProvider stub that reports `last_usage` (a new object per call, as the real
+    providers do) when given one."""
 
     def __init__(self, response: str = "answer", last_usage: TokenUsage | None = None) -> None:
         self.response = response
-        self.last_usage = last_usage
+        self._usage = last_usage
+        self.last_usage: TokenUsage | None = None
         self.calls: list[tuple[str, str]] = []
 
     @property
@@ -25,6 +28,8 @@ class _FakeProvider:
 
     def generate(self, system: str, user: str) -> str:
         self.calls.append((system, user))
+        if self._usage is not None:
+            self.last_usage = replace(self._usage)
         return self.response
 
 
@@ -143,3 +148,21 @@ def test_logs_usage_at_info_level(caplog):
     assert records[0].model == "fake:model-x"
     assert records[0].prompt_token_count == 100
     assert records[0].token_count == 50
+
+
+def test_last_usage_reads_through_to_the_wrapped_provider():
+    """A tool that totals usage per request reads ``last_usage`` after each call; the
+    wrapper must not hide it."""
+
+    wrapped = _FakeProvider(last_usage=TokenUsage(prompt_tokens=3, completion_tokens=2))
+    assert TokenTrackingLLM(wrapped, provider="openai").last_usage == wrapped.last_usage
+
+
+def test_last_usage_is_none_for_a_provider_without_one():
+    class _Bare:
+        name = "bare:model"
+
+        def generate(self, system: str, user: str) -> str:
+            return "ok"
+
+    assert TokenTrackingLLM(_Bare(), provider="bare").last_usage is None

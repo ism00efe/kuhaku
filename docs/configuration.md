@@ -67,6 +67,7 @@ Set with `KUHAKU_` + the field name in upper case, e.g. `KUHAKU_LLM_PROVIDER=ope
 | `llm_provider` | `auto` | `auto`, `ollama`, `openai`, `anthropic`, `vertex`, `groq`, `openrouter` — see "Auto" below |
 | `llm_temperature` | `0.1` | ignored by the `vertex` provider |
 | `llm_max_tokens` | `1024` | ignored by the `vertex` provider |
+| `llm_content_types` | unset | comma-separated, e.g. `text,image,document`; unset, each provider decides from the model name — see [Providers → Images and documents](providers.md#images-and-documents) |
 | `llm_timeout_seconds` | `120` | per request, all providers |
 | `ollama_base_url` | `http://localhost:11434` | |
 | `ollama_model` | — | unset: one of the models pulled on the server (asked in a terminal when there are several) |
@@ -93,6 +94,9 @@ Set with `KUHAKU_` + the field name in upper case, e.g. `KUHAKU_LLM_PROVIDER=ope
 | `circuit_breaker_failure_threshold` | `5` | consecutive failures before opening |
 | `circuit_breaker_reset_timeout_seconds` | `60.0` | |
 | `circuit_breaker_success_threshold` | `1` | probes needed to close again |
+| `llm_rate_limit_requests_per_minute` | — | client-side pacing; see [Rate limits](limits.md) |
+| `llm_rate_limit_tokens_per_minute` | — | |
+| `llm_rate_limit_tokens_per_day` | — | |
 
 Six names are accepted **without** the `KUHAKU_` prefix, because another library reading
 them means the same thing: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`,
