@@ -18,20 +18,12 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from ..sanitization import ZERO_WIDTH_TABLE
+
 # Characters with no visible glyph, commonly used to split up or hide injection payloads
-# from naive substring/regex matching.
-_ZERO_WIDTH = (
-    "​"  # ZERO WIDTH SPACE
-    "‌"  # ZERO WIDTH NON-JOINER
-    "‍"  # ZERO WIDTH JOINER
-    "﻿"  # ZERO WIDTH NO-BREAK SPACE / BOM
-    "⁠"  # WORD JOINER
-    "⁡"  # FUNCTION APPLICATION
-    "⁢"  # INVISIBLE TIMES
-    "⁣"  # INVISIBLE SEPARATOR
-    "⁤"  # INVISIBLE PLUS
-)
-_ZERO_WIDTH_TABLE = {ord(ch): None for ch in _ZERO_WIDTH}
+# from naive substring/regex matching. One table shared with PII sanitization, so the
+# guard and the sanitizer never disagree about what is invisible.
+_ZERO_WIDTH_TABLE = ZERO_WIDTH_TABLE
 
 # Visually-confusable characters (Cyrillic/Greek look-alikes of Latin letters) folded to
 # their ASCII equivalent so a homoglyph-obfuscated word ("ignоre" with a Cyrillic 'о')
@@ -103,6 +95,11 @@ class NormalizationResult:
     raw_length: int
     normalized_length: int
     drift: int
+    # Every delimiter the stripping step removed, lowercased, in order of appearance.
+    # Stripping keeps them out of the classifier's and the LLM's view, but their mere
+    # presence is a strong injection signal -- GuardPipeline scores it from here, since
+    # the normalized text no longer contains them.
+    stripped_delimiters: tuple[str, ...] = ()
 
 
 def normalize(raw: str) -> NormalizationResult:
@@ -118,6 +115,7 @@ def normalize(raw: str) -> NormalizationResult:
     text = unicodedata.normalize("NFKC", raw)
     text = text.translate(_ZERO_WIDTH_TABLE)
     text = text.translate(_HOMOGLYPH_TABLE)
+    stripped = tuple(match.group(0).lower() for match in _DELIMITER_RE.finditer(text))
     text = _DELIMITER_RE.sub("", text)
     text = _REPEATED_PUNCT_RE.sub(r"\1", text)
 
@@ -128,4 +126,5 @@ def normalize(raw: str) -> NormalizationResult:
         raw_length=raw_length,
         normalized_length=normalized_length,
         drift=abs(raw_length - normalized_length),
+        stripped_delimiters=stripped,
     )

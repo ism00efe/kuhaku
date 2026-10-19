@@ -83,6 +83,10 @@ _EXTRA_FIELDS = (
     "norm_drift",  # an int (character-count delta), not the text itself
     "canary_detected",  # a bool
     "pii_egress_detected",  # a bool
+    # Session memory: an opaque random id minted by kuhaku.core.session. Only a value
+    # with a minted id's shape is ever logged (`loggable_session_id`), so a caller-passed
+    # id cannot smuggle text in -- it identifies a conversation without carrying any of it.
+    "session_id",
 )
 
 
@@ -191,8 +195,9 @@ def log_step(
             retrieved = engine.retrieve(query)
             rec.set(chunk_count=len(retrieved))
 
-    On success logs at INFO with ``status="ok"``; on exception logs at ERROR with
-    ``status="error"`` and the exception message, then re-raises (never swallows).
+    On success logs at INFO with ``status="ok"``; on exception logs with
+    ``status="error"`` and the exception's type name (never its message) at ERROR -- or
+    at the exception's own ``log_level`` -- then re-raises (never swallows).
     """
 
     log = logger or logging.getLogger("kuhaku.core.observability")
@@ -202,14 +207,19 @@ def log_step(
         yield recorder
     except Exception as exc:
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        log.error(
+        # The exception type only: a message routinely quotes its input (an id, a
+        # query, a file name), and a log is not the place for user content. An
+        # exception class can mark itself an expected outcome (not found, conflict) with
+        # a ``log_level`` attribute so it is not reported as an ERROR.
+        log.log(
+            getattr(exc, "log_level", logging.ERROR),
             "step failed: %s",
             step,
             extra={
                 "step": step,
                 "duration_ms": duration_ms,
                 "status": "error",
-                "error": str(exc),
+                "error": type(exc).__name__,
                 **recorder.extra,
             },
         )

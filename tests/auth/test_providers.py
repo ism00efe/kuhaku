@@ -23,7 +23,10 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _make_jwt(payload: dict, secret: str, *, alg: str = "HS256") -> str:
+def _make_jwt(payload: dict, secret: str, *, alg: str = "HS256", exp: bool = True) -> str:
+    # exp is required by default, so tests that are not about expiry get a valid one.
+    if exp and "exp" not in payload:
+        payload = {**payload, "exp": time.time() + 300}
     header = {"alg": alg, "typ": "JWT"}
     header_b64 = _b64url(json.dumps(header).encode())
     payload_b64 = _b64url(json.dumps(payload).encode())
@@ -56,10 +59,23 @@ def test_api_key_provider_authenticates_a_registered_key():
     assert ctx.roles == ("service",)
 
 
-def test_api_key_provider_identity_defaults_to_the_key_itself():
+def test_api_key_provider_identity_defaults_to_a_hashed_label_never_the_key():
     provider = APIKeyAuthProvider()
     provider.add_key("secret-key-1")
-    assert provider.authenticate("secret-key-1").identity == "secret-key-1"
+    identity = provider.authenticate("secret-key-1").identity
+    assert identity == "key:" + hashlib.sha256(b"secret-key-1").hexdigest()[:12]
+    assert "secret-key-1" not in identity
+
+
+def test_api_key_provider_keeps_no_raw_key():
+    provider = APIKeyAuthProvider({"secret-key-1": {"identity": "svc"}})
+    assert "secret-key-1" not in repr(vars(provider))
+    assert all(isinstance(k, bytes) and len(k) == 32 for k in provider._keys)
+
+
+def test_api_key_provider_refuses_the_key_as_identity():
+    with pytest.raises(ValueError, match="identity"):
+        APIKeyAuthProvider().add_key("secret-key-1", identity="secret-key-1")
 
 
 def test_api_key_provider_rejects_unknown_key():
@@ -140,7 +156,7 @@ def test_jwt_provider_rejects_malformed_token():
 def test_jwt_provider_rejects_tampered_payload():
     provider = JWTAuthProvider(SECRET)
     token = _make_jwt({"sub": "u1"}, SECRET)
-    header_b64, payload_b64, sig_b64 = token.split(".")
+    header_b64, _payload_b64, sig_b64 = token.split(".")
     tampered_payload = _b64url(json.dumps({"sub": "attacker"}).encode())
     tampered = f"{header_b64}.{tampered_payload}.{sig_b64}"
     assert provider.authenticate(tampered) == AuthContext.anonymous()

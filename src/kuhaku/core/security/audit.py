@@ -28,15 +28,22 @@ filesystem-untouched no-op.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
+import os
+import re
+import secrets
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..auth import AuthContext
+from ..exceptions import KuhakuError
 from ..observability.metrics import AUDIT_RECORDS_TOTAL, record_guard_degradation
+from ..sanitization import sanitize
 
 if TYPE_CHECKING:
     from .guard import GuardDecision
@@ -54,7 +61,20 @@ _write_lock = threading.Lock()
 _DEFAULT_AUDIT_LOG_PATH = "./logs/kuhaku_audit.jsonl"
 
 
-class AuditWriteError(Exception):
+# The key that turns `input_hash` into an HMAC. An unsalted SHA-256 of a short question
+# is reversible by guessing ("is it 'what is my balance?'"), so the hash is keyed per
+# deployment: from this variable when set, else from a key file created in the log's
+# directory (one per directory, so every log of one deployment hashes alike).
+AUDIT_KEY_ENV = "KUHAKU_AUDIT_HMAC_KEY"
+AUDIT_KEY_FILENAME = ".kuhaku_audit.key"
+_keys: dict[str, bytes] = {}
+
+# Values under keys named like a digest ("hash", "content_hash", "sql_sha256", ...) are
+# digests by convention (64 hex chars) and would otherwise be masked as long-hex secrets.
+_DIGEST_KEY_RE = re.compile(r"(?:hash|digest|sha\d*)$", re.IGNORECASE)
+
+
+class AuditWriteError(KuhakuError):
     """Audit logging is enabled but a record could not be written (e.g. the log
     directory could not be created, or the file could not be opened for append).
 
@@ -89,8 +109,9 @@ def record(
 ) -> None:
     """Append one audit record.
 
-    ``raw_question`` is only ever hashed, never stored. ``sanitized_retrieval_query`` is
-    the already-sanitized text computed earlier in ``RAGEngine._answer()`` -- truncated to
+    ``raw_question`` is only ever hashed (HMAC, see :func:`_audit_key`), never stored.
+    Every free-text field is sanitized here, whatever the caller already did.
+    ``sanitized_retrieval_query`` is the already-sanitized text computed earlier in ``RAGEngine._answer()`` -- truncated to
     100 chars, never re-derived from raw input. ``decision``/``guard_version``/
     ``model_version``/``thresholds`` are ``None`` for the unconditional per-request call
     site, which has no guard-v2 decision to report -- their JSON keys are still
@@ -147,11 +168,11 @@ def record(
     record_obj = {
         "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
         "trace_id": trace_id,
-        "event_type": event_type,
-        "action": action,
-        "target": target,
-        "input_hash": hashlib.sha256(raw_question.encode("utf-8")).hexdigest(),
-        "input_redacted": sanitized_retrieval_query[:100],
+        "event_type": _clean(event_type),
+        "action": _clean(action),
+        "target": _clean(target),
+        "input_hash": _input_hash(path, raw_question),
+        "input_redacted": sanitize(sanitized_retrieval_query)[:100],
         "identity": auth_context.identity if auth_context else None,
         "is_authenticated": auth_context.is_authenticated if auth_context else None,
         "roles": list(auth_context.roles) if auth_context else None,
@@ -175,10 +196,16 @@ def record(
         "thresholds": (
             {"low": thresholds[0], "high": thresholds[1]} if thresholds else None
         ),
-        "output_checks": output_checks,
-        "metadata": metadata or {},
+        "output_checks": _clean_tree(output_checks),
+        "metadata": _clean_tree(metadata or {}),
     }
-    line = json.dumps(record_obj, ensure_ascii=False)
+    # ensure_ascii: a raw U+2028/U+0085 inside a record would be a line break to some
+    # readers; escaped, every record is exactly one "\n"-terminated line. default=str:
+    # a non-JSON metadata value is recorded as its text, never a lost record.
+    try:
+        line = json.dumps(record_obj, ensure_ascii=True, default=str)
+    except (TypeError, ValueError) as exc:
+        raise AuditWriteError(f"Audit record is not serializable: {exc}.") from exc
 
     file_path = Path(path)
     try:
@@ -218,7 +245,11 @@ def read_recent(path: str) -> list[dict[str, object]]:
     if not file_path.exists():
         return []
     try:
-        lines = file_path.read_text(encoding="utf-8").splitlines()
+        # Split on "\n" only: str.splitlines() also breaks on U+2028, U+0085 and other
+        # separators that older records (written with ensure_ascii=False) may contain
+        # inside a JSON string.
+        text = file_path.read_text(encoding="utf-8")
+        lines = [line for line in text.split("\n") if line.strip()]
     except OSError:
         logger.exception("failed to read audit log")
         return []
@@ -233,3 +264,77 @@ def read_recent(path: str) -> list[dict[str, object]]:
 
 read_audit_log = read_recent
 
+
+def _clean(value: str | None) -> str | None:
+    return sanitize(value) if isinstance(value, str) else value
+
+
+def _clean_tree(value: Any, key: str = "") -> Any:
+    """Sanitize every string leaf of a JSON-like value (dict keys are left alone)."""
+
+    if isinstance(value, str):
+        if _DIGEST_KEY_RE.search(key):
+            return value
+        return sanitize(value)
+    if isinstance(value, dict):
+        return {k: _clean_tree(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_clean_tree(v, key) for v in value]
+    return value
+
+
+def _input_hash(path: str, raw_question: str) -> str:
+    key = _audit_key(path)
+    return hmac.new(key, raw_question.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _audit_key(path: str) -> bytes:
+    """The deployment's HMAC key: ``$KUHAKU_AUDIT_HMAC_KEY``, else
+    ``<log directory>/.kuhaku_audit.key`` (created with owner-only permissions on first
+    use, then reused). On Windows the mode bits only set read-only/not; the file inherits
+    the directory's ACL."""
+
+    env_key = os.environ.get(AUDIT_KEY_ENV)
+    if env_key:
+        return env_key.encode("utf-8")
+    key_path = Path(path).parent / AUDIT_KEY_FILENAME
+    cache_key = str(key_path.resolve())
+    cached = _keys.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        with _write_lock:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                # O_EXCL: two processes racing to create the key must not both write
+                # one -- the loser reads the winner's.
+                fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                key = _read_key(key_path)
+            else:
+                generated = secrets.token_hex(32)
+                with os.fdopen(fd, "w", encoding="ascii") as fh:
+                    fh.write(generated)
+                key = generated.encode("ascii")
+    except OSError as exc:
+        logger.exception("failed to create or read the audit HMAC key")
+        record_guard_degradation("audit")
+        raise AuditWriteError(
+            f"Audit logging is enabled but the record at '{path}' could not be written: "
+            f"its HMAC key file '{key_path}' could not be created or read ({exc}). Set "
+            f"{AUDIT_KEY_ENV}, or make the directory writable."
+        ) from exc
+    if not key:
+        raise AuditWriteError(f"Audit HMAC key file '{key_path}' is empty; delete it.")
+    _keys[cache_key] = key
+    return key
+
+
+def _read_key(key_path: Path) -> bytes:
+    # Another process may have created the file an instant ago and not written it yet.
+    for _ in range(50):
+        key = key_path.read_text(encoding="ascii").strip().encode("ascii")
+        if key:
+            return key
+        time.sleep(0.01)
+    return b""
